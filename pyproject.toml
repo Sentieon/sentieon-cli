@@ -1,0 +1,40 @@
+
+#https://stackoverflow.com/questions/75408641/whats-difference-between-tool-poetry-and-project-in-pyproject-toml
+[tool.poetry]
+name = "sentieon_driver"
+version = "0.1.0"
+description = "entry point for sentieon command-line tools"
+authors = ["Who <who@sentieon.com>"]
+readme = "README.md"
+
+classifiers = [
+"Development Status :: 5 — Production/Stable",
+"License :: OSI Approved :: MIT License",
+"Programming Language :: Python :: 3",
+]
+include = [
+"LICENSE",
+]
+
+
+[tool.poetry.dependencies]
+python = "^3.8"
+argh = "^0.29.4"
+
+[tool.poetry.plugins."poetry.application.plugin"]
+doit = "sentieon_driver:main"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.0.0"
+black = "*"
+flake8 = "*"
+mypy = "*"
+
+[tool.poetry.group.test.dependencies]
+pytest = "^7.0.0"
+black = "*"
+mypy = "*"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

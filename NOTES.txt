@@ -1,0 +1,14 @@
+Formatting: autopep8 --in-place --aggressive tests/test_all.py --ignore E402
+
+start here: https://github.com/Sentieon/sentieon-scripts/blob/master/dnascope_LongRead/dnascope_HiFi.sh#L280
+
+argh entry-point: https://argh.readthedocs.io/en/latest/tutorial.html#entry-points
+
+https://python-poetry.org/docs/basic-usage/
+
+https://drivendata.co/blog/python-packaging-2023
+
+poetry run pytest
+poetry build
+
+https://docs.python-guide.org/writing/structure/
