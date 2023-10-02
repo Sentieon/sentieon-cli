@@ -6,10 +6,15 @@ import subprocess as sp
 import argh
 import random
 from argh import arg
-from .command_strings import cmd_algo_dnascope
+from .logging import get_logger
+from . import command_strings as cmds
 
 if sys.version_info < (3, 9):
     from typing import Tuple as tuple
+
+__version__ = "0.1.0"
+
+logger = get_logger(__name__)
 
 
 def tmp() -> tuple[str, str]:
@@ -57,7 +62,7 @@ def other(**kwargs):
     "reference", help="fasta for reference genome", type=argparse.FileType("r")
 )
 @arg(
-    "sample_input", help="sample BAM or CRAM file", type=argparse.FileType("r")
+    "sample-input", help="sample BAM or CRAM file", type=argparse.FileType("r")
 )
 @arg("model-bundle", help="The model bundle directory")
 @arg(
@@ -90,23 +95,18 @@ def other(**kwargs):
     action="store_true",
 )
 def run_algo_dnascope(**kwargs):
+    """
+    Run sentieon driver with the algo DNAscope command.
+    """
     kwargs["tmp_base"], kwargs["tmp_dir"] = tmp()
-    return cmd_algo_dnascope(**kwargs)
-
-
-def cmd_model_apply(**kwargs):
-    """
-     sentieon driver -t "$_arg_threads" -r "$_arg_reference_fasta" \
-        --algo DNAModelApply --model "$model" -v "$input_vcf" "$output_vcf"
-    """
-    inp_vcf = f"{kwargs['tmp_base']}_diploid_tmp.vcf.gz"
-    out_vcf = f"{kwargs['tmp_base']}_diploid.vcf.gz"
-    cmd = f"--algo DNAmodelApply --model {kwargs['model']} "
-    cmd += f"-v {inp_vcf} {out_vcf}"
-    return cmd
+    return cmds.cmd_sentieon_driver(**kwargs) + cmds.cmd_algo_dnascope(
+        **kwargs
+    )
 
 
 def main():
+    logger.setLevel("DEBUG")
+    logger.info(f"Starting sentieon_driver version: {__version__}")
     argh.dispatch_commands([run_algo_dnascope, other])
 
 

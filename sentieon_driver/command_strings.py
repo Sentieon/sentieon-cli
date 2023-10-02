@@ -8,6 +8,47 @@ Command strings may be partial--that is, they could be mixed with other
 command strings to get a full viable command.
 
 """
+import io
+import typing
+from .logging import get_logger
+
+logger = get_logger(__name__)
+
+
+def cmd_model_apply(**kwargs):
+    """
+     sentieon driver -t "$_arg_threads" -r "$_arg_reference_fasta" \
+        --algo DNAModelApply --model "$model" -v "$input_vcf" "$output_vcf"
+    """
+    inp_vcf = f"{kwargs['tmp_base']}_diploid_tmp.vcf.gz"
+    out_vcf = f"{kwargs['tmp_base']}_diploid.vcf.gz"
+    cmd = f"--algo DNAmodelApply --model {kwargs['model']} "
+    cmd += f"-v {inp_vcf} {out_vcf}"
+    return cmd
+
+
+def name(path: typing.Union[str, io.TextIOWrapper]) -> str:
+    """Return the name of a file that may also be a text-wrapper."""
+    if hasattr(path, "name"):
+        path = path.name
+    return path
+
+
+def cmd_sentieon_driver(**kwargs) -> str:
+    """
+    Common base for running sentieon driver.
+    """
+    logger.debug(kwargs)
+    if kwargs.get("bed"):
+        bed = f"--interval {name(kwargs['bed'])}"
+    else:
+        bed = ""
+
+    cmd = (
+        f"sentieon driver -t {kwargs['cores']} -r {name(kwargs['reference'])} "
+    )
+    cmd += f"-i {name(kwargs['sample-input'])} {bed}"
+    return cmd
 
 
 def cmd_algo_dnascope(**kwargs):
