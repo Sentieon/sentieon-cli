@@ -23,6 +23,9 @@ colorlog = "^6.7.0"
 [tool.poetry.scripts]
 sentieon_do = "sentieon_driver:main"
 
+[tool.mypy]
+ignore_missing_imports = true
+
 [tool.black]
 line-length = 79
 

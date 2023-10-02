@@ -105,8 +105,9 @@ def run_algo_dnascope(**kwargs):
 
 
 def main():
-    logger.setLevel("DEBUG")
-    logger.info(f"Starting sentieon_driver version: {__version__}")
+    """main entry point for this project"""
+    logger.setLevel(os.environ.get("LOGLEVEL", "DEBUG").upper())
+    logger.info("Starting sentieon_driver version: %s", __version__)
     argh.dispatch_commands([run_algo_dnascope, other])
 
 
