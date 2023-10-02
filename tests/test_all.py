@@ -18,7 +18,7 @@ def test_one():
 
 def test_tmp():
     """basic test for tmp()"""
-    tmp_dir = sentieon_driver.tmp()
+    tmp_dir, tmp_base = sentieon_driver.tmp()
     assert os.path.exists(tmp_dir)
     assert os.path.isdir(tmp_dir)
     shutil.rmtree(tmp_dir)
