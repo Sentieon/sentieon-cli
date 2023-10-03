@@ -54,17 +54,23 @@ def other(**kwargs):
 
 
 @arg(
+    "-r",
+    "--reference",
+    help="fasta for reference genome",
+    type=argparse.FileType("r"),
+)
+@arg(
+    "-i",
+    "--sample-input",
+    help="sample BAM or CRAM file",
+    type=argparse.FileType("r"),
+)
+@arg("-m", "--model-bundle", help="The model bundle directory")
+@arg(
     "output-vcf",
     help="Output VCF File. The file name must end in .vcf.gz",
     type=argparse.FileType("w"),
 )
-@arg(
-    "reference", help="fasta for reference genome", type=argparse.FileType("r")
-)
-@arg(
-    "sample-input", help="sample BAM or CRAM file", type=argparse.FileType("r")
-)
-@arg("model-bundle", help="The model bundle directory")
 @arg(
     "-d",
     "--dbsnp",
@@ -98,10 +104,9 @@ def run_algo_dnascope(**kwargs):
     """
     Run sentieon driver with the algo DNAscope command.
     """
+    logger.info(kwargs)
     kwargs["tmp_base"], kwargs["tmp_dir"] = tmp()
-    return cmds.cmd_sentieon_driver(**kwargs) + cmds.cmd_algo_dnascope(
-        **kwargs
-    )
+    return cmds.cmd_algo_dnascope(**kwargs)
 
 
 def main():
