@@ -29,3 +29,7 @@ jobs:
         run: poetry run flake8 . 
       - name: Run the automated tests (for example)
         run: poetry run pytest -v
+
+      - name: Run bash tests
+        run: poetry run bash tests/cli-test.sh
+

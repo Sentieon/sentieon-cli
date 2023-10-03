@@ -21,8 +21,8 @@ def cmd_model_apply(**kwargs):
      sentieon driver -t "$_arg_threads" -r "$_arg_reference_fasta" \
         --algo DNAModelApply --model "$model" -v "$input_vcf" "$output_vcf"
     """
-    inp_vcf = f"{kwargs['tmp_base']}_diploid_tmp.vcf.gz"
-    out_vcf = f"{kwargs['tmp_base']}_diploid.vcf.gz"
+    inp_vcf = f"{kwargs['tmp_base']}/out_diploid_tmp.vcf.gz"
+    out_vcf = f"{kwargs['tmp_base']}/diploid.vcf.gz"
     cmd = _cmd_sentieon_driver(**kwargs)
     cmd += f"--algo DNAmodelApply --model {kwargs['model']} "
     cmd += f"-v {inp_vcf} {out_vcf}"
@@ -57,7 +57,7 @@ def _cmd_sentieon_driver(**kwargs) -> str:
     cmd = (
         f"sentieon driver -t {kwargs['cores']} -r {name(kwargs['reference'])} "
     )
-    cmd += f"-i {name(kwargs['sample_input'])}{bed}{read_filter}"
+    cmd += f"{bed} -i {name(kwargs['sample_input'])}{read_filter}"
     return cmd
 
 
@@ -69,12 +69,12 @@ def cmd_algo_dnascope(**kwargs):
         --model "$_arg_model_bundle"/diploid_model "$DIPLOID_TMP_OUT"
     """
     # TODO: this is used elsewhere, should create once and pass.
-    diploid_tmp_out = f"{kwargs['tmp_base']}_diploid_tmp.vcf.gz"
+    diploid_tmp_out = f"{kwargs['tmp_base']}/out_diploid_tmp.vcf.gz"
     # https://github.com/Sentieon/sentieon-scripts/blob/8d33f29e442d5a1e782445f06bc1f11e278d8f87/dnascope_LongRead/dnascope_HiFi.sh#L355-L359
     if kwargs.get("gvcf") or True:  # NOTE: this is always done in bash.
-        diploid_gvcf = f"{kwargs['tmp_base']}_diploid.g.vcf.gz"
+        diploid_gvcf = f"{kwargs['tmp_base']}/out_diploid.g.vcf.gz"
         gvcf = f" --algo DNAscope --model {kwargs['model_bundle']}/gvcf_model"
-        gvcf += f" --emit_mode gvcf {gvcf} {diploid_gvcf} "
+        gvcf += f" --emit_mode gvcf {diploid_gvcf} "
     else:
         gvcf = ""
     if kwargs.get("dbsnp"):
