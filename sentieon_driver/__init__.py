@@ -100,20 +100,34 @@ def other(**kwargs):
     default=False,
     action="store_true",
 )
-def run_algo_dnascope(**kwargs):
+def run_full_dnascope(**kwargs):
     """
     Run sentieon driver with the algo DNAscope command.
     """
     logger.info(kwargs)
     kwargs["tmp_base"], kwargs["tmp_dir"] = tmp()
-    return cmds.cmd_algo_dnascope(**kwargs)
+    commands = [cmds.cmd_algo_dnascope(**kwargs)]
+    commands.append(cmds.cmd_model_apply(**kwargs))
+
+    kwargs["inp_vcf"] = f"{kwargs['tmp_base']}/out_diploid.vcf.gz"
+    commands.append(cmds.cmd_variant_phaser(kwargs))
+
+    commands.append(
+        cmds.cmd_bedtools_subtract(
+            kwargs.get("bed"), kwargs["phased_bed"], kwargs["unphased_bed"]
+        )
+    )
+    # TODO: PhasedReadFilter
+    # https://github.com/Sentieon/sentieon-scripts/blob/master/dnascope_LongRead/dnascope_HiFi.sh#L376
+
+    return "\n".join(commands)
 
 
 def main():
     """main entry point for this project"""
     logger.setLevel(os.environ.get("LOGLEVEL", "DEBUG").upper())
     logger.info("Starting sentieon_driver version: %s", __version__)
-    argh.dispatch_commands([run_algo_dnascope, other])
+    argh.dispatch_commands([run_full_dnascope, other])
 
 
 if __name__ == "__main__":

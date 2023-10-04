@@ -16,15 +16,59 @@ from .logging import get_logger
 logger = get_logger(__name__)
 
 
+def cmd_variant_phaser(kwargs):
+    """
+    sentieon driver -t 4 -r reference.fasta -i sample.input
+        --algo VariantPhaser -v /tmp/1329402/out_diploid.vcf.gz
+        --max_depth 1000 --out_bed /tmp/1329402/out_diploid_phased.bed
+        --out_ext /tmp/1329402/out_diploid_phased.ext.vcf.gz
+        /tmp/1329402/out_diploid_phased.vcf.gz
+    """
+    cmd = _cmd_sentieon_driver(
+        skip_bed=True, skip_sample_input=False, **kwargs
+    )
+    kwargs["phased_bed"] = f"{kwargs['tmp_base']}/out_diploid_phased.bed"
+    kwargs["unphased_bed"] = f"{kwargs['tmp_base']}/out_diploid_unphased.bed"
+    cmd += f"--algo VariantPhaser -v {kwargs['inp_vcf']} "
+    cmd += f"--max_depth {kwargs.get('phase_max_depth', 1000)} "
+    cmd += f"--out_bed {kwargs['phased_bed']} "
+    cmd += f"--out_ext {kwargs['tmp_base']}/out_diploid_phased.ext.vcf.gz "
+    cmd += f"{kwargs['tmp_base']}/out_diploid_phased.vcf.gz "
+    return cmd
+
+
+def cmd_bedtools_subtract(
+    regions_bed: typing.Optional[typing.Union[str, io.TextIOWrapper]],
+    phased_bed: str,
+    unphased_bed: str,
+    **kwargs,
+):
+    if regions_bed is None:
+        # set region to the full genome
+        with open(
+            f"{kwargs['tmp_base']}_reference.bed", "wt", encoding="utf-8"
+        ) as f:
+            for line in open(kwargs["reference"] + ".fai", encoding="utf-8"):
+                toks = line.strip().split("\t")
+                f.write(f"{toks[0]}\t0\t{toks[1]}\n")
+            regions_bed = f.name
+    cmd = f"bedtools subtract -a {name(regions_bed)} -b {phased_bed} "
+    cmd += f"> {unphased_bed}"
+    return cmd
+
+
 def cmd_model_apply(**kwargs):
     """
      sentieon driver -t "$_arg_threads" -r "$_arg_reference_fasta" \
         --algo DNAModelApply --model "$model" -v "$input_vcf" "$output_vcf"
     """
     inp_vcf = f"{kwargs['tmp_base']}/out_diploid_tmp.vcf.gz"
-    out_vcf = f"{kwargs['tmp_base']}/diploid.vcf.gz"
-    cmd = _cmd_sentieon_driver(**kwargs)
-    cmd += f"--algo DNAmodelApply --model {kwargs['model']} "
+    out_vcf = f"{kwargs['tmp_base']}/out_diploid.vcf.gz"
+    cmd = _cmd_sentieon_driver(skip_bed=True, skip_sample_input=True, **kwargs)
+    print(kwargs)
+    cmd += (
+        f"--algo DNAmodelApply --model {kwargs['model_bundle']}/diploid_model "
+    )
     cmd += f"-v {inp_vcf} {out_vcf}"
     return cmd
 
@@ -36,7 +80,9 @@ def name(path: typing.Union[str, io.TextIOWrapper]) -> str:
     return path
 
 
-def _cmd_sentieon_driver(**kwargs) -> str:
+def _cmd_sentieon_driver(
+    skip_bed: bool = False, skip_sample_input: bool = False, **kwargs
+) -> str:
     """
     Common base for running sentieon driver.
     This is only called along with other commands.
@@ -45,7 +91,7 @@ def _cmd_sentieon_driver(**kwargs) -> str:
     Same for read-filter.
     """
     logger.debug(kwargs)
-    if kwargs.get("bed"):
+    if not skip_bed and kwargs.get("bed"):
         bed = f" --interval {name(kwargs['bed'])}"
     else:
         bed = ""
@@ -57,7 +103,10 @@ def _cmd_sentieon_driver(**kwargs) -> str:
     cmd = (
         f"sentieon driver -t {kwargs['cores']} -r {name(kwargs['reference'])} "
     )
-    cmd += f"{bed} -i {name(kwargs['sample_input'])}{read_filter}"
+    cmd += f"{bed} "
+    if not skip_sample_input:
+        cmd += f"-i {name(kwargs['sample_input'])}"
+    cmd += f"{read_filter}"
     return cmd
 
 
@@ -83,4 +132,4 @@ def cmd_algo_dnascope(**kwargs):
         dbsnp = ""
     cmd = f"{gvcf}--algo DNAscope {dbsnp} --model "
     cmd += f"{kwargs['model_bundle']}/diploid_model {diploid_tmp_out} "
-    return _cmd_sentieon_driver(**kwargs) + cmd
+    return _cmd_sentieon_driver(skip_bed=False, **kwargs) + cmd

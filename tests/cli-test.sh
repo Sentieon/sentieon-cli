@@ -22,7 +22,7 @@ exp=$(grep ^senti cmds | head -1)
 
 poetry install
 
-obs=$(sentieon_do run-algo-dnascope out.vcf.gz -r reference.fasta -i sample.input -m model.file -d dbsnp.vcf.gz  -b regions.bed -t 4 2>&1 | tail -1)
+obs=$(sentieon_do run-full-dnascope out.vcf.gz -r reference.fasta -i sample.input -m model.file -d dbsnp.vcf.gz  -b regions.bed -t 4 2>&1 | tail -1)
 
 echo EXP
 echo $exp
