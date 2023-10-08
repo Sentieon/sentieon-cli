@@ -105,9 +105,10 @@ def run_full_dnascope(**kwargs):
     Run sentieon driver with the algo DNAscope command.
     """
     logger.info(kwargs)
+    gvcf = kwargs.pop("gvcf")
     kwargs["tmp_base"], kwargs["tmp_dir"] = tmp()
     model = f"{kwargs['model_bundle']}/gvcf_model"
-    commands = [cmds.cmd_algo_dnascope(model, **kwargs)]
+    commands = [cmds.cmd_algo_dnascope(model, gvcf=gvcf, **kwargs)]
 
     inp_vcf = f"{kwargs['tmp_base']}/out_diploid_tmp.vcf.gz"
     out_vcf = f"{kwargs['tmp_base']}/out_diploid.vcf.gz"
@@ -138,9 +139,10 @@ def run_full_dnascope(**kwargs):
         cmd = cmds.cmd_algo_dnascope(
             f"{kwargs['model_bundle']}/haploid_model",
             bed_key="unphased_bed",
+            gvcf=None,
             **kwargs,
         )
-        cmd = ""
+        kwargs.pop("read-filter")
         commands.append("#PHASE %s" % phase)
 
         hp_vcf = f"{kwargs['tmp_base']}/out_hap{phase}_tmp.vcf.gz"
@@ -154,6 +156,63 @@ def run_full_dnascope(**kwargs):
             kwargs,
         )
         commands.append(cmd)
+
+    kwargs["vcf_mod_py"] = "vcf_mod.py"
+    commands.append(
+        cmds.cmd_pyexec_vcf_mod_haploid_patch(
+            f"{kwargs['tmp_base']}/out_hap1_patch.vcf.gz",
+            f"{kwargs['tmp_base']}/out_hap2_patch.vcf.gz",
+            f"{kwargs['tmp_base']}/out_hap%d_%stmp.vcf.gz",
+            kwargs,
+        )
+    )
+
+    # apply trained model to the patched vcfs.
+    for hap in (1, 2):
+        hap_out = f"{kwargs['tmp_base']}/out_hap{hap}.vcf.gz"
+        commands.append(
+            cmds.cmd_model_apply(
+                f"{kwargs['model_bundle']}/haploid_model",
+                f"{kwargs['tmp_base']}/out_hap{hap}_patch.vcf.gz",
+                hap_out,
+                kwargs,
+            )
+        )
+
+    # call variants on unphased regions
+    # https://github.com/Sentieon/sentieon-scripts/blob/master/dnascope_LongRead/dnascope_HiFi.sh#L409
+    cmd = cmds._cmd_sentieon_driver(
+        bed_key="unphased_bed",
+        **kwargs,
+    )
+    cmd += " " + cmds.cmd_dnascope_hp(
+        f"{kwargs['model_bundle']}/diploid_hp_model",
+        kwargs["repeat_model"],
+        f"{kwargs['tmp_base']}/out_diploid_phased_unphased_hp.vcf.gz",
+        f"{kwargs['tmp_base']}/out_diploid_unphased.bed",
+        kwargs,
+    )
+
+    commands.append(cmd)
+
+    # Patch DNA and DNAHP variants
+    cmd = cmds.cmd_pyexec_vcf_mod_patch(
+        f"{kwargs['tmp_base']}/out_diploid_unphased_patch.vcf.gz",
+        f"{kwargs['tmp_base']}/out_diploid_phased_unphased_hp.vcf.gz",
+        f"{kwargs['tmp_base']}/out_diploid_phased_unphased.vcf.gz",
+        kwargs,
+    )
+    commands.append(cmd)
+    cmd = cmds.cmd_model_apply(
+        f"{kwargs['model_bundle']}/diploid_model_unphased",
+        f"{kwargs['tmp_base']}/out_diploid_unphased_patch.vcf.gz",
+        f"{kwargs['tmp_base']}/out_diploid_unphased.vcf.gz",
+        kwargs,
+    )
+    commands.append(cmd)
+
+    # merge calls to create the output
+    # https://github.com/Sentieon/sentieon-scripts/blob/master/dnascope_LongRead/dnascope_HiFi.sh#L421
 
     return "\n".join(commands)
 

@@ -85,8 +85,7 @@ def cmd_model_apply(
         --algo DNAModelApply --model "$model" -v "$input_vcf" "$output_vcf"
     """
     cmd = _cmd_sentieon_driver(bed_key=None, skip_sample_input=True, **kwargs)
-    print(kwargs)
-    cmd += f"--algo DNAmodelApply --model {model} -v {inp_vcf} {out_vcf}"
+    cmd += f"--algo DNAModelApply --model {model} -v {inp_vcf} {out_vcf}"
     return cmd
 
 
@@ -129,8 +128,38 @@ def _cmd_sentieon_driver(
     return cmd
 
 
+def cmd_pyexec_vcf_mod_haploid_patch(
+    hap1_patch: str, hap2_patch: str, hap_patt: str, kwargs: dict
+) -> str:
+    """
+    merge dnascope and dnascope-hp variants
+    """
+
+    cmd = f"sentieon pyexec {kwargs['vcf_mod_py']} -t {kwargs['cores']} "
+    cmd += "haploid_patch "
+    cmd += f"--patch1 {hap1_patch}  --patch2 {hap2_patch}"
+    cmd += " --hap1 " + hap_patt % (1, "no_hp_")
+    cmd += " --hap2 " + hap_patt % (2, "no_hp_")
+    cmd += " --hap1_hp " + hap_patt % (1, "")
+    cmd += " --hap2_hp " + hap_patt % (2, "")
+    return cmd
+
+
+def cmd_pyexec_vcf_mod_patch(
+    out_vcf: str, vcf: str, vcf_hp: str, kwargs: dict
+) -> str:
+    """Patch DNAscope and DNAscopeHP VCF files"""
+
+    cmd = f"sentieon pyexec {kwargs['vcf_mod_py']} -t {kwargs['cores']} "
+    cmd += f"patch --vcf {vcf} --vcf_hp {vcf_hp} {out_vcf}"
+    return cmd
+
+
 def cmd_algo_dnascope(
-    model: str, bed_key: typing.Optional[str] = None, **kwargs
+    model: str,
+    bed_key: typing.Optional[str] = None,
+    gvcf: typing.Optional[str] = None,
+    **kwargs,
 ) -> str:
     """
     DNAscope sub-command DNAscopeHP is added in another command if applicable.
@@ -138,7 +167,7 @@ def cmd_algo_dnascope(
     # TODO: this is used elsewhere, should create once and pass.
     diploid_tmp_out = f"{kwargs['tmp_base']}/out_diploid_tmp.vcf.gz"
     # https://github.com/Sentieon/sentieon-scripts/blob/8d33f29e442d5a1e782445f06bc1f11e278d8f87/dnascope_LongRead/dnascope_HiFi.sh#L355-L359
-    if kwargs.get("gvcf") or True:  # NOTE: this is always done in bash.
+    if gvcf:
         diploid_gvcf = f"{kwargs['tmp_base']}/out_diploid.g.vcf.gz"
         gvcf = f" --algo DNAscope --model {kwargs['model_bundle']}/gvcf_model"
         gvcf += f" --emit_mode gvcf {diploid_gvcf} "
