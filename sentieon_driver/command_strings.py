@@ -24,16 +24,18 @@ def cmd_variant_phaser(kwargs):
         --out_ext /tmp/1329402/out_diploid_phased.ext.vcf.gz
         /tmp/1329402/out_diploid_phased.vcf.gz
     """
-    cmd = _cmd_sentieon_driver(
-        skip_bed=True, skip_sample_input=False, **kwargs
-    )
+    cmd = _cmd_sentieon_driver(bed_key=None, skip_sample_input=False, **kwargs)
     kwargs["phased_bed"] = f"{kwargs['tmp_base']}/out_diploid_phased.bed"
     kwargs["unphased_bed"] = f"{kwargs['tmp_base']}/out_diploid_unphased.bed"
+    kwargs["phased_vcf"] = f"{kwargs['tmp_base']}/out_diploid_phased.vcf.gz"
+    kwargs[
+        "phased_ext"
+    ] = f"{kwargs['tmp_base']}/out_diploid_phased.ext.vcf.gz"
     cmd += f"--algo VariantPhaser -v {kwargs['inp_vcf']} "
     cmd += f"--max_depth {kwargs.get('phase_max_depth', 1000)} "
     cmd += f"--out_bed {kwargs['phased_bed']} "
     cmd += f"--out_ext {kwargs['tmp_base']}/out_diploid_phased.ext.vcf.gz "
-    cmd += f"{kwargs['tmp_base']}/out_diploid_phased.vcf.gz "
+    cmd += f"{kwargs['phased_vcf']} "
     return cmd
 
 
@@ -57,19 +59,34 @@ def cmd_bedtools_subtract(
     return cmd
 
 
-def cmd_model_apply(**kwargs):
+def cmd_repeat_model(kwargs) -> str:
+    """
+    Runs --algo RepeatModel
+    """
+    cmd = _cmd_sentieon_driver(
+        bed_key="phased_bed", skip_sample_input=False, **kwargs
+    )
+    kwargs["repeat_model"] = f"{kwargs['tmp_base']}/out_repeat.model"
+    cmd += f"--read_filter PhasedReadFilter,phased_vcf={kwargs['phased_ext']}"
+    cmd += ",phase_select=tag "
+    cmd += "--algo RepeatModel --phased --min_map_qual 1 "
+    cmd += "--min_group_count 10000 "
+    cmd += "--read_flag_mask drop=supplementary --repeat_extension 5 "
+    cmd += "--max_repeat_unit_size 2 --min_repeat_count 6 "
+    cmd += kwargs["repeat_model"]
+    return cmd
+
+
+def cmd_model_apply(
+    model: str, inp_vcf: str, out_vcf: str, kwargs: dict
+) -> str:
     """
      sentieon driver -t "$_arg_threads" -r "$_arg_reference_fasta" \
         --algo DNAModelApply --model "$model" -v "$input_vcf" "$output_vcf"
     """
-    inp_vcf = f"{kwargs['tmp_base']}/out_diploid_tmp.vcf.gz"
-    out_vcf = f"{kwargs['tmp_base']}/out_diploid.vcf.gz"
-    cmd = _cmd_sentieon_driver(skip_bed=True, skip_sample_input=True, **kwargs)
+    cmd = _cmd_sentieon_driver(bed_key=None, skip_sample_input=True, **kwargs)
     print(kwargs)
-    cmd += (
-        f"--algo DNAmodelApply --model {kwargs['model_bundle']}/diploid_model "
-    )
-    cmd += f"-v {inp_vcf} {out_vcf}"
+    cmd += f"--algo DNAmodelApply --model {model} -v {inp_vcf} {out_vcf}"
     return cmd
 
 
@@ -81,7 +98,9 @@ def name(path: typing.Union[str, io.TextIOWrapper]) -> str:
 
 
 def _cmd_sentieon_driver(
-    skip_bed: bool = False, skip_sample_input: bool = False, **kwargs
+    bed_key: typing.Optional[str] = None,
+    skip_sample_input: bool = False,
+    **kwargs,
 ) -> str:
     """
     Common base for running sentieon driver.
@@ -91,8 +110,8 @@ def _cmd_sentieon_driver(
     Same for read-filter.
     """
     logger.debug(kwargs)
-    if not skip_bed and kwargs.get("bed"):
-        bed = f" --interval {name(kwargs['bed'])}"
+    if bed_key is not None:
+        bed = f" --interval {name(kwargs[bed_key])}"
     else:
         bed = ""
     if kwargs.get("read-filter"):
@@ -110,12 +129,11 @@ def _cmd_sentieon_driver(
     return cmd
 
 
-def cmd_algo_dnascope(**kwargs):
+def cmd_algo_dnascope(
+    model: str, bed_key: typing.Optional[str] = None, **kwargs
+) -> str:
     """
-        ${_arg_gvcf:+--algo DNAscope --model "$_arg_model_bundle"/gvcf_model
-        --emit_mode gvcf "$DIPLOID_GVCF"} \
-        --algo DNAscope ${_arg_dbsnp:+--dbsnp "$_arg_dbsnp"} \
-        --model "$_arg_model_bundle"/diploid_model "$DIPLOID_TMP_OUT"
+    DNAscope sub-command DNAscopeHP is added in another command if applicable.
     """
     # TODO: this is used elsewhere, should create once and pass.
     diploid_tmp_out = f"{kwargs['tmp_base']}/out_diploid_tmp.vcf.gz"
@@ -130,6 +148,27 @@ def cmd_algo_dnascope(**kwargs):
         dbsnp = f" --dbsnp {kwargs['dbsnp'].name} "
     else:
         dbsnp = ""
-    cmd = f"{gvcf}--algo DNAscope {dbsnp} --model "
-    cmd += f"{kwargs['model_bundle']}/diploid_model {diploid_tmp_out} "
-    return _cmd_sentieon_driver(skip_bed=False, **kwargs) + cmd
+    cmd = f"{gvcf}--algo DNAscope {dbsnp} --model {model} {diploid_tmp_out}"
+    return _cmd_sentieon_driver(bed_key, **kwargs) + cmd
+
+
+def cmd_dnascope_hp(
+    model: str,
+    repeat_model: str,
+    hp_vcf: str,
+    hp_std_vcf: str,
+    kwargs: dict,
+) -> str:
+    """
+    DNAscopeHP sub-command.
+    This only adds to an existing command, it does not prefix with the sention
+      driver.
+    """
+    cmd = "--algo DNAscopeHP "
+    if kwargs.get("dbsnp"):
+        cmd += f" --dbsnp {name(kwargs['dbsnp'])} "
+    cmd += f" --model {model} "
+    cmd += f" --pcr_indel_model {repeat_model} --min_repeat_count 6 "
+    cmd += hp_vcf
+
+    return cmd

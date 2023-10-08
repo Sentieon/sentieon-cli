@@ -106,10 +106,18 @@ def run_full_dnascope(**kwargs):
     """
     logger.info(kwargs)
     kwargs["tmp_base"], kwargs["tmp_dir"] = tmp()
-    commands = [cmds.cmd_algo_dnascope(**kwargs)]
-    commands.append(cmds.cmd_model_apply(**kwargs))
+    model = f"{kwargs['model_bundle']}/gvcf_model"
+    commands = [cmds.cmd_algo_dnascope(model, **kwargs)]
 
-    kwargs["inp_vcf"] = f"{kwargs['tmp_base']}/out_diploid.vcf.gz"
+    inp_vcf = f"{kwargs['tmp_base']}/out_diploid_tmp.vcf.gz"
+    out_vcf = f"{kwargs['tmp_base']}/out_diploid.vcf.gz"
+    commands.append(
+        cmds.cmd_model_apply(
+            f"{kwargs['model_bundle']}/diploid_model", inp_vcf, out_vcf, kwargs
+        )
+    )
+
+    kwargs["inp_vcf"] = out_vcf
     commands.append(cmds.cmd_variant_phaser(kwargs))
 
     commands.append(
@@ -117,8 +125,35 @@ def run_full_dnascope(**kwargs):
             kwargs.get("bed"), kwargs["phased_bed"], kwargs["unphased_bed"]
         )
     )
-    # TODO: PhasedReadFilter
-    # https://github.com/Sentieon/sentieon-scripts/blob/master/dnascope_LongRead/dnascope_HiFi.sh#L376
+
+    commands.append(cmds.cmd_repeat_model(kwargs))
+
+    # TODO: bcftools view
+    # https://github.com/Sentieon/sentieon-scripts/blob/master/dnascope_LongRead/dnascope_HiFi.sh#L384
+
+    for phase in (1, 2):
+        kwargs[
+            "read-filter"
+        ] = f"PhasedReadFilter,phased_vcf={kwargs['phased_ext']},phase_select={phase}"
+        cmd = cmds.cmd_algo_dnascope(
+            f"{kwargs['model_bundle']}/haploid_model",
+            bed_key="unphased_bed",
+            **kwargs,
+        )
+        cmd = ""
+        commands.append("#PHASE %s" % phase)
+
+        hp_vcf = f"{kwargs['tmp_base']}/out_hap{phase}_tmp.vcf.gz"
+        hp_std_vcf = f"{kwargs['tmp_base']}/out_hap{phase}_nohp_tmp.vcf.gz"
+
+        cmd += " " + cmds.cmd_dnascope_hp(
+            f"{kwargs['model_bundle']}/haploid_hp_model",
+            kwargs["repeat_model"],
+            hp_vcf,
+            hp_std_vcf,
+            kwargs,
+        )
+        commands.append(cmd)
 
     return "\n".join(commands)
 
