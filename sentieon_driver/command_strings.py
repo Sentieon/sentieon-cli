@@ -24,7 +24,7 @@ def cmd_variant_phaser(kwargs):
         --out_ext /tmp/1329402/out_diploid_phased.ext.vcf.gz
         /tmp/1329402/out_diploid_phased.vcf.gz
     """
-    cmd = _cmd_sentieon_driver(bed_key=None, skip_sample_input=False, **kwargs)
+    cmd = cmd_sentieon_driver(bed_key=None, skip_sample_input=False, **kwargs)
     kwargs["phased_bed"] = f"{kwargs['tmp_base']}/out_diploid_phased.bed"
     kwargs["unphased_bed"] = f"{kwargs['tmp_base']}/out_diploid_unphased.bed"
     kwargs["phased_vcf"] = f"{kwargs['tmp_base']}/out_diploid_phased.vcf.gz"
@@ -63,7 +63,7 @@ def cmd_repeat_model(kwargs) -> str:
     """
     Runs --algo RepeatModel
     """
-    cmd = _cmd_sentieon_driver(
+    cmd = cmd_sentieon_driver(
         bed_key="phased_bed", skip_sample_input=False, **kwargs
     )
     kwargs["repeat_model"] = f"{kwargs['tmp_base']}/out_repeat.model"
@@ -84,7 +84,7 @@ def cmd_model_apply(
      sentieon driver -t "$_arg_threads" -r "$_arg_reference_fasta" \
         --algo DNAModelApply --model "$model" -v "$input_vcf" "$output_vcf"
     """
-    cmd = _cmd_sentieon_driver(bed_key=None, skip_sample_input=True, **kwargs)
+    cmd = cmd_sentieon_driver(bed_key=None, skip_sample_input=True, **kwargs)
     cmd += f"--algo DNAModelApply --model {model} -v {inp_vcf} {out_vcf}"
     return cmd
 
@@ -96,19 +96,31 @@ def name(path: typing.Union[str, io.TextIOWrapper]) -> str:
     return path
 
 
-def _cmd_sentieon_driver(
+def cmd_sentieon_driver(
     bed_key: typing.Optional[str] = None,
     skip_sample_input: bool = False,
     **kwargs,
 ) -> str:
     """
     Common base for running sentieon driver.
-    This is only called along with other commands.
+    This is usually called along with other commands.
     NOTE: sometimes we need to run without bed file in later command
     whereas an earlier command might have a bed file.
     Same for read-filter.
+
+    >>> d = {"regions": "phased.bed", "reference": "ref.fasta",
+    ...      "sample_input": "sample.bam", "cores": 4}
+    >>> cmd_sentieon_driver(bed_key="regions", skip_sample_input=False, **d)
+    'sentieon driver -t 4 -r ref.fasta  --interval phased.bed -i sample.bam'
+    >>> cmd_sentieon_driver(bed_key="regions", skip_sample_input=True, **d)
+    'sentieon driver -t 4 -r ref.fasta  --interval phased.bed'
+
+    >>> d['read-filter'] = 'PhasedReadFilter,phased_vcf=p.vcf.gz'
+    >>> cmd_sentieon_driver(bed_key="regions", skip_sample_input=True, **d)
+    'sentieon driver -t 4 -r ref.fasta  --interval phased.bed --read_filter \
+PhasedReadFilter,phased_vcf=p.vcf.gz'
+
     """
-    logger.debug(kwargs)
     if bed_key is not None:
         bed = f" --interval {name(kwargs[bed_key])}"
     else:
@@ -121,9 +133,9 @@ def _cmd_sentieon_driver(
     cmd = (
         f"sentieon driver -t {kwargs['cores']} -r {name(kwargs['reference'])} "
     )
-    cmd += f"{bed} "
+    cmd += f"{bed}"
     if not skip_sample_input:
-        cmd += f"-i {name(kwargs['sample_input'])}"
+        cmd += f" -i {name(kwargs['sample_input'])}"
     cmd += f"{read_filter}"
     return cmd
 
@@ -155,6 +167,26 @@ def cmd_pyexec_vcf_mod_patch(
     return cmd
 
 
+def cmd_pyexec_vcf_mod_merge(
+    hap1_vcf: str,
+    hap2_vcf: str,
+    unphased_vcf: str,
+    phased_vcf: str,
+    phased_bed: str,
+    out_vcf: str,
+    kwargs: dict,
+) -> str:
+    """Merge haploid VCF files"""
+
+    cmd = f"sentieon pyexec {kwargs['vcf_mod_py']} -t {kwargs['cores']} "
+    cmd += (
+        f"merge --hap1 {hap1_vcf} --hap2 {hap2_vcf} --unphased {unphased_vcf} "
+    )
+    cmd += f"--phased {phased_vcf} --bed {phased_bed} {out_vcf}"
+
+    return cmd
+
+
 def cmd_algo_dnascope(
     model: str,
     bed_key: typing.Optional[str] = None,
@@ -178,7 +210,7 @@ def cmd_algo_dnascope(
     else:
         dbsnp = ""
     cmd = f"{gvcf}--algo DNAscope {dbsnp} --model {model} {diploid_tmp_out}"
-    return _cmd_sentieon_driver(bed_key, **kwargs) + cmd
+    return cmd_sentieon_driver(bed_key, **kwargs) + cmd
 
 
 def cmd_dnascope_hp(
@@ -192,11 +224,18 @@ def cmd_dnascope_hp(
     DNAscopeHP sub-command.
     This only adds to an existing command, it does not prefix with the sention
       driver.
+
+    >>> d = {"dbsnp": "dbsnp.vcf.gz"}
+    >>> cmd_dnascope_hp("haploid_hp_model", "repeat_model", "hp.vcf.gz",
+    ...                 "hp_std.vcf.gz", d)
+    '--algo DNAscopeHP  --dbsnp dbsnp.vcf.gz  --model haploid_hp_model \
+--pcr_indel_model repeat_model --min_repeat_count 6 hp.vcf.gz'
+
     """
     cmd = "--algo DNAscopeHP "
     if kwargs.get("dbsnp"):
         cmd += f" --dbsnp {name(kwargs['dbsnp'])} "
-    cmd += f" --model {model} "
+    cmd += f" --model {model}"
     cmd += f" --pcr_indel_model {repeat_model} --min_repeat_count 6 "
     cmd += hp_vcf
 

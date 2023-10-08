@@ -6,7 +6,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12.0-rc.3"]
+        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12"]
         poetry-version: ["1.5.1"]
         os: [ubuntu-22.04] #, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
@@ -26,9 +26,11 @@ jobs:
       - name: Run mypy
         run: poetry run mypy . 
       - name: Run flake8
-        run: poetry run flake8 . 
+        run: poetry run flake8 . --ignore E231,E221 # false+ from python 3.12
       - name: Run the automated tests (for example)
         run: poetry run pytest -v
+      - name: Run doct tests
+        run: poetry run pytest --doctest-modules
 
       - name: Run bash tests
         run: poetry run bash tests/cli-test.sh

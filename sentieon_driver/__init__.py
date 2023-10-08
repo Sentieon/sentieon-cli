@@ -135,7 +135,8 @@ def run_full_dnascope(**kwargs):
     for phase in (1, 2):
         kwargs[
             "read-filter"
-        ] = f"PhasedReadFilter,phased_vcf={kwargs['phased_ext']},phase_select={phase}"
+        ] = f"PhasedReadFilter,phased_vcf={kwargs['phased_ext']}"
+        kwargs["read-filter"] += ",phase_select={phase}"
         cmd = cmds.cmd_algo_dnascope(
             f"{kwargs['model_bundle']}/haploid_model",
             bed_key="unphased_bed",
@@ -181,7 +182,7 @@ def run_full_dnascope(**kwargs):
 
     # call variants on unphased regions
     # https://github.com/Sentieon/sentieon-scripts/blob/master/dnascope_LongRead/dnascope_HiFi.sh#L409
-    cmd = cmds._cmd_sentieon_driver(
+    cmd = cmds.cmd_sentieon_driver(
         bed_key="unphased_bed",
         **kwargs,
     )
@@ -213,6 +214,18 @@ def run_full_dnascope(**kwargs):
 
     # merge calls to create the output
     # https://github.com/Sentieon/sentieon-scripts/blob/master/dnascope_LongRead/dnascope_HiFi.sh#L421
+
+    commands.append(
+        cmds.cmd_pyexec_vcf_mod_merge(
+            f"{kwargs['tmp_base']}/out_hap1.vcf.gz",
+            f"{kwargs['tmp_base']}/out_hap2.vcf.gz",
+            f"{kwargs['tmp_base']}/out_diploid_unphased.vcf.gz",
+            f"{kwargs['tmp_base']}/out_diploid_phased.vcf.gz",
+            f"{kwargs['tmp_base']}/out_diploid_phased.bed",
+            cmds.name(kwargs["output-vcf"]),
+            kwargs,
+        )
+    )
 
     return "\n".join(commands)
 
