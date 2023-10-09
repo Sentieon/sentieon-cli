@@ -189,15 +189,15 @@ def cmd_pyexec_vcf_mod_merge(
 
 def cmd_algo_dnascope(
     model: str,
+    out_vcf: str,
+    kwargs: dict,
     bed_key: typing.Optional[str] = None,
     gvcf: typing.Optional[str] = None,
-    **kwargs,
 ) -> str:
     """
     DNAscope sub-command DNAscopeHP is added in another command if applicable.
     """
     # TODO: this is used elsewhere, should create once and pass.
-    diploid_tmp_out = f"{kwargs['tmp_base']}/out_diploid_tmp.vcf.gz"
     # https://github.com/Sentieon/sentieon-scripts/blob/8d33f29e442d5a1e782445f06bc1f11e278d8f87/dnascope_LongRead/dnascope_HiFi.sh#L355-L359
     if gvcf:
         diploid_gvcf = f"{kwargs['tmp_base']}/out_diploid.g.vcf.gz"
@@ -209,34 +209,36 @@ def cmd_algo_dnascope(
         dbsnp = f" --dbsnp {kwargs['dbsnp'].name} "
     else:
         dbsnp = ""
-    cmd = f"{gvcf}--algo DNAscope {dbsnp} --model {model} {diploid_tmp_out}"
+    cmd = f" {gvcf}--algo DNAscope {dbsnp} --model {model} {out_vcf}"
     return cmd_sentieon_driver(bed_key, **kwargs) + cmd
 
 
 def cmd_dnascope_hp(
-    model: str,
+    model: typing.Optional[str],
     repeat_model: str,
     hp_vcf: str,
-    hp_std_vcf: str,
     kwargs: dict,
 ) -> str:
     """
     DNAscopeHP sub-command.
-    This only adds to an existing command, it does not prefix with the sention
+    This only adds to an exist command, it does not prefix with the sentieon
       driver.
 
-    >>> d = {"dbsnp": "dbsnp.vcf.gz"}
-    >>> cmd_dnascope_hp("haploid_hp_model", "repeat_model", "hp.vcf.gz",
-    ...                 "hp_std.vcf.gz", d)
-    '--algo DNAscopeHP  --dbsnp dbsnp.vcf.gz  --model haploid_hp_model \
---pcr_indel_model repeat_model --min_repeat_count 6 hp.vcf.gz'
+    For ONT, model should be None
 
+    >>> d = {"dbsnp": "dbsnp.vcf.gz"}
+    >>> cmd_dnascope_hp("haploid_hp_model", "repeat_model", "hp.vcf.gz", d)
+    '--algo DNAscopeHP --dbsnp dbsnp.vcf.gz --model haploid_hp_model \
+--pcr_indel_model repeat_model --min_repeat_count 6 hp.vcf.gz'
+    >>> cmd_dnascope_hp(None, "repeat_model", "hp.vcf.gz", d)
+    '--algo DNAscopeHP --dbsnp dbsnp.vcf.gz --pcr_indel_model repeat_model --min_repeat_count 6 hp.vcf.gz'
     """
     cmd = "--algo DNAscopeHP "
     if kwargs.get("dbsnp"):
-        cmd += f" --dbsnp {name(kwargs['dbsnp'])} "
-    cmd += f" --model {model}"
-    cmd += f" --pcr_indel_model {repeat_model} --min_repeat_count 6 "
+        cmd += f"--dbsnp {name(kwargs['dbsnp'])} "
+    if model is not None:
+        cmd += f"--model {model} "
+    cmd += f"--pcr_indel_model {repeat_model} --min_repeat_count 6 "
     cmd += hp_vcf
 
     return cmd

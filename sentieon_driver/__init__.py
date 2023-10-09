@@ -35,11 +35,6 @@ def check_version(cmd: str, version: str):
     assert cmd_version
 
 
-def cmd_algo_variantphaser():
-    # https://github.com/Sentieon/sentieon-scripts/blob/8d33f29e442d5a1e782445f06bc1f11e278d8f87/dnascope_LongRead/dnascope_HiFi.sh#L364-L367
-    pass
-
-
 def common(fn):
     fn = arg("path", help="some path")(fn)
     fn = arg(
@@ -108,9 +103,10 @@ def run_full_dnascope(**kwargs):
     gvcf = kwargs.pop("gvcf")
     kwargs["tmp_base"], kwargs["tmp_dir"] = tmp()
     model = f"{kwargs['model_bundle']}/gvcf_model"
-    commands = [cmds.cmd_algo_dnascope(model, gvcf=gvcf, **kwargs)]
+    out_vcf = f"{kwargs['tmp_base']}/out_diploid.vcf.tmp.gz"
+    commands = [cmds.cmd_algo_dnascope(model, out_vcf, kwargs, gvcf=gvcf)]
 
-    inp_vcf = f"{kwargs['tmp_base']}/out_diploid_tmp.vcf.gz"
+    inp_vcf = out_vcf
     out_vcf = f"{kwargs['tmp_base']}/out_diploid.vcf.gz"
     commands.append(
         cmds.cmd_model_apply(
@@ -136,24 +132,25 @@ def run_full_dnascope(**kwargs):
         kwargs[
             "read-filter"
         ] = f"PhasedReadFilter,phased_vcf={kwargs['phased_ext']}"
-        kwargs["read-filter"] += ",phase_select={phase}"
+        kwargs["read-filter"] += f",phase_select={phase}"
+        hp_std_vcf = f"{kwargs['tmp_base']}/out_hap{phase}_nohp_tmp.vcf.gz"
         cmd = cmds.cmd_algo_dnascope(
             f"{kwargs['model_bundle']}/haploid_model",
+            hp_std_vcf,
+            kwargs,
             bed_key="unphased_bed",
             gvcf=None,
-            **kwargs,
         )
         kwargs.pop("read-filter")
         commands.append("#PHASE %s" % phase)
 
         hp_vcf = f"{kwargs['tmp_base']}/out_hap{phase}_tmp.vcf.gz"
-        hp_std_vcf = f"{kwargs['tmp_base']}/out_hap{phase}_nohp_tmp.vcf.gz"
+        # TODO: hp_std_vcf goes to above command.
 
         cmd += " " + cmds.cmd_dnascope_hp(
             f"{kwargs['model_bundle']}/haploid_hp_model",
             kwargs["repeat_model"],
             hp_vcf,
-            hp_std_vcf,
             kwargs,
         )
         commands.append(cmd)
@@ -184,13 +181,14 @@ def run_full_dnascope(**kwargs):
     # https://github.com/Sentieon/sentieon-scripts/blob/master/dnascope_LongRead/dnascope_HiFi.sh#L409
     cmd = cmds.cmd_sentieon_driver(
         bed_key="unphased_bed",
+        skip_sample_input=False,
         **kwargs,
     )
     cmd += " " + cmds.cmd_dnascope_hp(
         f"{kwargs['model_bundle']}/diploid_hp_model",
         kwargs["repeat_model"],
+        # f"{kwargs['tmp_base']}/out_diploid_unphased.bed",
         f"{kwargs['tmp_base']}/out_diploid_phased_unphased_hp.vcf.gz",
-        f"{kwargs['tmp_base']}/out_diploid_unphased.bed",
         kwargs,
     )
 
