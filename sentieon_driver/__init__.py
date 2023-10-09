@@ -127,6 +127,14 @@ def run_full_dnascope(**kwargs):
 
     # TODO: bcftools view
     # https://github.com/Sentieon/sentieon-scripts/blob/master/dnascope_LongRead/dnascope_HiFi.sh#L384
+    phased_unphased = (
+        f"{kwargs['tmp_base']}/out_diploid_phased_unphased.vcf.gz"
+    )
+    phased_vcf = f"{kwargs['tmp_base']}/out_diploid_phased.vcf.gz"
+    commands.append(
+        f"bcftools view -T {kwargs['unphased_bed']} {phased_vcf} \
+        | sentieon util vcfconvert - {phased_unphased}"
+    )
 
     for phase in (1, 2):
         kwargs[
@@ -218,7 +226,7 @@ def run_full_dnascope(**kwargs):
             f"{kwargs['tmp_base']}/out_hap1.vcf.gz",
             f"{kwargs['tmp_base']}/out_hap2.vcf.gz",
             f"{kwargs['tmp_base']}/out_diploid_unphased.vcf.gz",
-            f"{kwargs['tmp_base']}/out_diploid_phased.vcf.gz",
+            phased_vcf,
             f"{kwargs['tmp_base']}/out_diploid_phased.bed",
             cmds.name(kwargs["output-vcf"]),
             kwargs,

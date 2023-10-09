@@ -67,7 +67,7 @@ def cmd_repeat_model(kwargs) -> str:
         bed_key="phased_bed", skip_sample_input=False, **kwargs
     )
     kwargs["repeat_model"] = f"{kwargs['tmp_base']}/out_repeat.model"
-    cmd += f"--read_filter PhasedReadFilter,phased_vcf={kwargs['phased_ext']}"
+    cmd += f" --read_filter PhasedReadFilter,phased_vcf={kwargs['phased_ext']}"
     cmd += ",phase_select=tag "
     cmd += "--algo RepeatModel --phased --min_map_qual 1 "
     cmd += "--min_group_count 10000 "
@@ -231,7 +231,8 @@ def cmd_dnascope_hp(
     '--algo DNAscopeHP --dbsnp dbsnp.vcf.gz --model haploid_hp_model \
 --pcr_indel_model repeat_model --min_repeat_count 6 hp.vcf.gz'
     >>> cmd_dnascope_hp(None, "repeat_model", "hp.vcf.gz", d)
-    '--algo DNAscopeHP --dbsnp dbsnp.vcf.gz --pcr_indel_model repeat_model --min_repeat_count 6 hp.vcf.gz'
+    '--algo DNAscopeHP --dbsnp dbsnp.vcf.gz --pcr_indel_model repeat_model \
+--min_repeat_count 6 hp.vcf.gz'
     """
     cmd = "--algo DNAscopeHP "
     if kwargs.get("dbsnp"):
