@@ -22,7 +22,7 @@ jobs:
       - name: Install the project dependencies
         run: poetry install
       - name: Run black formatter
-        run: poetry run black --line-length 79 sentieon_driver 
+        run: poetry run black --line-length 79 sentieon_cli 
       - name: Run mypy
         run: poetry run mypy . 
       - name: Run flake8

@@ -97,7 +97,7 @@ def other(**kwargs):
 )
 def run_full_dnascope(**kwargs):
     """
-    Run sentieon driver with the algo DNAscope command.
+    Run sentieon cli with the algo DNAscope command.
     """
     logger.info(kwargs)
     gvcf = kwargs.pop("gvcf")

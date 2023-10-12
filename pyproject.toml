@@ -1,7 +1,7 @@
 
 #https://stackoverflow.com/questions/75408641/whats-difference-between-tool-poetry-and-project-in-pyproject-toml
 [tool.poetry]
-name = "sentieon_driver"
+name = "sentieon_cli"
 version = "0.1.0"
 description = "entry point for sentieon command-line tools"
 authors = ["Who <who@sentieon.com>"]
@@ -21,7 +21,7 @@ argh = "^0.29.4"
 colorlog = "^6.7.0"
 
 [tool.poetry.scripts]
-sentieon_do = "sentieon_driver:main"
+sentieon-cli = "sentieon_cli:main"
 
 [tool.mypy]
 ignore_missing_imports = true
