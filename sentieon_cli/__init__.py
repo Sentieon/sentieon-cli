@@ -35,19 +35,6 @@ def check_version(cmd: str, version: str):
     assert cmd_version
 
 
-def common(fn):
-    fn = arg("path", help="some path")(fn)
-    fn = arg(
-        "--extra", help="extra integer arguments: %(default)s", default=0
-    )(fn)
-    return fn
-
-
-@common
-def other(**kwargs):
-    print("OTHER")
-
-
 @arg(
     "-r",
     "--reference",
@@ -100,8 +87,10 @@ def run_full_dnascope(**kwargs):
     Run sentieon cli with the algo DNAscope command.
     """
     logger.info(kwargs)
-    gvcf = kwargs.pop("gvcf")
     kwargs["tmp_base"], kwargs["tmp_dir"] = tmp()
+    gvcf = kwargs.pop("gvcf")
+    if gvcf is not None:
+        gvcf = f"{kwargs['tmp_base']}/out_diploid.g.vcf.gz"
     model = f"{kwargs['model_bundle']}/diploid_model"
     out_vcf = f"{kwargs['tmp_base']}/out_diploid.vcf.tmp.gz"
     commands = [
@@ -169,7 +158,9 @@ def run_full_dnascope(**kwargs):
         )
         commands.append(cmd)
 
+    # TODO: set these properly.
     kwargs["vcf_mod_py"] = "vcf_mod.py"
+    kwargs["gvcf_combine_py"] = "gvcf_combine.py"
     commands.append(
         cmds.cmd_pyexec_vcf_mod_haploid_patch(
             f"{kwargs['tmp_base']}/out_hap1_patch.vcf.gz",
@@ -239,6 +230,15 @@ def run_full_dnascope(**kwargs):
         )
     )
 
+    if gvcf:
+        commands.append(
+            cmds.cmd_pyexec_gvcf_combine(
+                gvcf,
+                cmds.name(kwargs["output-vcf"]),
+                kwargs,
+            )
+        )
+
     return "\n".join(commands)
 
 
@@ -246,7 +246,7 @@ def main():
     """main entry point for this project"""
     logger.setLevel(os.environ.get("LOGLEVEL", "DEBUG").upper())
     logger.info("Starting sentieon_driver version: %s", __version__)
-    argh.dispatch_commands([run_full_dnascope, other])
+    argh.dispatch_commands([run_full_dnascope])
 
 
 if __name__ == "__main__":

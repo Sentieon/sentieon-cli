@@ -166,6 +166,17 @@ def cmd_pyexec_vcf_mod_patch(
     return cmd
 
 
+def cmd_pyexec_gvcf_combine(gvcf: str, out_vcf: str, kwargs: dict) -> str:
+    """Combine gVCF files"""
+
+    cmd = f"sentieon pyexec {kwargs['gvcf_combine_py']} -t {kwargs['cores']} "
+    cmd += f"{gvcf} {out_vcf} -"
+    cmd += " | sentieon util vcfconvert - " + out_vcf.replace(
+        ".vcf.gz", ".g.vcf.gz"
+    )
+    return cmd
+
+
 def cmd_pyexec_vcf_mod_merge(
     hap1_vcf: str,
     hap2_vcf: str,
@@ -199,16 +210,17 @@ def cmd_algo_dnascope(
     # TODO: this is used elsewhere, should create once and pass.
     # https://github.com/Sentieon/sentieon-scripts/blob/8d33f29e442d5a1e782445f06bc1f11e278d8f87/dnascope_LongRead/dnascope_HiFi.sh#L355-L359
     if gvcf:
-        diploid_gvcf = f"{kwargs['tmp_base']}/out_diploid.g.vcf.gz"
-        gvcf = f" --algo DNAscope --model {kwargs['model_bundle']}/gvcf_model"
-        gvcf += f" --emit_mode gvcf {diploid_gvcf} "
+        gvcf_str = (
+            f" --algo DNAscope --model {kwargs['model_bundle']}/gvcf_model"
+        )
+        gvcf_str += f" --emit_mode gvcf {gvcf} "
     else:
-        gvcf = ""
+        gvcf_str = ""
     if kwargs.get("dbsnp"):
         dbsnp = f" --dbsnp {kwargs['dbsnp'].name} "
     else:
         dbsnp = ""
-    cmd = f" {gvcf}--algo DNAscope {dbsnp} --model {model} {out_vcf}"
+    cmd = f" {gvcf_str}--algo DNAscope {dbsnp} --model {model} {out_vcf}"
     return cmd_sentieon_driver(bed_key, **kwargs) + cmd
 
 
