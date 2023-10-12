@@ -29,10 +29,10 @@ def cmd_variant_phaser(
     """
     cmd = cmd_sentieon_driver(bed_key=None, skip_sample_input=False, **kwargs)
 
-    cmd += f"--algo VariantPhaser -v {vcf} "
+    cmd += f" --algo VariantPhaser -v {vcf} "
     cmd += f"--max_depth {kwargs.get('phase_max_depth', 1000)} "
     cmd += f"--out_bed {phased_bed} "
-    cmd += f"--out_ext {phased_ext}"
+    cmd += f"--out_ext {phased_ext} "
     cmd += f"{phased_vcf} "
     return cmd
 
@@ -48,7 +48,9 @@ def cmd_bedtools_subtract(
         with open(
             f"{kwargs['tmp_base']}_reference.bed", "wt", encoding="utf-8"
         ) as f:
-            for line in open(kwargs["reference"] + ".fai", encoding="utf-8"):
+            for line in open(
+                name(kwargs["reference"]) + ".fai", encoding="utf-8"
+            ):
                 toks = line.strip().split("\t")
                 f.write(f"{toks[0]}\t0\t{toks[1]}\n")
             regions_bed = f.name
@@ -120,7 +122,7 @@ def cmd_sentieon_driver(
 PhasedReadFilter,phased_vcf=p.vcf.gz'
 
     """
-    if bed_key is not None:
+    if bed_key is not None and kwargs.get(bed_key) is not None:
         bed = f" --interval {name(kwargs[bed_key])}"
     else:
         bed = ""
@@ -149,8 +151,8 @@ def cmd_pyexec_vcf_mod_haploid_patch(
     cmd = f"sentieon pyexec {kwargs['vcf_mod_py']} -t {kwargs['cores']} "
     cmd += "haploid_patch "
     cmd += f"--patch1 {hap1_patch}  --patch2 {hap2_patch}"
-    cmd += " --hap1 " + hap_patt % (1, "no_hp_")
-    cmd += " --hap2 " + hap_patt % (2, "no_hp_")
+    cmd += " --hap1 " + hap_patt % (1, "nohp_")
+    cmd += " --hap2 " + hap_patt % (2, "nohp_")
     cmd += " --hap1_hp " + hap_patt % (1, "")
     cmd += " --hap2_hp " + hap_patt % (2, "")
     return cmd

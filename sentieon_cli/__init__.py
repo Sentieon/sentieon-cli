@@ -122,7 +122,9 @@ def run_full_dnascope(**kwargs):
     )
 
     commands.append(
-        cmds.cmd_bedtools_subtract(kwargs.get("bed"), phased_bed, unphased_bed)
+        cmds.cmd_bedtools_subtract(
+            kwargs.get("bed"), phased_bed, unphased_bed, **kwargs
+        )
     )
 
     commands.append(cmds.cmd_repeat_model(phased_bed, phased_ext, kwargs))
@@ -148,7 +150,6 @@ def run_full_dnascope(**kwargs):
         commands.append("#PHASE %s" % phase)
 
         hp_vcf = f"{kwargs['tmp_base']}/out_hap{phase}_tmp.vcf.gz"
-        # TODO: hp_std_vcf goes to above command.
 
         cmd += " " + cmds.cmd_dnascope_hp(
             f"{kwargs['model_bundle']}/haploid_hp_model",
@@ -159,8 +160,12 @@ def run_full_dnascope(**kwargs):
         commands.append(cmd)
 
     # TODO: set these properly.
-    kwargs["vcf_mod_py"] = "vcf_mod.py"
-    kwargs["gvcf_combine_py"] = "gvcf_combine.py"
+    kwargs["vcf_mod_py"] = os.path.join(
+        os.path.dirname(__file__), "vcf_mod.py"
+    )
+    kwargs["gvcf_combine_py"] = os.path.join(
+        os.path.dirname(__file__), "gvcf_combine.py"
+    )
     commands.append(
         cmds.cmd_pyexec_vcf_mod_haploid_patch(
             f"{kwargs['tmp_base']}/out_hap1_patch.vcf.gz",
