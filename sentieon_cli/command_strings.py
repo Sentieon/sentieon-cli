@@ -1,9 +1,10 @@
 """
-This module contains the functions that accept **kwargs and return the
+This module contains the functions that accept kwargs and return the
 command strings.
 
 We expect that the kwargs are created from user-input (to argh) or a config
-file.
+file. Where appropriate, we use named args, but for flexibility, kwargs are
+also used.
 
 Command strings may be partial--that is, they could be mixed with other
 command strings to get a full viable command.
@@ -16,26 +17,23 @@ from .logging import get_logger
 logger = get_logger(__name__)
 
 
-def cmd_variant_phaser(kwargs):
+def cmd_variant_phaser(
+    vcf: str,
+    phased_bed: str,
+    phased_vcf: str,
+    phased_ext: str,
+    kwargs: dict,
+) -> str:
     """
-    sentieon driver -t 4 -r reference.fasta -i sample.input
-        --algo VariantPhaser -v /tmp/1329402/out_diploid.vcf.gz
-        --max_depth 1000 --out_bed /tmp/1329402/out_diploid_phased.bed
-        --out_ext /tmp/1329402/out_diploid_phased.ext.vcf.gz
-        /tmp/1329402/out_diploid_phased.vcf.gz
+    Cmd for --algo VariantPhaser
     """
     cmd = cmd_sentieon_driver(bed_key=None, skip_sample_input=False, **kwargs)
-    kwargs["phased_bed"] = f"{kwargs['tmp_base']}/out_diploid_phased.bed"
-    kwargs["unphased_bed"] = f"{kwargs['tmp_base']}/out_diploid_unphased.bed"
-    kwargs["phased_vcf"] = f"{kwargs['tmp_base']}/out_diploid_phased.vcf.gz"
-    kwargs[
-        "phased_ext"
-    ] = f"{kwargs['tmp_base']}/out_diploid_phased.ext.vcf.gz"
-    cmd += f"--algo VariantPhaser -v {kwargs['inp_vcf']} "
+
+    cmd += f"--algo VariantPhaser -v {vcf} "
     cmd += f"--max_depth {kwargs.get('phase_max_depth', 1000)} "
-    cmd += f"--out_bed {kwargs['phased_bed']} "
-    cmd += f"--out_ext {kwargs['tmp_base']}/out_diploid_phased.ext.vcf.gz "
-    cmd += f"{kwargs['phased_vcf']} "
+    cmd += f"--out_bed {phased_bed} "
+    cmd += f"--out_ext {phased_ext}"
+    cmd += f"{phased_vcf} "
     return cmd
 
 
@@ -59,15 +57,16 @@ def cmd_bedtools_subtract(
     return cmd
 
 
-def cmd_repeat_model(kwargs) -> str:
+def cmd_repeat_model(phased_bed: str, phased_ext: str, kwargs) -> str:
     """
     Runs --algo RepeatModel
     """
+    kwargs["phased_bed"] = phased_bed
     cmd = cmd_sentieon_driver(
         bed_key="phased_bed", skip_sample_input=False, **kwargs
     )
     kwargs["repeat_model"] = f"{kwargs['tmp_base']}/out_repeat.model"
-    cmd += f" --read_filter PhasedReadFilter,phased_vcf={kwargs['phased_ext']}"
+    cmd += f" --read_filter PhasedReadFilter,phased_vcf={phased_ext}"
     cmd += ",phase_select=tag "
     cmd += "--algo RepeatModel --phased --min_map_qual 1 "
     cmd += "--min_group_count 10000 "

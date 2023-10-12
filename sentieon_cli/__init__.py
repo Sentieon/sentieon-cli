@@ -102,9 +102,13 @@ def run_full_dnascope(**kwargs):
     logger.info(kwargs)
     gvcf = kwargs.pop("gvcf")
     kwargs["tmp_base"], kwargs["tmp_dir"] = tmp()
-    model = f"{kwargs['model_bundle']}/gvcf_model"
+    model = f"{kwargs['model_bundle']}/diploid_model"
     out_vcf = f"{kwargs['tmp_base']}/out_diploid.vcf.tmp.gz"
-    commands = [cmds.cmd_algo_dnascope(model, out_vcf, kwargs, gvcf=gvcf)]
+    commands = [
+        cmds.cmd_algo_dnascope(
+            model, out_vcf, kwargs, bed_key="bed", gvcf=gvcf
+        )
+    ]
 
     inp_vcf = out_vcf
     out_vcf = f"{kwargs['tmp_base']}/out_diploid.vcf.gz"
@@ -114,39 +118,41 @@ def run_full_dnascope(**kwargs):
         )
     )
 
-    kwargs["inp_vcf"] = out_vcf
-    commands.append(cmds.cmd_variant_phaser(kwargs))
-
-    commands.append(
-        cmds.cmd_bedtools_subtract(
-            kwargs.get("bed"), kwargs["phased_bed"], kwargs["unphased_bed"]
-        )
-    )
-
-    commands.append(cmds.cmd_repeat_model(kwargs))
-
-    # TODO: bcftools view
-    # https://github.com/Sentieon/sentieon-scripts/blob/master/dnascope_LongRead/dnascope_HiFi.sh#L384
+    phased_bed = f"{kwargs['tmp_base']}/out_diploid_phased.bed"
+    unphased_bed = f"{kwargs['tmp_base']}/out_diploid_unphased.bed"
+    phased_vcf = f"{kwargs['tmp_base']}/out_diploid_phased.vcf.gz"
+    phased_ext = f"{kwargs['tmp_base']}/out_diploid_phased.ext.vcf.gz"
     phased_unphased = (
         f"{kwargs['tmp_base']}/out_diploid_phased_unphased.vcf.gz"
     )
-    phased_vcf = f"{kwargs['tmp_base']}/out_diploid_phased.vcf.gz"
+
     commands.append(
-        f"bcftools view -T {kwargs['unphased_bed']} {phased_vcf} \
+        cmds.cmd_variant_phaser(
+            out_vcf, phased_bed, phased_vcf, phased_ext, kwargs
+        )
+    )
+
+    commands.append(
+        cmds.cmd_bedtools_subtract(kwargs.get("bed"), phased_bed, unphased_bed)
+    )
+
+    commands.append(cmds.cmd_repeat_model(phased_bed, phased_ext, kwargs))
+    commands.append(
+        f"bcftools view -T {unphased_bed} {phased_vcf} \
         | sentieon util vcfconvert - {phased_unphased}"
     )
 
+    kwargs["phased_bed"] = phased_bed
+    kwargs["unphased_bed"] = unphased_bed
     for phase in (1, 2):
-        kwargs[
-            "read-filter"
-        ] = f"PhasedReadFilter,phased_vcf={kwargs['phased_ext']}"
+        kwargs["read-filter"] = f"PhasedReadFilter,phased_vcf={phased_ext}"
         kwargs["read-filter"] += f",phase_select={phase}"
         hp_std_vcf = f"{kwargs['tmp_base']}/out_hap{phase}_nohp_tmp.vcf.gz"
         cmd = cmds.cmd_algo_dnascope(
             f"{kwargs['model_bundle']}/haploid_model",
             hp_std_vcf,
             kwargs,
-            bed_key="unphased_bed",
+            bed_key="phased_bed",
             gvcf=None,
         )
         kwargs.pop("read-filter")
@@ -205,8 +211,8 @@ def run_full_dnascope(**kwargs):
     # Patch DNA and DNAHP variants
     cmd = cmds.cmd_pyexec_vcf_mod_patch(
         f"{kwargs['tmp_base']}/out_diploid_unphased_patch.vcf.gz",
-        f"{kwargs['tmp_base']}/out_diploid_phased_unphased_hp.vcf.gz",
         f"{kwargs['tmp_base']}/out_diploid_phased_unphased.vcf.gz",
+        f"{kwargs['tmp_base']}/out_diploid_phased_unphased_hp.vcf.gz",
         kwargs,
     )
     commands.append(cmd)
