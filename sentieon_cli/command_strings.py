@@ -153,10 +153,10 @@ def cmd_pyexec_vcf_mod_haploid_patch(
     merge dnascope and dnascope-hp variants
 
     >>> assert '--hap1 ' in cmd_pyexec_vcf_mod_haploid_patch("h1.vcf.gz",
-    ... "h2.vcf.gz", "out_hap%d_%stmp.vcf.gz", "HiFi", {'cores': 2,
+    ... "h2.vcf.gz", "out_hap%d_%stmp.vcf.gz", "HiFi", None, {'cores': 2,
     ... 'vcf_mod_py': 'vcf_mod.py'})
     >>> assert not "--hap1 " in cmd_pyexec_vcf_mod_haploid_patch("h1.vcf.gz",
-    ... "h2.vcf.gz", "out_hap%d_%stmp.vcf.gz", "ONT", {'cores': 2,
+    ... "h2.vcf.gz", "out_hap%d_%stmp.vcf.gz", "ONT", "ph.vcf", {'cores': 2,
     ... 'vcf_mod_py': 'vcf_mod.py'})
 
     """

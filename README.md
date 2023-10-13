@@ -4,7 +4,7 @@
 
 
 ## Setup
-At present, manually add vcf_mod.py and gvcf_combine.py from the [sentieon-scripts repo](
+At present, manually add vcf_mod.py and gvcf_combine.py from the [sentieon-scripts repo](https://github.com/Sentieon/sentieon-scripts/)
 
 ```
 wget -O sentieon_cli/gvcf_combine.py https://github.com/Sentieon/sentieon-scripts/raw/master/dnascope_LongRead/gvcf_combine.py
@@ -17,4 +17,5 @@ pip install poetry
 poetry shell
 poetry install
 sentieon-cli
+sentieon-cli run-full-dnascope -h
 ```

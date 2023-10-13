@@ -125,18 +125,17 @@ def run_full_dnascope(**kwargs):
     )
     phased_phased = f"{kwargs['tmp_base']}/out_diploid_phased_phased.vcf.gz"
 
-    if kwargs["tech"] == "ONT":
-        commands.append(
-            f"bcftools view -T {phased_bed} {phased_vcf} \
-            | sentieon util vcfconvert - {phased_phased}"
-        )
-
     commands.append(
         cmds.cmd_variant_phaser(
             out_vcf, phased_bed, phased_vcf, phased_ext, kwargs
         )
     )
 
+    if kwargs["tech"] == "ONT":
+        commands.append(
+            f"bcftools view -T {phased_bed} {phased_vcf} \
+            | sentieon util vcfconvert - {phased_phased}"
+        )
     commands.append(
         cmds.cmd_bedtools_subtract(
             kwargs.get("bed"), phased_bed, unphased_bed, **kwargs
