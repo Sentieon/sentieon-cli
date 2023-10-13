@@ -19,8 +19,11 @@ logger = get_logger(__name__)
 
 def tmp() -> tuple[str, str]:
     """Create a temporary directory for the current process."""
-    tmp_base = os.getenv("SENTIEON_TMPDIR", os.getenv("TMPDIR", "/tmp"))
-    tmp_base = os.path.join(tmp_base, str(os.getpid()))
+    tmp_base = os.getenv(
+        "SENTIEON_TMPDIR", os.getenv("TMPDIR", "/tmp")
+    ).rstrip("/")
+    if tmp_base != os.getenv("SENTIEON_TMPDIR", "").rstrip("/"):
+        tmp_base = os.path.join(tmp_base, str(os.getpid()))
     tmp_dir = tmp_base
     while os.path.exists(tmp_dir):
         tmp_dir = tmp_base + "_" + str(random.randint(0, 1000000))
@@ -82,6 +85,12 @@ def check_version(cmd: str, version: str):
     default=False,
     action="store_true",
 )
+@arg(
+    "--tech",
+    help="Sequencing technology used to generate the reads.",
+    default="HiFi",
+    choices=["HiFi", "ONT"],
+)
 def run_full_dnascope(**kwargs):
     """
     Run sentieon cli with the algo DNAscope command.
@@ -139,13 +148,21 @@ def run_full_dnascope(**kwargs):
         kwargs["read-filter"] = f"PhasedReadFilter,phased_vcf={phased_ext}"
         kwargs["read-filter"] += f",phase_select={phase}"
         hp_std_vcf = f"{kwargs['tmp_base']}/out_hap{phase}_nohp_tmp.vcf.gz"
-        cmd = cmds.cmd_algo_dnascope(
-            f"{kwargs['model_bundle']}/haploid_model",
-            hp_std_vcf,
-            kwargs,
-            bed_key="phased_bed",
-            gvcf=None,
-        )
+
+        if kwargs["tech"] == "HiFi":
+            cmd = cmds.cmd_algo_dnascope(
+                f"{kwargs['model_bundle']}/haploid_model",
+                hp_std_vcf,
+                kwargs,
+                bed_key="phased_bed",
+                gvcf=None,
+            )
+        else:
+            # ONT doesn't do DNAscope in 2nd pass.
+            cmd = cmds.cmd_sentieon_driver(
+                bed_key="phased_bed",
+                **kwargs,
+            )
         kwargs.pop("read-filter")
         commands.append("#PHASE %s" % phase)
 
@@ -171,6 +188,7 @@ def run_full_dnascope(**kwargs):
             f"{kwargs['tmp_base']}/out_hap1_patch.vcf.gz",
             f"{kwargs['tmp_base']}/out_hap2_patch.vcf.gz",
             f"{kwargs['tmp_base']}/out_hap%d_%stmp.vcf.gz",
+            kwargs["tech"],
             kwargs,
         )
     )
@@ -250,7 +268,7 @@ def run_full_dnascope(**kwargs):
 def main():
     """main entry point for this project"""
     logger.setLevel(os.environ.get("LOGLEVEL", "DEBUG").upper())
-    logger.info("Starting sentieon_driver version: %s", __version__)
+    logger.info("Starting sentieon-cli version: %s", __version__)
     argh.dispatch_commands([run_full_dnascope])
 
 

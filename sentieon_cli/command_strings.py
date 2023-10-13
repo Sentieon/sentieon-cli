@@ -142,17 +142,27 @@ PhasedReadFilter,phased_vcf=p.vcf.gz'
 
 
 def cmd_pyexec_vcf_mod_haploid_patch(
-    hap1_patch: str, hap2_patch: str, hap_patt: str, kwargs: dict
+    hap1_patch: str, hap2_patch: str, hap_patt: str, tech: str, kwargs: dict
 ) -> str:
     """
     merge dnascope and dnascope-hp variants
+
+    >>> assert '--hap1 ' in cmd_pyexec_vcf_mod_haploid_patch("h1.vcf.gz",
+    ... "h2.vcf.gz", "out_hap%d_%stmp.vcf.gz", "HiFi", {'cores': 2,
+    ... 'vcf_mod_py': 'vcf_mod.py'})
+    >>> assert not "--hap1 " in cmd_pyexec_vcf_mod_haploid_patch("h1.vcf.gz",
+    ... "h2.vcf.gz", "out_hap%d_%stmp.vcf.gz", "ONT", {'cores': 2,
+    ... 'vcf_mod_py': 'vcf_mod.py'})
+
     """
+    assert tech in ("HiFi", "ONT")
 
     cmd = f"sentieon pyexec {kwargs['vcf_mod_py']} -t {kwargs['cores']} "
     cmd += "haploid_patch "
-    cmd += f"--patch1 {hap1_patch}  --patch2 {hap2_patch}"
-    cmd += " --hap1 " + hap_patt % (1, "nohp_")
-    cmd += " --hap2 " + hap_patt % (2, "nohp_")
+    cmd += f"--patch1 {hap1_patch} --patch2 {hap2_patch}"
+    if tech == "HiFi":
+        cmd += " --hap1 " + hap_patt % (1, "nohp_")
+        cmd += " --hap2 " + hap_patt % (2, "nohp_")
     cmd += " --hap1_hp " + hap_patt % (1, "")
     cmd += " --hap2_hp " + hap_patt % (2, "")
     return cmd

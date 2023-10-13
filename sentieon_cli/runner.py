@@ -12,5 +12,4 @@ def run(cmd: str):
     logger.debug("running: %s", cmd)
     t0 = time.time()
     sp.run(cmd, shell=True, check=True, stdout=sys.stdout, stderr=sys.stderr)
-    tdiff = f"{time.time() - t0: .1f}"
-    logger.info("finished in: %s", tdiff)
+    logger.debug("finished in: %s", tdiff = f"{time.time() - t0: .1f}")
