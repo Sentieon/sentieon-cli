@@ -123,6 +123,13 @@ def run_full_dnascope(**kwargs):
     phased_unphased = (
         f"{kwargs['tmp_base']}/out_diploid_phased_unphased.vcf.gz"
     )
+    phased_phased = f"{kwargs['tmp_base']}/out_diploid_phased_phased.vcf.gz"
+
+    if kwargs["tech"] == "ONT":
+        commands.append(
+            f"bcftools view -T {phased_bed} {phased_vcf} \
+            | sentieon util vcfconvert - {phased_phased}"
+        )
 
     commands.append(
         cmds.cmd_variant_phaser(
@@ -137,6 +144,7 @@ def run_full_dnascope(**kwargs):
     )
 
     commands.append(cmds.cmd_repeat_model(phased_bed, phased_ext, kwargs))
+    # TODO: difference with ONT here?
     commands.append(
         f"bcftools view -T {unphased_bed} {phased_vcf} \
         | sentieon util vcfconvert - {phased_unphased}"
@@ -189,6 +197,7 @@ def run_full_dnascope(**kwargs):
             f"{kwargs['tmp_base']}/out_hap2_patch.vcf.gz",
             f"{kwargs['tmp_base']}/out_hap%d_%stmp.vcf.gz",
             kwargs["tech"],
+            phased_phased,
             kwargs,
         )
     )
@@ -225,7 +234,7 @@ def run_full_dnascope(**kwargs):
     # Patch DNA and DNAHP variants
     cmd = cmds.cmd_pyexec_vcf_mod_patch(
         f"{kwargs['tmp_base']}/out_diploid_unphased_patch.vcf.gz",
-        f"{kwargs['tmp_base']}/out_diploid_phased_unphased.vcf.gz",
+        phased_unphased,
         f"{kwargs['tmp_base']}/out_diploid_phased_unphased_hp.vcf.gz",
         kwargs,
     )

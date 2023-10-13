@@ -142,7 +142,12 @@ PhasedReadFilter,phased_vcf=p.vcf.gz'
 
 
 def cmd_pyexec_vcf_mod_haploid_patch(
-    hap1_patch: str, hap2_patch: str, hap_patt: str, tech: str, kwargs: dict
+    hap1_patch: str,
+    hap2_patch: str,
+    hap_patt: str,
+    tech: str,
+    phased_vcf: str,
+    kwargs: dict,
 ) -> str:
     """
     merge dnascope and dnascope-hp variants
@@ -163,6 +168,8 @@ def cmd_pyexec_vcf_mod_haploid_patch(
     if tech == "HiFi":
         cmd += " --hap1 " + hap_patt % (1, "nohp_")
         cmd += " --hap2 " + hap_patt % (2, "nohp_")
+    else:
+        cmd += f" --phased {phased_vcf}"
     cmd += " --hap1_hp " + hap_patt % (1, "")
     cmd += " --hap2_hp " + hap_patt % (2, "")
     return cmd
