@@ -4,12 +4,12 @@
 name = "sentieon_cli"
 version = "0.1.0"
 description = "entry point for sentieon command-line tools"
-authors = ["Who <who@sentieon.com>"]
+authors = ["Don Freed <don.freed@sentieon.com>", "Brent <bpederse@gmail.com>"]
 readme = "README.md"
 
 classifiers = [
     "Development Status :: 5 — Production/Stable",
-    "License :: OSI Approved :: MIT License",
+    'License :: OSI Approved :: BSD 2-Clause "Simplified License" (BSD-2-Clause)',
     "Programming Language :: Python :: 3",
 ]
 include = ["LICENSE"]
