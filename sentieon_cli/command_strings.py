@@ -41,12 +41,13 @@ def cmd_bedtools_subtract(
     regions_bed: typing.Optional[typing.Union[str, io.TextIOWrapper]],
     phased_bed: str,
     unphased_bed: str,
+    tmp_dir: str,
     **kwargs,
 ):
     if regions_bed is None:
         # set region to the full genome
         with open(
-            f"{kwargs['tmp_base']}_reference.bed", "wt", encoding="utf-8"
+            f"{tmp_dir}_reference.bed", "wt", encoding="utf-8"
         ) as f:
             for line in open(
                 name(kwargs["reference"]) + ".fai", encoding="utf-8"
@@ -59,7 +60,7 @@ def cmd_bedtools_subtract(
     return cmd
 
 
-def cmd_repeat_model(phased_bed: str, phased_ext: str, kwargs) -> str:
+def cmd_repeat_model(phased_bed: str, phased_ext: str, tmp_dir: str, kwargs) -> str:
     """
     Runs --algo RepeatModel
     """
@@ -67,7 +68,7 @@ def cmd_repeat_model(phased_bed: str, phased_ext: str, kwargs) -> str:
     cmd = cmd_sentieon_driver(
         bed_key="phased_bed", skip_sample_input=False, **kwargs
     )
-    kwargs["repeat_model"] = f"{kwargs['tmp_base']}/out_repeat.model"
+    kwargs["repeat_model"] = f"{tmp_dir}/out_repeat.model"
     cmd += f" --read_filter PhasedReadFilter,phased_vcf={phased_ext}"
     cmd += ",phase_select=tag "
     cmd += "--algo RepeatModel --phased --min_map_qual 1 "
