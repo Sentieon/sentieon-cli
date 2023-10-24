@@ -11,135 +11,215 @@ command strings to get a full viable command.
 
 """
 import io
+import pathlib
 import typing
+from typing import Any, Optional
 from .logging import get_logger
 
 logger = get_logger(__name__)
 
 
-def cmd_variant_phaser(
-    vcf: str,
-    phased_bed: str,
-    phased_vcf: str,
-    phased_ext: str,
-    kwargs: dict,
-) -> str:
-    """
-    Cmd for --algo VariantPhaser
-    """
-    cmd = cmd_sentieon_driver(bed_key=None, skip_sample_input=False, **kwargs)
+class BaseAlgo():
+    """A base class for Sentieon algos"""
+    name = "BaseAlgo"
 
-    cmd += f" --algo VariantPhaser -v {vcf} "
-    cmd += f"--max_depth {kwargs.get('phase_max_depth', 1000)} "
-    cmd += f"--out_bed {phased_bed} "
-    cmd += f"--out_ext {phased_ext} "
-    cmd += f"{phased_vcf} "
-    return cmd
+    def build_cmd(self) -> list[str]:
+        """Build a command line for the algo"""
+        cmd: list[str] = ["--algo", self.name]
+
+        for k, v in self.__dict__.items():
+            if k == "output":
+                continue
+            elif v is None:
+                continue
+            elif isinstance(v, list):
+                for i in v:
+                    cmd.append(f"--{k}")
+                    cmd.append(str(i))
+            elif isinstance(v, bool):
+                if v:
+                    cmd.append(f"--{k}")
+            else:
+                cmd.append(f"--{k}")
+                cmd.append(str(v))
+
+        if "output" in self.__dict__:
+            cmd.append(str(self.__dict__["output"]))
+
+        return cmd
+
+
+class VariantPhaser(BaseAlgo):
+    """algo VariantPhaser"""
+    name = "VariantPhaser"
+
+    def __init__(
+        self,
+        vcf: pathlib.Path,
+        output: pathlib.Path,
+        out_bed: Optional[pathlib.Path] = None,
+        out_ext: Optional[pathlib.Path] = None,
+        max_depth: int = 1000,
+    ):
+        self.vcf = vcf
+        self.output = output
+        self.out_bed = out_bed
+        self.out_ext = out_ext
+        self.max_depth = max_depth
+
+
+class RepeatModel(BaseAlgo):
+    """algo RepeatModel"""
+    name = "RepeatModel"
+
+    def __init__(
+        self,
+        output: pathlib.Path,
+        phased: bool = False,
+        min_map_qual: int = 1,
+        min_group_count: int = 10000,
+        read_flag_mask: Optional[str] = None,
+        repeat_extension: int = 5,
+        max_repeat_unit_size: int = 2,
+        min_repeat_count: int = 6,
+    ):
+        self.output = output
+        self.phased = phased
+        self.min_map_qual = min_map_qual
+        self.min_group_count = min_group_count
+        self.read_flag_mask = read_flag_mask
+        self.repeat_extension = repeat_extension
+        self.max_repeat_unit_size = max_repeat_unit_size
+        self.min_repeat_count = min_repeat_count
+
+
+class DNAModelApply(BaseAlgo):
+    """algo DNAModelApply"""
+    name = "DNAModelApply"
+
+    def __init__(
+        self,
+        model: pathlib.Path,
+        vcf: pathlib.Path,
+        output: pathlib.Path,
+    ):
+        self.model = model
+        self.vcf = vcf
+        self.output = output
+
+
+class DNAscope(BaseAlgo):
+    """algo DNAscope"""
+    name = "DNAscope"
+
+    def __init__(
+        self,
+        output: pathlib.Path,
+        dbsnp: Optional[pathlib.Path] = None,
+        emit_mode: str = "variant",
+        model: Optional[pathlib.Path] = None,
+    ):
+        self.output = output
+        self.dbsnp = dbsnp
+        self.emit_mode = emit_mode
+        self.model = model
+
+
+class DNAscopeHP(BaseAlgo):
+    """algo DNAscopeHP"""
+    name = "DNAscopeHP"
+
+    def __init__(
+        self,
+        output: pathlib.Path,
+        dbsnp: Optional[pathlib.Path] = None,
+        model: Optional[pathlib.Path] = None,
+        pcr_indel_model: Optional[pathlib.Path] = None,
+    ):
+        self.output = output
+        self.dbsnp = dbsnp
+        self.model = model
+        self.pcr_indel_model = pcr_indel_model
+
+
+class Driver():
+    """Representing the Sentieon driver"""
+    def __init__(
+        self,
+        reference: Optional[pathlib.Path] = None,
+        thread_count: Optional[int] = None,
+        interval: Optional[pathlib.Path|str] = None,
+        read_filter: Optional[str] = None,
+        input: Optional[list[pathlib.Path]] = None,
+        algo: Optional[list[BaseAlgo]] = None,
+    ):
+        self.reference = reference
+        self.input = input
+        self.thread_count = thread_count
+        self.interval = interval
+        self.read_filter = read_filter
+        self.algo = algo if algo else []
+
+    def add_algo(self, algo: BaseAlgo):
+        """Add an algo to the driver"""
+        self.algo.append(algo)
+
+    def build_cmd(self) -> list[str]:
+        """Build a command line for the driver"""
+        cmd: list[str] = ["sentieon", "driver"]
+
+        for k, v in self.__dict__.items():
+            if k == "algo":
+                continue
+            elif v is None:
+                continue
+            elif isinstance(v, list):
+                for i in v:
+                    cmd.append(f"--{k}")
+                    cmd.append(str(i))
+            elif isinstance(v, bool):
+                if v:
+                    cmd.append(f"--{k}")
+            else:
+                cmd.append(f"--{k}")
+                cmd.append(str(v))
+
+        for algo in self.algo:
+            cmd.extend(algo.build_cmd())
+
+        return cmd
 
 
 def cmd_bedtools_subtract(
-    regions_bed: typing.Optional[typing.Union[str, io.TextIOWrapper]],
-    phased_bed: str,
-    unphased_bed: str,
-    tmp_dir: str,
-    **kwargs,
+    regions_bed: typing.Optional[pathlib.Path],
+    phased_bed: pathlib.Path,
+    unphased_bed: pathlib.Path,
+    tmp_dir: pathlib.Path,
+    **kwargs: Any,
 ):
     if regions_bed is None:
         # set region to the full genome
+        regions_bed = tmp_dir.joinpath("reference.bed")
         with open(
-            f"{tmp_dir}_reference.bed", "wt", encoding="utf-8"
+            regions_bed, "wt", encoding="utf-8"
         ) as f:
             for line in open(
                 name(kwargs["reference"]) + ".fai", encoding="utf-8"
             ):
                 toks = line.strip().split("\t")
                 f.write(f"{toks[0]}\t0\t{toks[1]}\n")
-            regions_bed = f.name
-    cmd = f"bedtools subtract -a {name(regions_bed)} -b {phased_bed} "
+    cmd = f"bedtools subtract -a {regions_bed} -b {phased_bed} "
     cmd += f"> {unphased_bed}"
     return cmd
 
 
-def cmd_repeat_model(phased_bed: str, phased_ext: str, tmp_dir: str, kwargs) -> str:
-    """
-    Runs --algo RepeatModel
-    """
-    kwargs["phased_bed"] = phased_bed
-    cmd = cmd_sentieon_driver(
-        bed_key="phased_bed", skip_sample_input=False, **kwargs
-    )
-    kwargs["repeat_model"] = f"{tmp_dir}/out_repeat.model"
-    cmd += f" --read_filter PhasedReadFilter,phased_vcf={phased_ext}"
-    cmd += ",phase_select=tag "
-    cmd += "--algo RepeatModel --phased --min_map_qual 1 "
-    cmd += "--min_group_count 10000 "
-    cmd += "--read_flag_mask drop=supplementary --repeat_extension 5 "
-    cmd += "--max_repeat_unit_size 2 --min_repeat_count 6 "
-    cmd += kwargs["repeat_model"]
-    return cmd
-
-
-def cmd_model_apply(
-    model: str, inp_vcf: str, out_vcf: str, kwargs: dict
-) -> str:
-    """
-     sentieon driver -t "$_arg_threads" -r "$_arg_reference_fasta" \
-        --algo DNAModelApply --model "$model" -v "$input_vcf" "$output_vcf"
-    """
-    cmd = cmd_sentieon_driver(bed_key=None, skip_sample_input=True, **kwargs)
-    cmd += f"--algo DNAModelApply --model {model} -v {inp_vcf} {out_vcf}"
-    return cmd
-
-
-def name(path: typing.Union[str, io.TextIOWrapper]) -> str:
+def name(path: typing.Union[str, io.TextIOWrapper, pathlib.Path]) -> str:
     """Return the name of a file that may also be a text-wrapper."""
-    if hasattr(path, "name"):
-        path = path.name
+    if isinstance(path, io.TextIOWrapper):
+        return path.name
+    elif isinstance(path, pathlib.Path):
+        return str(path)
     return path
-
-
-def cmd_sentieon_driver(
-    bed_key: typing.Optional[str] = None,
-    skip_sample_input: bool = False,
-    **kwargs,
-) -> str:
-    """
-    Common base for running sentieon driver.
-    This is usually called along with other commands.
-    NOTE: sometimes we need to run without bed file in later command
-    whereas an earlier command might have a bed file.
-    Same for read-filter.
-
-    >>> d = {"regions": "phased.bed", "reference": "ref.fasta",
-    ...      "sample_input": "sample.bam", "cores": 4}
-    >>> cmd_sentieon_driver(bed_key="regions", skip_sample_input=False, **d)
-    'sentieon driver -t 4 -r ref.fasta  --interval phased.bed -i sample.bam'
-    >>> cmd_sentieon_driver(bed_key="regions", skip_sample_input=True, **d)
-    'sentieon driver -t 4 -r ref.fasta  --interval phased.bed'
-
-    >>> d['read-filter'] = 'PhasedReadFilter,phased_vcf=p.vcf.gz'
-    >>> cmd_sentieon_driver(bed_key="regions", skip_sample_input=True, **d)
-    'sentieon driver -t 4 -r ref.fasta  --interval phased.bed --read_filter \
-PhasedReadFilter,phased_vcf=p.vcf.gz'
-
-    """
-    if bed_key is not None and kwargs.get(bed_key) is not None:
-        bed = f" --interval {name(kwargs[bed_key])}"
-    else:
-        bed = ""
-    if kwargs.get("read-filter"):
-        read_filter = f" --read_filter {kwargs['read-filter']}"
-    else:
-        read_filter = ""
-
-    cmd = (
-        f"sentieon driver -t {kwargs['cores']} -r {name(kwargs['reference'])} "
-    )
-    cmd += f"{bed}"
-    if not skip_sample_input:
-        cmd += f" -i {name(kwargs['sample_input'])}"
-    cmd += f"{read_filter}"
-    return cmd
 
 
 def cmd_pyexec_vcf_mod_haploid_patch(
@@ -148,7 +228,7 @@ def cmd_pyexec_vcf_mod_haploid_patch(
     hap_patt: str,
     tech: str,
     phased_vcf: str,
-    kwargs: dict,
+    kwargs: dict[str, Any],
 ) -> str:
     """
     merge dnascope and dnascope-hp variants
@@ -177,7 +257,7 @@ def cmd_pyexec_vcf_mod_haploid_patch(
 
 
 def cmd_pyexec_vcf_mod_patch(
-    out_vcf: str, vcf: str, vcf_hp: str, kwargs: dict
+    out_vcf: str, vcf: str, vcf_hp: str, kwargs: dict[str, Any],
 ) -> str:
     """Patch DNAscope and DNAscopeHP VCF files"""
 
@@ -186,7 +266,11 @@ def cmd_pyexec_vcf_mod_patch(
     return cmd
 
 
-def cmd_pyexec_gvcf_combine(gvcf: str, out_vcf: str, kwargs: dict) -> str:
+def cmd_pyexec_gvcf_combine(
+    gvcf: str,
+    out_vcf: str,
+    kwargs: dict[str, Any]
+) -> str:
     """Combine gVCF files"""
 
     cmd = f"sentieon pyexec {kwargs['gvcf_combine_py']} -t {kwargs['cores']} "
@@ -204,7 +288,7 @@ def cmd_pyexec_vcf_mod_merge(
     phased_vcf: str,
     phased_bed: str,
     out_vcf: str,
-    kwargs: dict,
+    kwargs: dict[str, Any],
 ) -> str:
     """Merge haploid VCF files"""
 
@@ -213,64 +297,5 @@ def cmd_pyexec_vcf_mod_merge(
         f"merge --hap1 {hap1_vcf} --hap2 {hap2_vcf} --unphased {unphased_vcf} "
     )
     cmd += f"--phased {phased_vcf} --bed {phased_bed} {out_vcf}"
-
-    return cmd
-
-
-def cmd_algo_dnascope(
-    model: str,
-    out_vcf: str,
-    kwargs: dict,
-    bed_key: typing.Optional[str] = None,
-    gvcf: typing.Optional[str] = None,
-) -> str:
-    """
-    DNAscope sub-command DNAscopeHP is added in another command if applicable.
-    """
-    # TODO: this is used elsewhere, should create once and pass.
-    # https://github.com/Sentieon/sentieon-scripts/blob/8d33f29e442d5a1e782445f06bc1f11e278d8f87/dnascope_LongRead/dnascope_HiFi.sh#L355-L359
-    if gvcf:
-        gvcf_str = (
-            f" --algo DNAscope --model {kwargs['model_bundle']}/gvcf_model"
-        )
-        gvcf_str += f" --emit_mode gvcf {gvcf} "
-    else:
-        gvcf_str = ""
-    if kwargs.get("dbsnp"):
-        dbsnp = f" --dbsnp {kwargs['dbsnp'].name} "
-    else:
-        dbsnp = ""
-    cmd = f" {gvcf_str}--algo DNAscope {dbsnp} --model {model} {out_vcf}"
-    return cmd_sentieon_driver(bed_key, **kwargs) + cmd
-
-
-def cmd_dnascope_hp(
-    model: typing.Optional[str],
-    repeat_model: str,
-    hp_vcf: str,
-    kwargs: dict,
-) -> str:
-    """
-    DNAscopeHP sub-command.
-    This only adds to an exist command, it does not prefix with the sentieon
-      driver.
-
-    For ONT, model should be None
-
-    >>> d = {"dbsnp": "dbsnp.vcf.gz"}
-    >>> cmd_dnascope_hp("haploid_hp_model", "repeat_model", "hp.vcf.gz", d)
-    '--algo DNAscopeHP --dbsnp dbsnp.vcf.gz --model haploid_hp_model \
---pcr_indel_model repeat_model --min_repeat_count 6 hp.vcf.gz'
-    >>> cmd_dnascope_hp(None, "repeat_model", "hp.vcf.gz", d)
-    '--algo DNAscopeHP --dbsnp dbsnp.vcf.gz --pcr_indel_model repeat_model \
---min_repeat_count 6 hp.vcf.gz'
-    """
-    cmd = "--algo DNAscopeHP "
-    if kwargs.get("dbsnp"):
-        cmd += f"--dbsnp {name(kwargs['dbsnp'])} "
-    if model is not None:
-        cmd += f"--model {model} "
-    cmd += f"--pcr_indel_model {repeat_model} --min_repeat_count 6 "
-    cmd += hp_vcf
 
     return cmd
