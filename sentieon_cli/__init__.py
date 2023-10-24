@@ -5,6 +5,7 @@ import sys
 import subprocess as sp
 import argh
 import random
+import tempfile
 from argh import arg
 from .logging import get_logger
 from . import command_strings as cmds
@@ -17,18 +18,11 @@ __version__ = "0.1.0"
 logger = get_logger(__name__)
 
 
-def tmp() -> tuple[str, str]:
+def tmp() -> tempfile.TemporaryDirectory[str]:
     """Create a temporary directory for the current process."""
-    tmp_base = os.getenv(
-        "SENTIEON_TMPDIR", os.getenv("TMPDIR", "/tmp")
-    ).rstrip("/")
-    if tmp_base != os.getenv("SENTIEON_TMPDIR", "").rstrip("/"):
-        tmp_base = os.path.join(tmp_base, str(os.getpid()))
-    tmp_dir = tmp_base
-    while os.path.exists(tmp_dir):
-        tmp_dir = tmp_base + "_" + str(random.randint(0, 1000000))
-    os.makedirs(tmp_dir)
-    return tmp_dir, tmp_base
+    tmp_base = os.getenv("SENTIEON_TMPDIR")
+    tmp_dir = tempfile.TemporaryDirectory(dir=tmp_base)
+    return tmp_dir
 
 
 def check_version(cmd: str, version: str):
@@ -96,12 +90,12 @@ def run_full_dnascope(**kwargs):
     Run sentieon cli with the algo DNAscope command.
     """
     logger.info(kwargs)
-    kwargs["tmp_base"], kwargs["tmp_dir"] = tmp()
+    tmp_dir = tmp()
     gvcf = kwargs.pop("gvcf")
     if gvcf is not None:
-        gvcf = f"{kwargs['tmp_base']}/out_diploid.g.vcf.gz"
+        gvcf = f"{tmp_dir}/out_diploid.g.vcf.gz"
     model = f"{kwargs['model_bundle']}/diploid_model"
-    out_vcf = f"{kwargs['tmp_base']}/out_diploid.vcf.tmp.gz"
+    out_vcf = f"{tmp_dir}/out_diploid.vcf.tmp.gz"
     commands = [
         cmds.cmd_algo_dnascope(
             model, out_vcf, kwargs, bed_key="bed", gvcf=gvcf
@@ -109,21 +103,21 @@ def run_full_dnascope(**kwargs):
     ]
 
     inp_vcf = out_vcf
-    out_vcf = f"{kwargs['tmp_base']}/out_diploid.vcf.gz"
+    out_vcf = f"{tmp_dir}/out_diploid.vcf.gz"
     commands.append(
         cmds.cmd_model_apply(
             f"{kwargs['model_bundle']}/diploid_model", inp_vcf, out_vcf, kwargs
         )
     )
 
-    phased_bed = f"{kwargs['tmp_base']}/out_diploid_phased.bed"
-    unphased_bed = f"{kwargs['tmp_base']}/out_diploid_unphased.bed"
-    phased_vcf = f"{kwargs['tmp_base']}/out_diploid_phased.vcf.gz"
-    phased_ext = f"{kwargs['tmp_base']}/out_diploid_phased.ext.vcf.gz"
+    phased_bed = f"{tmp_dir}/out_diploid_phased.bed"
+    unphased_bed = f"{tmp_dir}/out_diploid_unphased.bed"
+    phased_vcf = f"{tmp_dir}/out_diploid_phased.vcf.gz"
+    phased_ext = f"{tmp_dir}/out_diploid_phased.ext.vcf.gz"
     phased_unphased = (
-        f"{kwargs['tmp_base']}/out_diploid_phased_unphased.vcf.gz"
+        f"{tmp_dir}/out_diploid_phased_unphased.vcf.gz"
     )
-    phased_phased = f"{kwargs['tmp_base']}/out_diploid_phased_phased.vcf.gz"
+    phased_phased = f"{tmp_dir}/out_diploid_phased_phased.vcf.gz"
 
     commands.append(
         cmds.cmd_variant_phaser(
@@ -154,7 +148,7 @@ def run_full_dnascope(**kwargs):
     for phase in (1, 2):
         kwargs["read-filter"] = f"PhasedReadFilter,phased_vcf={phased_ext}"
         kwargs["read-filter"] += f",phase_select={phase}"
-        hp_std_vcf = f"{kwargs['tmp_base']}/out_hap{phase}_nohp_tmp.vcf.gz"
+        hp_std_vcf = f"{tmp_dir}/out_hap{phase}_nohp_tmp.vcf.gz"
 
         if kwargs["tech"] == "HiFi":
             cmd = cmds.cmd_algo_dnascope(
@@ -173,7 +167,7 @@ def run_full_dnascope(**kwargs):
         kwargs.pop("read-filter")
         commands.append("#PHASE %s" % phase)
 
-        hp_vcf = f"{kwargs['tmp_base']}/out_hap{phase}_tmp.vcf.gz"
+        hp_vcf = f"{tmp_dir}/out_hap{phase}_tmp.vcf.gz"
 
         cmd += " " + cmds.cmd_dnascope_hp(
             f"{kwargs['model_bundle']}/haploid_hp_model",
@@ -192,9 +186,9 @@ def run_full_dnascope(**kwargs):
     )
     commands.append(
         cmds.cmd_pyexec_vcf_mod_haploid_patch(
-            f"{kwargs['tmp_base']}/out_hap1_patch.vcf.gz",
-            f"{kwargs['tmp_base']}/out_hap2_patch.vcf.gz",
-            f"{kwargs['tmp_base']}/out_hap%d_%stmp.vcf.gz",
+            f"{tmp_dir}/out_hap1_patch.vcf.gz",
+            f"{tmp_dir}/out_hap2_patch.vcf.gz",
+            f"{tmp_dir}/out_hap%d_%stmp.vcf.gz",
             kwargs["tech"],
             phased_phased,
             kwargs,
@@ -203,11 +197,11 @@ def run_full_dnascope(**kwargs):
 
     # apply trained model to the patched vcfs.
     for hap in (1, 2):
-        hap_out = f"{kwargs['tmp_base']}/out_hap{hap}.vcf.gz"
+        hap_out = f"{tmp_dir}/out_hap{hap}.vcf.gz"
         commands.append(
             cmds.cmd_model_apply(
                 f"{kwargs['model_bundle']}/haploid_model",
-                f"{kwargs['tmp_base']}/out_hap{hap}_patch.vcf.gz",
+                f"{tmp_dir}/out_hap{hap}_patch.vcf.gz",
                 hap_out,
                 kwargs,
             )
@@ -223,8 +217,8 @@ def run_full_dnascope(**kwargs):
     cmd += " " + cmds.cmd_dnascope_hp(
         f"{kwargs['model_bundle']}/diploid_hp_model",
         kwargs["repeat_model"],
-        # f"{kwargs['tmp_base']}/out_diploid_unphased.bed",
-        f"{kwargs['tmp_base']}/out_diploid_phased_unphased_hp.vcf.gz",
+        # f"{tmp_dir}/out_diploid_unphased.bed",
+        f"{tmp_dir}/out_diploid_phased_unphased_hp.vcf.gz",
         kwargs,
     )
 
@@ -232,16 +226,16 @@ def run_full_dnascope(**kwargs):
 
     # Patch DNA and DNAHP variants
     cmd = cmds.cmd_pyexec_vcf_mod_patch(
-        f"{kwargs['tmp_base']}/out_diploid_unphased_patch.vcf.gz",
+        f"{tmp_dir}/out_diploid_unphased_patch.vcf.gz",
         phased_unphased,
-        f"{kwargs['tmp_base']}/out_diploid_phased_unphased_hp.vcf.gz",
+        f"{tmp_dir}/out_diploid_phased_unphased_hp.vcf.gz",
         kwargs,
     )
     commands.append(cmd)
     cmd = cmds.cmd_model_apply(
         f"{kwargs['model_bundle']}/diploid_model_unphased",
-        f"{kwargs['tmp_base']}/out_diploid_unphased_patch.vcf.gz",
-        f"{kwargs['tmp_base']}/out_diploid_unphased.vcf.gz",
+        f"{tmp_dir}/out_diploid_unphased_patch.vcf.gz",
+        f"{tmp_dir}/out_diploid_unphased.vcf.gz",
         kwargs,
     )
     commands.append(cmd)
@@ -251,11 +245,11 @@ def run_full_dnascope(**kwargs):
 
     commands.append(
         cmds.cmd_pyexec_vcf_mod_merge(
-            f"{kwargs['tmp_base']}/out_hap1.vcf.gz",
-            f"{kwargs['tmp_base']}/out_hap2.vcf.gz",
-            f"{kwargs['tmp_base']}/out_diploid_unphased.vcf.gz",
+            f"{tmp_dir}/out_hap1.vcf.gz",
+            f"{tmp_dir}/out_hap2.vcf.gz",
+            f"{tmp_dir}/out_diploid_unphased.vcf.gz",
             phased_vcf,
-            f"{kwargs['tmp_base']}/out_diploid_phased.bed",
+            f"{tmp_dir}/out_diploid_phased.bed",
             cmds.name(kwargs["output-vcf"]),
             kwargs,
         )
