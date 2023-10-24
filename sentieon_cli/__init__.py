@@ -85,7 +85,7 @@ def check_version(cmd: str, version: str):
     default="HiFi",
     choices=["HiFi", "ONT"],
 )
-def run_full_dnascope(**kwargs):
+def run_dnascope_longread(**kwargs):
     """
     Run sentieon cli with the algo DNAscope command.
     """
@@ -271,7 +271,7 @@ def main():
     """main entry point for this project"""
     logger.setLevel(os.environ.get("LOGLEVEL", "DEBUG").upper())
     logger.info("Starting sentieon-cli version: %s", __version__)
-    argh.dispatch_commands([run_full_dnascope])
+    argh.dispatch_commands([run_dnascope_longread])
 
 
 if __name__ == "__main__":
