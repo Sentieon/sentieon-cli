@@ -48,7 +48,7 @@ def check_version(cmd: str, version: str):
     help="sample BAM or CRAM file",
     type=argparse.FileType("r"),
 )
-@arg("-m", "--model-bundle", help="The model bundle directory")
+@arg("-m", "--model-bundle", help="The model bundle file")
 @arg(
     "output-vcf",
     help="Output VCF File. The file name must end in .vcf.gz",
