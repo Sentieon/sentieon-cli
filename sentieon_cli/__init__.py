@@ -3,12 +3,12 @@ import argparse
 import os
 import sys
 import subprocess as sp
-import argh
-import random
+import pathlib
 import tempfile
+from typing import Any, Callable, Optional
 
+import argh
 from argh import arg
-from typing import Any
 from .logging import get_logger
 from . import command_strings as cmds
 
@@ -34,25 +34,59 @@ def check_version(cmd: str, version: str):
     assert cmd_version
 
 
+def path_arg(
+    exists: Optional[bool] = None,
+    is_dir: Optional[bool] = None,
+    is_file: Optional[bool] = None,
+    is_fifo: Optional[bool] = None,
+) -> Callable[[str], pathlib.Path]:
+    """pathlib checked types for argparse"""
+
+    def _path_arg(arg: str) -> pathlib.Path:
+        p = pathlib.Path(arg)
+
+        attrs = [exists, is_dir, is_file, is_fifo]
+        attr_names = ["exists", "is_dir", "is_file", "is_fifo"]
+
+        for attr_val, attr_name in zip(attrs, attr_names):
+            if attr_val is None:  # Skip attributes that are not defined
+                continue
+
+            m = getattr(p, attr_name)
+            if m() != attr_val:
+                raise argparse.ArgumentTypeError(
+                    "The supplied path argument needs the attribute"
+                    f" {attr_name}={attr_val}, but {attr_name}={m()}"
+                )
+        return p
+    return _path_arg
+
+
 @arg(
     "-r",
     "--reference",
     required=True,
     help="fasta for reference genome",
-    type=argparse.FileType("r"),
+    type=path_arg(exists=True, is_file=True),
 )
 @arg(
     "-i",
     "--sample-input",
     required=True,
     help="sample BAM or CRAM file",
-    type=argparse.FileType("r"),
+    type=path_arg(exists=True, is_file=True),
 )
-@arg("-m", "--model-bundle", help="The model bundle file")
+@arg(
+    "-m",
+     "--model-bundle",
+     help="The model bundle file",
+     required=True,
+     type=path_arg(exists=True, is_file=True),
+)
 @arg(
     "output-vcf",
     help="Output VCF File. The file name must end in .vcf.gz",
-    type=argparse.FileType("w"),
+    type=path_arg(),
 )
 @arg(
     "-d",
@@ -60,14 +94,14 @@ def check_version(cmd: str, version: str):
     help="dbSNP vcf file Supplying this file will annotate variants with \
          their dbSNP refSNP ID numbers.",
     default=None,
-    type=argparse.FileType("r"),
+    type=path_arg(exists=True, is_file=True),
 )
 @arg(
     "-b",
     "--bed",
     help="Region BED file. Supplying this file will limit variant calling \
     to the intervals inside the BED file.",
-    type=argparse.FileType("r"),
+    type=path_arg(exists=True, is_file=True),
 )
 @arg(
     "-t",
@@ -95,6 +129,8 @@ def run_dnascope_longread(**kwargs: dict[str, Any]):
     """
     logger.info(kwargs)
     tmp_dir = tmp()
+    kwargs['reference'] = os.path.sep.join(kwargs['reference'].parts)
+
     gvcf = kwargs.pop("gvcf")
     if gvcf:
         gvcf = f"{tmp_dir.name}/out_diploid.g.vcf.gz"
