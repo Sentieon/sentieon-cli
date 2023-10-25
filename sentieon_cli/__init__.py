@@ -126,7 +126,7 @@ def path_arg(
     default="HiFi",
     choices=["HiFi", "ONT"],
 )
-def run_dnascope_longread(**kwargs: Any):
+def dnascope_longread(**kwargs: Any):
     """
     Run sentieon cli with the algo DNAscope command.
     """
@@ -229,7 +229,6 @@ def run_dnascope_longread(**kwargs: Any):
     ))
     commands.append(' '.join(driver.build_cmd()))
 
-    # TODO: difference with ONT here?
     commands.append(
         f"bcftools view -T {unphased_bed} {phased_vcf} \
         | sentieon util vcfconvert - {phased_unphased}"
@@ -370,7 +369,7 @@ def main():
     """main entry point for this project"""
     logger.setLevel(os.environ.get("LOGLEVEL", "DEBUG").upper())
     logger.info("Starting sentieon-cli version: %s", __version__)
-    argh.dispatch_commands([run_dnascope_longread])
+    argh.dispatch_commands([dnascope_longread])
 
 
 if __name__ == "__main__":
