@@ -14,6 +14,7 @@ import packaging.version
 from argh import arg
 from importlib_resources import files
 from .logging import get_logger
+from .runner import run
 from . import command_strings as cmds
 
 if sys.version_info < (3, 9):
@@ -157,8 +158,6 @@ def dnascope_longread(**kwargs: Any):
     tmp_dir_obj = tmp()
     tmp_dir = pathlib.Path(tmp_dir_obj.name)
 
-    commands: list[str] = []
-
     reference: pathlib.Path = kwargs['reference']
     sample_input: list[pathlib.Path] = kwargs['sample_input']
     model_bundle: pathlib.Path = kwargs['model_bundle']
@@ -191,7 +190,7 @@ def dnascope_longread(**kwargs: Any):
         dbsnp=dbsnp,
         model=model_bundle.joinpath("diploid_model"),
     ))
-    commands.append(' '.join(driver.build_cmd()))
+    run(' '.join(driver.build_cmd()))
 
     diploid_vcf = tmp_dir.joinpath("out_diploid.vcf.gz")
     driver = cmds.Driver(
@@ -203,7 +202,7 @@ def dnascope_longread(**kwargs: Any):
         diploid_tmp_vcf,
         diploid_vcf,
     ))
-    commands.append(' '.join(driver.build_cmd()))
+    run(' '.join(driver.build_cmd()))
 
     # Phasing and RepeatModel
     phased_bed = tmp_dir.joinpath("out_diploid_phased.bed")
@@ -224,14 +223,14 @@ def dnascope_longread(**kwargs: Any):
         out_bed=phased_bed,
         out_ext=phased_ext,
     ))
-    commands.append(' '.join(driver.build_cmd()))
+    run(' '.join(driver.build_cmd()))
 
     if tech == "ONT":
-        commands.append(
+        run(
             f"bcftools view -T {phased_bed} {phased_vcf} \
             | sentieon util vcfconvert - {phased_phased}"
         )
-    commands.append(
+    run(
         cmds.cmd_bedtools_subtract(
             bed, phased_bed, unphased_bed, tmp_dir, **kwargs
         )
@@ -250,9 +249,9 @@ def dnascope_longread(**kwargs: Any):
         phased=True,
         read_flag_mask="drop=supplementary",
     ))
-    commands.append(' '.join(driver.build_cmd()))
+    run(' '.join(driver.build_cmd()))
 
-    commands.append(
+    run(
         f"bcftools view -T {unphased_bed} {phased_vcf} \
         | sentieon util vcfconvert - {phased_unphased}"
     )
@@ -285,7 +284,7 @@ def dnascope_longread(**kwargs: Any):
             model=model_bundle.joinpath("haploid_hp_model"),
             pcr_indel_model=repeat_model,
         ))
-        commands.append(' '.join(driver.build_cmd()))
+        run(' '.join(driver.build_cmd()))
 
     kwargs["gvcf_combine_py"] = str(
         files('sentieon_cli.scripts').joinpath('gvcf_combine.py')
@@ -295,7 +294,7 @@ def dnascope_longread(**kwargs: Any):
     )
 
     patch_vcfs = [tmp_dir.joinpath(f"out_hap{i}_patch.vcf.gz") for i in (1, 2)]
-    commands.append(
+    run(
         cmds.cmd_pyexec_vcf_mod_haploid_patch(
             str(patch_vcfs[0]),
             str(patch_vcfs[1]),
@@ -318,7 +317,7 @@ def dnascope_longread(**kwargs: Any):
             patch_vcf,
             hap_vcf,
         ))
-        commands.append(' '.join(driver.build_cmd()))
+        run(' '.join(driver.build_cmd()))
 
     # Second pass - unphased regions
     diploid_unphased_hp = tmp_dir.joinpath(
@@ -336,7 +335,7 @@ def dnascope_longread(**kwargs: Any):
         model=model_bundle.joinpath("diploid_hp_model"),
         pcr_indel_model=repeat_model,
     ))
-    commands.append(' '.join(driver.build_cmd()))
+    run(' '.join(driver.build_cmd()))
 
     # Patch DNA and DNAHP variants
     diploid_unphased_patch = tmp_dir.joinpath(
@@ -349,7 +348,7 @@ def dnascope_longread(**kwargs: Any):
         str(diploid_unphased_hp),
         kwargs,
     )
-    commands.append(cmd)
+    run(cmd)
     driver = cmds.Driver(
         reference=reference,
         thread_count=cores,
@@ -359,10 +358,10 @@ def dnascope_longread(**kwargs: Any):
         diploid_unphased_patch,
         diploid_unphased,
     ))
-    commands.append(' '.join(driver.build_cmd()))
+    run(' '.join(driver.build_cmd()))
 
     # merge calls to create the output
-    commands.append(
+    run(
         cmds.cmd_pyexec_vcf_mod_merge(
             str(hap_vcfs[0]),
             str(hap_vcfs[1]),
@@ -375,7 +374,7 @@ def dnascope_longread(**kwargs: Any):
     )
 
     if use_gvcf:
-        commands.append(
+        run(
             cmds.cmd_pyexec_gvcf_combine(
                 str(diploid_gvcf_fn),
                 str(output_vcf),
@@ -383,9 +382,8 @@ def dnascope_longread(**kwargs: Any):
             )
         )
 
-    commands.append(f"rm -r {tmp_dir}")
-
-    return "\n".join(commands)
+    shutil.rmtree(tmp_dir)
+    return
 
 
 def main():
