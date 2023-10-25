@@ -19,6 +19,7 @@ include = ["LICENSE"]
 python = "^3.8"
 argh = "^0.29.4"
 colorlog = "^6.7.0"
+importlib-resources = "^5.0"
 
 [tool.poetry.scripts]
 sentieon-cli = "sentieon_cli:main"

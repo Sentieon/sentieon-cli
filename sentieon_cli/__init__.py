@@ -8,7 +8,9 @@ import tempfile
 from typing import Any, Callable, Optional
 
 import argh
+
 from argh import arg
+from importlib_resources import files
 from .logging import get_logger
 from . import command_strings as cmds
 
@@ -263,12 +265,11 @@ def run_dnascope_longread(**kwargs: Any):
         ))
         commands.append(' '.join(driver.build_cmd()))
 
-    # TODO: set these properly.
-    kwargs["vcf_mod_py"] = os.path.join(
-        os.path.dirname(__file__), "vcf_mod.py"
+    kwargs["gvcf_combine_py"] = str(
+        files('sentieon_cli.scripts').joinpath('gvcf_combine.py')
     )
-    kwargs["gvcf_combine_py"] = os.path.join(
-        os.path.dirname(__file__), "gvcf_combine.py"
+    kwargs["vcf_mod_py"] = str(
+        files('sentieon_cli.scripts').joinpath('vcf_mod.py')
     )
 
     patch_vcfs = [tmp_dir.joinpath(f"out_hap{i}_patch.vcf.gz") for i in (1, 2)]
