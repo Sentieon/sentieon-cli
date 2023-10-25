@@ -4,10 +4,12 @@ import os
 import sys
 import subprocess as sp
 import pathlib
+import shutil
 import tempfile
 from typing import Any, Callable, Optional
 
 import argh
+import packaging.version
 
 from argh import arg
 from importlib_resources import files
@@ -21,6 +23,12 @@ __version__ = "0.1.0"
 
 logger = get_logger(__name__)
 
+TOOL_MIN_VERSIONS = {
+    "sentieon": packaging.version.Version("202308"),
+    "bcftools": packaging.version.Version("1.10"),
+    "bedtools": None,
+}
+
 
 def tmp() -> tempfile.TemporaryDirectory[str]:
     """Create a temporary directory for the current process."""
@@ -29,11 +37,26 @@ def tmp() -> tempfile.TemporaryDirectory[str]:
     return tmp_dir
 
 
-def check_version(cmd: str, version: str):
-    cmd_version = sp.check_output([cmd, "--version"]).decode("utf-8").strip()
-    # TODO: use regexp
-    # https://github.com/Sentieon/sentieon-scripts/blob/master/dnascope_LongRead/dnascope_HiFi.sh#L146
-    assert cmd_version
+def check_version(cmd: str, version: Optional[packaging.version.Version]):
+    """Check the version of an executable"""
+    exec_file = shutil.which(cmd)
+    if not exec_file:
+        print(f"Error: no '{cmd}' found in the PATH")
+        sys.exit(2)
+
+    if version is None:
+        return
+
+    cmd_version = packaging.version.parse(
+        sp.check_output([cmd, "--version"]).decode("utf-8").strip()
+    )
+    if cmd_version < version:
+        print(
+            f"Error: the pipeline requires {cmd} version '{version}' or later "
+            f"but {cmd} '{cmd_version}' was found in the PATH"
+        )
+        sys.exit(2)
+    return
 
 
 def path_arg(
@@ -369,6 +392,10 @@ def main():
     """main entry point for this project"""
     logger.setLevel(os.environ.get("LOGLEVEL", "DEBUG").upper())
     logger.info("Starting sentieon-cli version: %s", __version__)
+
+    for cmd, min_version in TOOL_MIN_VERSIONS.items():
+        check_version(cmd, min_version)
+
     argh.dispatch_commands([dnascope_longread])
 
 
