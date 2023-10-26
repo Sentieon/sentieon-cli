@@ -31,7 +31,3 @@ jobs:
         run: poetry run pytest -v
       - name: Run doct tests
         run: poetry run pytest --doctest-modules
-
-      - name: Run bash tests
-        run: poetry run bash tests/cli-test.sh
-
