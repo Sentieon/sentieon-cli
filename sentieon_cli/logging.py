@@ -8,7 +8,7 @@ handler.setFormatter(
 )
 
 
-def get_logger(name):
+def get_logger(name: str):
     """Return a logger with a colorlog handler."""
     logger = colorlog.getLogger(name)
     logger.addHandler(handler)

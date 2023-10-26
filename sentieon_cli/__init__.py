@@ -3,10 +3,18 @@ import argparse
 import os
 import sys
 import subprocess as sp
+import pathlib
+import shutil
+import tempfile
+from typing import Any, Callable, Optional
+
 import argh
-import random
+import packaging.version
+
 from argh import arg
+from importlib_resources import files
 from .logging import get_logger
+from .runner import run
 from . import command_strings as cmds
 
 if sys.version_info < (3, 9):
@@ -16,45 +24,96 @@ __version__ = "0.1.0"
 
 logger = get_logger(__name__)
 
+TOOL_MIN_VERSIONS = {
+    "sentieon": packaging.version.Version("202308"),
+    "bcftools": packaging.version.Version("1.10"),
+    "bedtools": None,
+}
 
-def tmp() -> tuple[str, str]:
+
+def tmp() -> tempfile.TemporaryDirectory[str]:
     """Create a temporary directory for the current process."""
-    tmp_base = os.getenv(
-        "SENTIEON_TMPDIR", os.getenv("TMPDIR", "/tmp")
-    ).rstrip("/")
-    if tmp_base != os.getenv("SENTIEON_TMPDIR", "").rstrip("/"):
-        tmp_base = os.path.join(tmp_base, str(os.getpid()))
-    tmp_dir = tmp_base
-    while os.path.exists(tmp_dir):
-        tmp_dir = tmp_base + "_" + str(random.randint(0, 1000000))
-    os.makedirs(tmp_dir)
-    return tmp_dir, tmp_base
+    tmp_base = os.getenv("SENTIEON_TMPDIR")
+    tmp_dir = tempfile.TemporaryDirectory(dir=tmp_base)
+    return tmp_dir
 
 
-def check_version(cmd: str, version: str):
-    cmd_version = sp.check_output([cmd, "--version"]).decode("utf-8").strip()
-    # TODO: use regexp
-    # https://github.com/Sentieon/sentieon-scripts/blob/master/dnascope_LongRead/dnascope_HiFi.sh#L146
-    assert cmd_version
+def check_version(cmd: str, version: Optional[packaging.version.Version]):
+    """Check the version of an executable"""
+    exec_file = shutil.which(cmd)
+    if not exec_file:
+        print(f"Error: no '{cmd}' found in the PATH")
+        sys.exit(2)
+
+    if version is None:
+        return
+
+    cmd_version = packaging.version.parse(
+        sp.check_output([cmd, "--version"]).decode("utf-8").strip()
+    )
+    if cmd_version < version:
+        print(
+            f"Error: the pipeline requires {cmd} version '{version}' or later "
+            f"but {cmd} '{cmd_version}' was found in the PATH"
+        )
+        sys.exit(2)
+    return
+
+
+def path_arg(
+    exists: Optional[bool] = None,
+    is_dir: Optional[bool] = None,
+    is_file: Optional[bool] = None,
+    is_fifo: Optional[bool] = None,
+) -> Callable[[str], pathlib.Path]:
+    """pathlib checked types for argparse"""
+
+    def _path_arg(arg: str) -> pathlib.Path:
+        p = pathlib.Path(arg)
+
+        attrs = [exists, is_dir, is_file, is_fifo]
+        attr_names = ["exists", "is_dir", "is_file", "is_fifo"]
+
+        for attr_val, attr_name in zip(attrs, attr_names):
+            if attr_val is None:  # Skip attributes that are not defined
+                continue
+
+            m = getattr(p, attr_name)
+            if m() != attr_val:
+                raise argparse.ArgumentTypeError(
+                    "The supplied path argument needs the attribute"
+                    f" {attr_name}={attr_val}, but {attr_name}={m()}"
+                )
+        return p
+    return _path_arg
 
 
 @arg(
     "-r",
     "--reference",
+    required=True,
     help="fasta for reference genome",
-    type=argparse.FileType("r"),
+    type=path_arg(exists=True, is_file=True),
 )
 @arg(
     "-i",
     "--sample-input",
+    required=True,
+    nargs='+',
     help="sample BAM or CRAM file",
-    type=argparse.FileType("r"),
+    type=path_arg(exists=True, is_file=True),
 )
-@arg("-m", "--model-bundle", help="The model bundle directory")
+@arg(
+    "-m",
+     "--model-bundle",
+     help="The model bundle file",
+     required=True,
+     type=path_arg(exists=True, is_file=True),
+)
 @arg(
     "output-vcf",
     help="Output VCF File. The file name must end in .vcf.gz",
-    type=argparse.FileType("w"),
+    type=path_arg(),
 )
 @arg(
     "-d",
@@ -62,14 +121,14 @@ def check_version(cmd: str, version: str):
     help="dbSNP vcf file Supplying this file will annotate variants with \
          their dbSNP refSNP ID numbers.",
     default=None,
-    type=argparse.FileType("r"),
+    type=path_arg(exists=True, is_file=True),
 )
 @arg(
     "-b",
     "--bed",
     help="Region BED file. Supplying this file will limit variant calling \
     to the intervals inside the BED file.",
-    type=argparse.FileType("r"),
+    type=path_arg(exists=True, is_file=True),
 )
 @arg(
     "-t",
@@ -91,193 +150,251 @@ def check_version(cmd: str, version: str):
     default="HiFi",
     choices=["HiFi", "ONT"],
 )
-def run_full_dnascope(**kwargs):
+def dnascope_longread(**kwargs: Any):
     """
     Run sentieon cli with the algo DNAscope command.
     """
     logger.info(kwargs)
-    kwargs["tmp_base"], kwargs["tmp_dir"] = tmp()
-    gvcf = kwargs.pop("gvcf")
-    if gvcf is not None:
-        gvcf = f"{kwargs['tmp_base']}/out_diploid.g.vcf.gz"
-    model = f"{kwargs['model_bundle']}/diploid_model"
-    out_vcf = f"{kwargs['tmp_base']}/out_diploid.vcf.tmp.gz"
-    commands = [
-        cmds.cmd_algo_dnascope(
-            model, out_vcf, kwargs, bed_key="bed", gvcf=gvcf
-        )
-    ]
+    tmp_dir_obj = tmp()
+    tmp_dir = pathlib.Path(tmp_dir_obj.name)
 
-    inp_vcf = out_vcf
-    out_vcf = f"{kwargs['tmp_base']}/out_diploid.vcf.gz"
-    commands.append(
-        cmds.cmd_model_apply(
-            f"{kwargs['model_bundle']}/diploid_model", inp_vcf, out_vcf, kwargs
-        )
+    reference: pathlib.Path = kwargs['reference']
+    sample_input: list[pathlib.Path] = kwargs['sample_input']
+    model_bundle: pathlib.Path = kwargs['model_bundle']
+    output_vcf: pathlib.Path = kwargs['output-vcf']
+    dbsnp: Optional[pathlib.Path] = kwargs['dbsnp']
+    bed: Optional[pathlib.Path] = kwargs['bed']
+    cores: int = kwargs['cores']
+    use_gvcf: bool = kwargs['gvcf']
+    tech: str = kwargs['tech']
+
+
+    # First pass - diploid calling
+    diploid_gvcf_fn = tmp_dir.joinpath("out_diploid.g.vcf.gz")
+    diploid_tmp_vcf = tmp_dir.joinpath("out_diploid_tmp.vcf.gz")
+    driver = cmds.Driver(
+        reference=reference,
+        thread_count=cores,
+        input=sample_input,
+        interval=bed,
     )
+    if use_gvcf:
+        driver.add_algo(cmds.DNAscope(
+            diploid_gvcf_fn,
+            dbsnp=dbsnp,
+            emit_mode="gvcf",
+            model=model_bundle.joinpath("gvcf_model"),
+        ))
+    driver.add_algo(cmds.DNAscope(
+        diploid_tmp_vcf,
+        dbsnp=dbsnp,
+        model=model_bundle.joinpath("diploid_model"),
+    ))
+    run(' '.join(driver.build_cmd()))
 
-    phased_bed = f"{kwargs['tmp_base']}/out_diploid_phased.bed"
-    unphased_bed = f"{kwargs['tmp_base']}/out_diploid_unphased.bed"
-    phased_vcf = f"{kwargs['tmp_base']}/out_diploid_phased.vcf.gz"
-    phased_ext = f"{kwargs['tmp_base']}/out_diploid_phased.ext.vcf.gz"
-    phased_unphased = (
-        f"{kwargs['tmp_base']}/out_diploid_phased_unphased.vcf.gz"
+    diploid_vcf = tmp_dir.joinpath("out_diploid.vcf.gz")
+    driver = cmds.Driver(
+        reference=reference,
+        thread_count=cores,
     )
-    phased_phased = f"{kwargs['tmp_base']}/out_diploid_phased_phased.vcf.gz"
+    driver.add_algo(cmds.DNAModelApply(
+        model_bundle.joinpath("diploid_model"),
+        diploid_tmp_vcf,
+        diploid_vcf,
+    ))
+    run(' '.join(driver.build_cmd()))
 
-    commands.append(
-        cmds.cmd_variant_phaser(
-            out_vcf, phased_bed, phased_vcf, phased_ext, kwargs
-        )
+    # Phasing and RepeatModel
+    phased_bed = tmp_dir.joinpath("out_diploid_phased.bed")
+    unphased_bed = tmp_dir.joinpath("out_diploid_unphased.bed")
+    phased_vcf = tmp_dir.joinpath("out_diploid_phased.vcf.gz")
+    phased_ext = tmp_dir.joinpath("out_diploid_phased.ext.vcf.gz")
+    phased_unphased = tmp_dir.joinpath("out_diploid_phased_unphased.vcf.gz")
+    phased_phased = tmp_dir.joinpath("out_diploid_phased_phased.vcf.gz")
+    driver = cmds.Driver(
+        reference=reference,
+        thread_count=cores,
+        input=sample_input,
+        interval=bed,
     )
+    driver.add_algo(cmds.VariantPhaser(
+        diploid_vcf,
+        phased_vcf,
+        out_bed=phased_bed,
+        out_ext=phased_ext,
+    ))
+    run(' '.join(driver.build_cmd()))
 
-    if kwargs["tech"] == "ONT":
-        commands.append(
+    if tech == "ONT":
+        run(
             f"bcftools view -T {phased_bed} {phased_vcf} \
             | sentieon util vcfconvert - {phased_phased}"
         )
-    commands.append(
+    run(
         cmds.cmd_bedtools_subtract(
-            kwargs.get("bed"), phased_bed, unphased_bed, **kwargs
+            bed, phased_bed, unphased_bed, tmp_dir, **kwargs
         )
     )
 
-    commands.append(cmds.cmd_repeat_model(phased_bed, phased_ext, kwargs))
-    # TODO: difference with ONT here?
-    commands.append(
+    repeat_model = tmp_dir.joinpath("out_repeat.model")
+    driver = cmds.Driver(
+        reference=reference,
+        thread_count=cores,
+        input=sample_input,
+        interval=phased_bed,
+        read_filter=f"PhasedReadFilter,phased_vcf={phased_ext},phase_select=tag"
+    )
+    driver.add_algo(cmds.RepeatModel(
+        repeat_model,
+        phased=True,
+        read_flag_mask="drop=supplementary",
+    ))
+    run(' '.join(driver.build_cmd()))
+
+    run(
         f"bcftools view -T {unphased_bed} {phased_vcf} \
         | sentieon util vcfconvert - {phased_unphased}"
     )
 
-    kwargs["phased_bed"] = phased_bed
-    kwargs["unphased_bed"] = unphased_bed
+    # Second pass - phased variants
     for phase in (1, 2):
-        kwargs["read-filter"] = f"PhasedReadFilter,phased_vcf={phased_ext}"
-        kwargs["read-filter"] += f",phase_select={phase}"
-        hp_std_vcf = f"{kwargs['tmp_base']}/out_hap{phase}_nohp_tmp.vcf.gz"
-
-        if kwargs["tech"] == "HiFi":
-            cmd = cmds.cmd_algo_dnascope(
-                f"{kwargs['model_bundle']}/haploid_model",
-                hp_std_vcf,
-                kwargs,
-                bed_key="phased_bed",
-                gvcf=None,
-            )
-        else:
-            # ONT doesn't do DNAscope in 2nd pass.
-            cmd = cmds.cmd_sentieon_driver(
-                bed_key="phased_bed",
-                **kwargs,
-            )
-        kwargs.pop("read-filter")
-        commands.append("#PHASE %s" % phase)
-
-        hp_vcf = f"{kwargs['tmp_base']}/out_hap{phase}_tmp.vcf.gz"
-
-        cmd += " " + cmds.cmd_dnascope_hp(
-            f"{kwargs['model_bundle']}/haploid_hp_model",
-            kwargs["repeat_model"],
-            hp_vcf,
-            kwargs,
+        hp_std_vcf = tmp_dir.joinpath(f"out_hap{phase}_nohp_tmp.vcf.gz")
+        hp_vcf = tmp_dir.joinpath(f"out_hap{phase}_tmp.vcf.gz")
+        driver = cmds.Driver(
+            reference=reference,
+            thread_count=cores,
+            input=sample_input,
+            interval=phased_bed,
+            read_filter=(
+                f"PhasedReadFilter,phased_vcf={phased_ext}"
+                f",phase_select={phase}"
+            ),
         )
-        commands.append(cmd)
 
-    # TODO: set these properly.
-    kwargs["vcf_mod_py"] = os.path.join(
-        os.path.dirname(__file__), "vcf_mod.py"
+        if tech == "HiFi":
+            # ONT doesn't do DNAscope in 2nd pass.
+            driver.add_algo(cmds.DNAscope(
+                hp_std_vcf,
+                dbsnp=dbsnp,
+                model=model_bundle.joinpath("haploid_model"),
+            ))
+        driver.add_algo(cmds.DNAscopeHP(
+            hp_vcf,
+            dbsnp=dbsnp,
+            model=model_bundle.joinpath("haploid_hp_model"),
+            pcr_indel_model=repeat_model,
+        ))
+        run(' '.join(driver.build_cmd()))
+
+    kwargs["gvcf_combine_py"] = str(
+        files('sentieon_cli.scripts').joinpath('gvcf_combine.py')
     )
-    kwargs["gvcf_combine_py"] = os.path.join(
-        os.path.dirname(__file__), "gvcf_combine.py"
+    kwargs["vcf_mod_py"] = str(
+        files('sentieon_cli.scripts').joinpath('vcf_mod.py')
     )
-    commands.append(
+
+    patch_vcfs = [tmp_dir.joinpath(f"out_hap{i}_patch.vcf.gz") for i in (1, 2)]
+    run(
         cmds.cmd_pyexec_vcf_mod_haploid_patch(
-            f"{kwargs['tmp_base']}/out_hap1_patch.vcf.gz",
-            f"{kwargs['tmp_base']}/out_hap2_patch.vcf.gz",
-            f"{kwargs['tmp_base']}/out_hap%d_%stmp.vcf.gz",
+            str(patch_vcfs[0]),
+            str(patch_vcfs[1]),
+            f"{tmp_dir}/out_hap%d_%stmp.vcf.gz",
             kwargs["tech"],
-            phased_phased,
+            str(phased_phased),
             kwargs,
         )
     )
 
     # apply trained model to the patched vcfs.
-    for hap in (1, 2):
-        hap_out = f"{kwargs['tmp_base']}/out_hap{hap}.vcf.gz"
-        commands.append(
-            cmds.cmd_model_apply(
-                f"{kwargs['model_bundle']}/haploid_model",
-                f"{kwargs['tmp_base']}/out_hap{hap}_patch.vcf.gz",
-                hap_out,
-                kwargs,
-            )
+    hap_vcfs = [tmp_dir.joinpath(f"out_hap{i}.vcf.gz") for i in (1, 2)]
+    for patch_vcf, hap_vcf in zip(patch_vcfs, hap_vcfs):
+        driver = cmds.Driver(
+            reference=reference,
+            thread_count=cores,
         )
+        driver.add_algo(cmds.DNAModelApply(
+            model_bundle.joinpath("haploid_model"),
+            patch_vcf,
+            hap_vcf,
+        ))
+        run(' '.join(driver.build_cmd()))
 
-    # call variants on unphased regions
-    # https://github.com/Sentieon/sentieon-scripts/blob/master/dnascope_LongRead/dnascope_HiFi.sh#L409
-    cmd = cmds.cmd_sentieon_driver(
-        bed_key="unphased_bed",
-        skip_sample_input=False,
-        **kwargs,
+    # Second pass - unphased regions
+    diploid_unphased_hp = tmp_dir.joinpath(
+        "out_diploid_phased_unphased_hp.vcf.gz"
     )
-    cmd += " " + cmds.cmd_dnascope_hp(
-        f"{kwargs['model_bundle']}/diploid_hp_model",
-        kwargs["repeat_model"],
-        # f"{kwargs['tmp_base']}/out_diploid_unphased.bed",
-        f"{kwargs['tmp_base']}/out_diploid_phased_unphased_hp.vcf.gz",
-        kwargs,
+    driver = cmds.Driver(
+        reference=reference,
+        thread_count=cores,
+        input=sample_input,
+        interval=unphased_bed,
     )
-
-    commands.append(cmd)
+    driver.add_algo(cmds.DNAscopeHP(
+        diploid_unphased_hp,
+        dbsnp=dbsnp,
+        model=model_bundle.joinpath("diploid_hp_model"),
+        pcr_indel_model=repeat_model,
+    ))
+    run(' '.join(driver.build_cmd()))
 
     # Patch DNA and DNAHP variants
+    diploid_unphased_patch = tmp_dir.joinpath(
+        "out_diploid_unphased_patch.vcf.gz"
+    )
+    diploid_unphased = tmp_dir.joinpath("out_diploid_unphased.vcf.gz")
     cmd = cmds.cmd_pyexec_vcf_mod_patch(
-        f"{kwargs['tmp_base']}/out_diploid_unphased_patch.vcf.gz",
-        phased_unphased,
-        f"{kwargs['tmp_base']}/out_diploid_phased_unphased_hp.vcf.gz",
+        str(diploid_unphased_patch),
+        str(phased_unphased),
+        str(diploid_unphased_hp),
         kwargs,
     )
-    commands.append(cmd)
-    cmd = cmds.cmd_model_apply(
-        f"{kwargs['model_bundle']}/diploid_model_unphased",
-        f"{kwargs['tmp_base']}/out_diploid_unphased_patch.vcf.gz",
-        f"{kwargs['tmp_base']}/out_diploid_unphased.vcf.gz",
-        kwargs,
+    run(cmd)
+    driver = cmds.Driver(
+        reference=reference,
+        thread_count=cores,
     )
-    commands.append(cmd)
+    driver.add_algo(cmds.DNAModelApply(
+        model_bundle.joinpath("diploid_model_unphased"),
+        diploid_unphased_patch,
+        diploid_unphased,
+    ))
+    run(' '.join(driver.build_cmd()))
 
     # merge calls to create the output
-    # https://github.com/Sentieon/sentieon-scripts/blob/master/dnascope_LongRead/dnascope_HiFi.sh#L421
-
-    commands.append(
+    run(
         cmds.cmd_pyexec_vcf_mod_merge(
-            f"{kwargs['tmp_base']}/out_hap1.vcf.gz",
-            f"{kwargs['tmp_base']}/out_hap2.vcf.gz",
-            f"{kwargs['tmp_base']}/out_diploid_unphased.vcf.gz",
-            phased_vcf,
-            f"{kwargs['tmp_base']}/out_diploid_phased.bed",
-            cmds.name(kwargs["output-vcf"]),
+            str(hap_vcfs[0]),
+            str(hap_vcfs[1]),
+            str(diploid_unphased),
+            str(phased_vcf),
+            str(phased_bed),
+            str(output_vcf),
             kwargs,
         )
     )
 
-    if gvcf:
-        commands.append(
+    if use_gvcf:
+        run(
             cmds.cmd_pyexec_gvcf_combine(
-                gvcf,
-                cmds.name(kwargs["output-vcf"]),
+                str(diploid_gvcf_fn),
+                str(output_vcf),
                 kwargs,
             )
         )
 
-    return "\n".join(commands)
+    shutil.rmtree(tmp_dir)
+    return
 
 
 def main():
     """main entry point for this project"""
     logger.setLevel(os.environ.get("LOGLEVEL", "DEBUG").upper())
     logger.info("Starting sentieon-cli version: %s", __version__)
-    argh.dispatch_commands([run_full_dnascope])
+
+    for cmd, min_version in TOOL_MIN_VERSIONS.items():
+        check_version(cmd, min_version)
+
+    argh.dispatch_commands([dnascope_longread])
 
 
 if __name__ == "__main__":
