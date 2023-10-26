@@ -27,7 +27,7 @@ TOOL_MIN_VERSIONS = {
 }
 
 
-def tmp() -> tempfile.TemporaryDirectory[str]:
+def tmp():
     """Create a temporary directory for the current process."""
     tmp_base = os.getenv("SENTIEON_TMPDIR")
     tmp_dir = tempfile.TemporaryDirectory(dir=tmp_base)
