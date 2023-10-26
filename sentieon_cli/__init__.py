@@ -25,7 +25,7 @@ __version__ = "0.1.0"
 logger = get_logger(__name__)
 
 TOOL_MIN_VERSIONS = {
-    "sentieon": packaging.version.Version("202308"),
+    "sentieon driver": packaging.version.Version("202308"),
     "bcftools": packaging.version.Version("1.10"),
     "bedtools": None,
 }
@@ -40,7 +40,8 @@ def tmp() -> tempfile.TemporaryDirectory[str]:
 
 def check_version(cmd: str, version: Optional[packaging.version.Version]):
     """Check the version of an executable"""
-    exec_file = shutil.which(cmd)
+    cmd = cmd.split()
+    exec_file = shutil.which(cmd[0])
     if not exec_file:
         print(f"Error: no '{cmd}' found in the PATH")
         sys.exit(2)
@@ -48,9 +49,14 @@ def check_version(cmd: str, version: Optional[packaging.version.Version]):
     if version is None:
         return
 
-    cmd_version = packaging.version.parse(
-        sp.check_output([cmd, "--version"]).decode("utf-8").strip()
-    )
+    cmd.append("--version")
+    cmd_version = sp.check_output(cmd).decode("utf-8").strip()
+    if cmd[0] == "sentieon":
+        cmd_version = cmd_version.split("-")[-1]
+    else:
+        # handle, e.g. bcftools which outputs multiple lines.
+        cmd_version = cmd_version.split("\n")[0].split()[-1].split("-")[0]
+    cmd_version = packaging.version.Version(cmd_version)
     if cmd_version < version:
         print(
             f"Error: the pipeline requires {cmd} version '{version}' or later "
@@ -85,6 +91,7 @@ def path_arg(
                     f" {attr_name}={attr_val}, but {attr_name}={m()}"
                 )
         return p
+
     return _path_arg
 
 
@@ -99,16 +106,16 @@ def path_arg(
     "-i",
     "--sample-input",
     required=True,
-    nargs='+',
+    nargs="+",
     help="sample BAM or CRAM file",
     type=path_arg(exists=True, is_file=True),
 )
 @arg(
     "-m",
-     "--model-bundle",
-     help="The model bundle file",
-     required=True,
-     type=path_arg(exists=True, is_file=True),
+    "--model-bundle",
+    help="The model bundle file",
+    required=True,
+    type=path_arg(exists=True, is_file=True),
 )
 @arg(
     "output-vcf",
@@ -158,16 +165,15 @@ def dnascope_longread(**kwargs: Any):
     tmp_dir_obj = tmp()
     tmp_dir = pathlib.Path(tmp_dir_obj.name)
 
-    reference: pathlib.Path = kwargs['reference']
-    sample_input: list[pathlib.Path] = kwargs['sample_input']
-    model_bundle: pathlib.Path = kwargs['model_bundle']
-    output_vcf: pathlib.Path = kwargs['output-vcf']
-    dbsnp: Optional[pathlib.Path] = kwargs['dbsnp']
-    bed: Optional[pathlib.Path] = kwargs['bed']
-    cores: int = kwargs['cores']
-    use_gvcf: bool = kwargs['gvcf']
-    tech: str = kwargs['tech']
-
+    reference: pathlib.Path = kwargs["reference"]
+    sample_input: list[pathlib.Path] = kwargs["sample_input"]
+    model_bundle: pathlib.Path = kwargs["model_bundle"]
+    output_vcf: pathlib.Path = kwargs["output-vcf"]
+    dbsnp: Optional[pathlib.Path] = kwargs["dbsnp"]
+    bed: Optional[pathlib.Path] = kwargs["bed"]
+    cores: int = kwargs["cores"]
+    use_gvcf: bool = kwargs["gvcf"]
+    tech: str = kwargs["tech"]
 
     # First pass - diploid calling
     diploid_gvcf_fn = tmp_dir.joinpath("out_diploid.g.vcf.gz")
@@ -179,30 +185,36 @@ def dnascope_longread(**kwargs: Any):
         interval=bed,
     )
     if use_gvcf:
-        driver.add_algo(cmds.DNAscope(
-            diploid_gvcf_fn,
+        driver.add_algo(
+            cmds.DNAscope(
+                diploid_gvcf_fn,
+                dbsnp=dbsnp,
+                emit_mode="gvcf",
+                model=model_bundle.joinpath("gvcf_model"),
+            )
+        )
+    driver.add_algo(
+        cmds.DNAscope(
+            diploid_tmp_vcf,
             dbsnp=dbsnp,
-            emit_mode="gvcf",
-            model=model_bundle.joinpath("gvcf_model"),
-        ))
-    driver.add_algo(cmds.DNAscope(
-        diploid_tmp_vcf,
-        dbsnp=dbsnp,
-        model=model_bundle.joinpath("diploid_model"),
-    ))
-    run(' '.join(driver.build_cmd()))
+            model=model_bundle.joinpath("diploid_model"),
+        )
+    )
+    run(" ".join(driver.build_cmd()))
 
     diploid_vcf = tmp_dir.joinpath("out_diploid.vcf.gz")
     driver = cmds.Driver(
         reference=reference,
         thread_count=cores,
     )
-    driver.add_algo(cmds.DNAModelApply(
-        model_bundle.joinpath("diploid_model"),
-        diploid_tmp_vcf,
-        diploid_vcf,
-    ))
-    run(' '.join(driver.build_cmd()))
+    driver.add_algo(
+        cmds.DNAModelApply(
+            model_bundle.joinpath("diploid_model"),
+            diploid_tmp_vcf,
+            diploid_vcf,
+        )
+    )
+    run(" ".join(driver.build_cmd()))
 
     # Phasing and RepeatModel
     phased_bed = tmp_dir.joinpath("out_diploid_phased.bed")
@@ -217,13 +229,15 @@ def dnascope_longread(**kwargs: Any):
         input=sample_input,
         interval=bed,
     )
-    driver.add_algo(cmds.VariantPhaser(
-        diploid_vcf,
-        phased_vcf,
-        out_bed=phased_bed,
-        out_ext=phased_ext,
-    ))
-    run(' '.join(driver.build_cmd()))
+    driver.add_algo(
+        cmds.VariantPhaser(
+            diploid_vcf,
+            phased_vcf,
+            out_bed=phased_bed,
+            out_ext=phased_ext,
+        )
+    )
+    run(" ".join(driver.build_cmd()))
 
     if tech == "ONT":
         run(
@@ -242,14 +256,16 @@ def dnascope_longread(**kwargs: Any):
         thread_count=cores,
         input=sample_input,
         interval=phased_bed,
-        read_filter=f"PhasedReadFilter,phased_vcf={phased_ext},phase_select=tag"
+        read_filter=f"PhasedReadFilter,phased_vcf={phased_ext},phase_select=tag",
     )
-    driver.add_algo(cmds.RepeatModel(
-        repeat_model,
-        phased=True,
-        read_flag_mask="drop=supplementary",
-    ))
-    run(' '.join(driver.build_cmd()))
+    driver.add_algo(
+        cmds.RepeatModel(
+            repeat_model,
+            phased=True,
+            read_flag_mask="drop=supplementary",
+        )
+    )
+    run(" ".join(driver.build_cmd()))
 
     run(
         f"bcftools view -T {unphased_bed} {phased_vcf} \
@@ -273,24 +289,28 @@ def dnascope_longread(**kwargs: Any):
 
         if tech == "HiFi":
             # ONT doesn't do DNAscope in 2nd pass.
-            driver.add_algo(cmds.DNAscope(
-                hp_std_vcf,
+            driver.add_algo(
+                cmds.DNAscope(
+                    hp_std_vcf,
+                    dbsnp=dbsnp,
+                    model=model_bundle.joinpath("haploid_model"),
+                )
+            )
+        driver.add_algo(
+            cmds.DNAscopeHP(
+                hp_vcf,
                 dbsnp=dbsnp,
-                model=model_bundle.joinpath("haploid_model"),
-            ))
-        driver.add_algo(cmds.DNAscopeHP(
-            hp_vcf,
-            dbsnp=dbsnp,
-            model=model_bundle.joinpath("haploid_hp_model"),
-            pcr_indel_model=repeat_model,
-        ))
-        run(' '.join(driver.build_cmd()))
+                model=model_bundle.joinpath("haploid_hp_model"),
+                pcr_indel_model=repeat_model,
+            )
+        )
+        run(" ".join(driver.build_cmd()))
 
     kwargs["gvcf_combine_py"] = str(
-        files('sentieon_cli.scripts').joinpath('gvcf_combine.py')
+        files("sentieon_cli.scripts").joinpath("gvcf_combine.py")
     )
     kwargs["vcf_mod_py"] = str(
-        files('sentieon_cli.scripts').joinpath('vcf_mod.py')
+        files("sentieon_cli.scripts").joinpath("vcf_mod.py")
     )
 
     patch_vcfs = [tmp_dir.joinpath(f"out_hap{i}_patch.vcf.gz") for i in (1, 2)]
@@ -312,12 +332,14 @@ def dnascope_longread(**kwargs: Any):
             reference=reference,
             thread_count=cores,
         )
-        driver.add_algo(cmds.DNAModelApply(
-            model_bundle.joinpath("haploid_model"),
-            patch_vcf,
-            hap_vcf,
-        ))
-        run(' '.join(driver.build_cmd()))
+        driver.add_algo(
+            cmds.DNAModelApply(
+                model_bundle.joinpath("haploid_model"),
+                patch_vcf,
+                hap_vcf,
+            )
+        )
+        run(" ".join(driver.build_cmd()))
 
     # Second pass - unphased regions
     diploid_unphased_hp = tmp_dir.joinpath(
@@ -329,13 +351,15 @@ def dnascope_longread(**kwargs: Any):
         input=sample_input,
         interval=unphased_bed,
     )
-    driver.add_algo(cmds.DNAscopeHP(
-        diploid_unphased_hp,
-        dbsnp=dbsnp,
-        model=model_bundle.joinpath("diploid_hp_model"),
-        pcr_indel_model=repeat_model,
-    ))
-    run(' '.join(driver.build_cmd()))
+    driver.add_algo(
+        cmds.DNAscopeHP(
+            diploid_unphased_hp,
+            dbsnp=dbsnp,
+            model=model_bundle.joinpath("diploid_hp_model"),
+            pcr_indel_model=repeat_model,
+        )
+    )
+    run(" ".join(driver.build_cmd()))
 
     # Patch DNA and DNAHP variants
     diploid_unphased_patch = tmp_dir.joinpath(
@@ -353,12 +377,14 @@ def dnascope_longread(**kwargs: Any):
         reference=reference,
         thread_count=cores,
     )
-    driver.add_algo(cmds.DNAModelApply(
-        model_bundle.joinpath("diploid_model_unphased"),
-        diploid_unphased_patch,
-        diploid_unphased,
-    ))
-    run(' '.join(driver.build_cmd()))
+    driver.add_algo(
+        cmds.DNAModelApply(
+            model_bundle.joinpath("diploid_model_unphased"),
+            diploid_unphased_patch,
+            diploid_unphased,
+        )
+    )
+    run(" ".join(driver.build_cmd()))
 
     # merge calls to create the output
     run(
