@@ -14,7 +14,6 @@ import packaging.version
 from argh import arg
 from importlib_resources import files
 from .logging import get_logger
-from .runner import run
 from . import command_strings as cmds
 
 if sys.version_info < (3, 9):
@@ -157,6 +156,12 @@ def path_arg(
     default="HiFi",
     choices=["HiFi", "ONT"],
 )
+@arg(
+    "--dry-run",
+    help="Print the commands without running them.",
+    default=False,
+    action="store_true",
+)
 def dnascope_longread(**kwargs: Any):
     """
     Run sentieon cli with the algo DNAscope command.
@@ -174,6 +179,12 @@ def dnascope_longread(**kwargs: Any):
     cores: int = kwargs["cores"]
     use_gvcf: bool = kwargs["gvcf"]
     tech: str = kwargs["tech"]
+    dry_run: bool = kwargs["dry_run"]
+
+    if dry_run:
+        run = print
+    else:
+        from .runner import run
 
     # First pass - diploid calling
     diploid_gvcf_fn = tmp_dir.joinpath("out_diploid.g.vcf.gz")

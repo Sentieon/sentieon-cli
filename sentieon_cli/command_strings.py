@@ -19,8 +19,9 @@ from .logging import get_logger
 logger = get_logger(__name__)
 
 
-class BaseAlgo():
+class BaseAlgo:
     """A base class for Sentieon algos"""
+
     name = "BaseAlgo"
 
     def build_cmd(self) -> list[str]:
@@ -51,6 +52,7 @@ class BaseAlgo():
 
 class VariantPhaser(BaseAlgo):
     """algo VariantPhaser"""
+
     name = "VariantPhaser"
 
     def __init__(
@@ -70,6 +72,7 @@ class VariantPhaser(BaseAlgo):
 
 class RepeatModel(BaseAlgo):
     """algo RepeatModel"""
+
     name = "RepeatModel"
 
     def __init__(
@@ -95,6 +98,7 @@ class RepeatModel(BaseAlgo):
 
 class DNAModelApply(BaseAlgo):
     """algo DNAModelApply"""
+
     name = "DNAModelApply"
 
     def __init__(
@@ -110,6 +114,7 @@ class DNAModelApply(BaseAlgo):
 
 class DNAscope(BaseAlgo):
     """algo DNAscope"""
+
     name = "DNAscope"
 
     def __init__(
@@ -127,6 +132,7 @@ class DNAscope(BaseAlgo):
 
 class DNAscopeHP(BaseAlgo):
     """algo DNAscopeHP"""
+
     name = "DNAscopeHP"
 
     def __init__(
@@ -142,13 +148,14 @@ class DNAscopeHP(BaseAlgo):
         self.pcr_indel_model = pcr_indel_model
 
 
-class Driver():
+class Driver:
     """Representing the Sentieon driver"""
+
     def __init__(
         self,
         reference: Optional[pathlib.Path] = None,
         thread_count: Optional[int] = None,
-        interval: Optional[pathlib.Path|str] = None,
+        interval: Optional[pathlib.Path | str] = None,
         read_filter: Optional[str] = None,
         input: Optional[list[pathlib.Path]] = None,
         algo: Optional[list[BaseAlgo]] = None,
@@ -200,9 +207,7 @@ def cmd_bedtools_subtract(
     if regions_bed is None:
         # set region to the full genome
         regions_bed = tmp_dir.joinpath("reference.bed")
-        with open(
-            regions_bed, "wt", encoding="utf-8"
-        ) as f:
+        with open(regions_bed, "wt", encoding="utf-8") as f:
             for line in open(
                 name(kwargs["reference"]) + ".fai", encoding="utf-8"
             ):
@@ -257,7 +262,10 @@ def cmd_pyexec_vcf_mod_haploid_patch(
 
 
 def cmd_pyexec_vcf_mod_patch(
-    out_vcf: str, vcf: str, vcf_hp: str, kwargs: dict[str, Any],
+    out_vcf: str,
+    vcf: str,
+    vcf_hp: str,
+    kwargs: dict[str, Any],
 ) -> str:
     """Patch DNAscope and DNAscopeHP VCF files"""
 
@@ -267,9 +275,7 @@ def cmd_pyexec_vcf_mod_patch(
 
 
 def cmd_pyexec_gvcf_combine(
-    gvcf: str,
-    out_vcf: str,
-    kwargs: dict[str, Any]
+    gvcf: str, out_vcf: str, kwargs: dict[str, Any]
 ) -> str:
     """Combine gVCF files"""
 
