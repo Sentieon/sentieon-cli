@@ -6,7 +6,7 @@ import subprocess as sp
 import pathlib
 import shutil
 import tempfile
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, List
 
 import argh
 import packaging.version
@@ -39,8 +39,8 @@ def tmp() -> tempfile.TemporaryDirectory[str]:
 
 def check_version(cmd: str, version: Optional[packaging.version.Version]):
     """Check the version of an executable"""
-    cmd = cmd.split()
-    exec_file = shutil.which(cmd[0])
+    cmd_list: List[str] = cmd.split()
+    exec_file = shutil.which(cmd_list[0])
     if not exec_file:
         print(f"Error: no '{cmd}' found in the PATH")
         sys.exit(2)
@@ -48,14 +48,16 @@ def check_version(cmd: str, version: Optional[packaging.version.Version]):
     if version is None:
         return
 
-    cmd.append("--version")
-    cmd_version = sp.check_output(cmd).decode("utf-8").strip()
-    if cmd[0] == "sentieon":
-        cmd_version = cmd_version.split("-")[-1]
+    cmd_list.append("--version")
+    cmd_version_str = sp.check_output(cmd_list).decode("utf-8").strip()
+    if cmd_list[0] == "sentieon":
+        cmd_version_str = cmd_version_str.split("-")[-1]
     else:
         # handle, e.g. bcftools which outputs multiple lines.
-        cmd_version = cmd_version.split("\n")[0].split()[-1].split("-")[0]
-    cmd_version = packaging.version.Version(cmd_version)
+        cmd_version_str = (
+            cmd_version_str.split("\n")[0].split()[-1].split("-")[0]
+        )
+    cmd_version = packaging.version.Version(cmd_version_str)
     if cmd_version < version:
         print(
             f"Error: the pipeline requires {cmd} version '{version}' or later "
@@ -184,7 +186,7 @@ def dnascope_longread(**kwargs: Any):
     if dry_run:
         run = print
     else:
-        from .runner import run
+        from .runner import run  # type: ignore[assignment]
 
     # First pass - diploid calling
     diploid_gvcf_fn = tmp_dir.joinpath("out_diploid.g.vcf.gz")
