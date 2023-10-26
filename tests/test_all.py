@@ -22,6 +22,7 @@ def test_tmp():
     assert os.path.isdir(tmp_dir.name)
     shutil.rmtree(tmp_dir.name)
 
+
 def test_find_script():
     gvcf_combine = files('sentieon_cli.scripts').joinpath('gvcf_combine.py')
     vcf_mod = files('sentieon_cli.scripts').joinpath('vcf_mod.py')

@@ -16,9 +16,6 @@ from importlib_resources import files
 from .logging import get_logger
 from . import command_strings as cmds
 
-if sys.version_info < (3, 9):
-    from typing import Tuple as tuple
-
 __version__ = "0.1.0"
 
 logger = get_logger(__name__)
@@ -173,7 +170,7 @@ def dnascope_longread(**kwargs: Any):
     tmp_dir = pathlib.Path(tmp_dir_obj.name)
 
     reference: pathlib.Path = kwargs["reference"]
-    sample_input: list[pathlib.Path] = kwargs["sample_input"]
+    sample_input: List[pathlib.Path] = kwargs["sample_input"]
     model_bundle: pathlib.Path = kwargs["model_bundle"]
     output_vcf: pathlib.Path = kwargs["output-vcf"]
     dbsnp: Optional[pathlib.Path] = kwargs["dbsnp"]
@@ -269,7 +266,7 @@ def dnascope_longread(**kwargs: Any):
         thread_count=cores,
         input=sample_input,
         interval=phased_bed,
-        read_filter=f"PhasedReadFilter,phased_vcf={phased_ext},phase_select=tag",
+        read_filter=f"PhasedReadFilter,phased_vcf={phased_ext},phase_select=tag",  # noqa: E501
     )
     driver.add_algo(
         cmds.RepeatModel(

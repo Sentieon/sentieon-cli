@@ -13,7 +13,7 @@ command strings to get a full viable command.
 import io
 import pathlib
 import typing
-from typing import Any, Optional
+from typing import Any, Optional, List, Union, Dict
 from .logging import get_logger
 
 logger = get_logger(__name__)
@@ -24,9 +24,9 @@ class BaseAlgo:
 
     name = "BaseAlgo"
 
-    def build_cmd(self) -> list[str]:
+    def build_cmd(self) -> List[str]:
         """Build a command line for the algo"""
-        cmd: list[str] = ["--algo", self.name]
+        cmd: List[str] = ["--algo", self.name]
 
         for k, v in self.__dict__.items():
             if k == "output":
@@ -155,10 +155,10 @@ class Driver:
         self,
         reference: Optional[pathlib.Path] = None,
         thread_count: Optional[int] = None,
-        interval: Optional[pathlib.Path | str] = None,
+        interval: Optional[Union[pathlib.Path, str]] = None,
         read_filter: Optional[str] = None,
-        input: Optional[list[pathlib.Path]] = None,
-        algo: Optional[list[BaseAlgo]] = None,
+        input: Optional[List[pathlib.Path]] = None,
+        algo: Optional[List[BaseAlgo]] = None,
     ):
         self.reference = reference
         self.input = input
@@ -171,9 +171,9 @@ class Driver:
         """Add an algo to the driver"""
         self.algo.append(algo)
 
-    def build_cmd(self) -> list[str]:
+    def build_cmd(self) -> List[str]:
         """Build a command line for the driver"""
-        cmd: list[str] = ["sentieon", "driver"]
+        cmd: List[str] = ["sentieon", "driver"]
 
         for k, v in self.__dict__.items():
             if k == "algo":
@@ -233,7 +233,7 @@ def cmd_pyexec_vcf_mod_haploid_patch(
     hap_patt: str,
     tech: str,
     phased_vcf: str,
-    kwargs: dict[str, Any],
+    kwargs: Dict[str, Any],
 ) -> str:
     """
     merge dnascope and dnascope-hp variants
@@ -265,7 +265,7 @@ def cmd_pyexec_vcf_mod_patch(
     out_vcf: str,
     vcf: str,
     vcf_hp: str,
-    kwargs: dict[str, Any],
+    kwargs: Dict[str, Any],
 ) -> str:
     """Patch DNAscope and DNAscopeHP VCF files"""
 
@@ -275,7 +275,7 @@ def cmd_pyexec_vcf_mod_patch(
 
 
 def cmd_pyexec_gvcf_combine(
-    gvcf: str, out_vcf: str, kwargs: dict[str, Any]
+    gvcf: str, out_vcf: str, kwargs: Dict[str, Any]
 ) -> str:
     """Combine gVCF files"""
 
@@ -294,7 +294,7 @@ def cmd_pyexec_vcf_mod_merge(
     phased_vcf: str,
     phased_bed: str,
     out_vcf: str,
-    kwargs: dict[str, Any],
+    kwargs: Dict[str, Any],
 ) -> str:
     """Merge haploid VCF files"""
 

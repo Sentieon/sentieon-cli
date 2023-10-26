@@ -26,7 +26,7 @@ jobs:
       - name: Run mypy
         run: poetry run mypy . 
       - name: Run flake8
-        run: poetry run flake8 . --ignore E231,E221 --exclude sentieon_cli/gvcf_combine.py,sentieon_cli/vcf_mod.py # false+ from python 3.12
+        run: poetry run flake8 . --ignore E231,E221 --exclude sentieon_cli/scripts/gvcf_combine.py,sentieon_cli/scripts/vcf_mod.py # false+ from python 3.12
       - name: Run the automated tests (for example)
         run: poetry run pytest -v
       - name: Run doct tests
