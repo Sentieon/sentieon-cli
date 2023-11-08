@@ -166,6 +166,10 @@ def dnascope_longread(**kwargs: Any):
     Run sentieon cli with the algo DNAscope command.
     """
     logger.info(kwargs)
+
+    for cmd, min_version in TOOL_MIN_VERSIONS.items():
+        check_version(cmd, min_version)
+
     tmp_dir_obj = tmp()
     tmp_dir = pathlib.Path(tmp_dir_obj.name)
 
@@ -426,9 +430,6 @@ def main():
     """main entry point for this project"""
     logger.setLevel(os.environ.get("LOGLEVEL", "DEBUG").upper())
     logger.info("Starting sentieon-cli version: %s", __version__)
-
-    for cmd, min_version in TOOL_MIN_VERSIONS.items():
-        check_version(cmd, min_version)
 
     argh.dispatch_commands([dnascope_longread])
 
