@@ -167,6 +167,7 @@ def dnascope_longread(
     gvcf: bool = False,
     tech: str = "HiFi",
     dry_run: bool = False,
+    **kwargs: str,
 ):
     """
     Run sentieon cli with the algo DNAscope command.
@@ -174,6 +175,9 @@ def dnascope_longread(
     assert reference
     assert sample_input
     assert model_bundle
+
+    logger.setLevel(kwargs["loglevel"])
+    logger.info("Starting sentieon-cli version: %s", __version__)
 
     for cmd, min_version in TOOL_MIN_VERSIONS.items():
         check_version(cmd, min_version)
@@ -317,7 +321,6 @@ def dnascope_longread(
         )
         run(" ".join(driver.build_cmd()))
 
-    kwargs: dict[str, str] = {}
     kwargs["gvcf_combine_py"] = str(
         files("sentieon_cli.scripts").joinpath("gvcf_combine.py")
     )
@@ -430,10 +433,27 @@ def dnascope_longread(
 
 def main():
     """main entry point for this project"""
-    logger.setLevel(os.environ.get("LOGLEVEL", "DEBUG").upper())
-    logger.info("Starting sentieon-cli version: %s", __version__)
+    parser = argh.ArghParser()
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        help="Verbose logging",
+        action="store_const",
+        dest="loglevel",
+        const="INFO",
+        default="WARNING",
+    )
+    parser.add_argument(
+        "-d",
+        "--debug",
+        help="Print debugging info",
+        action="store_const",
+        dest="loglevel",
+        const="DEBUG",
+    )
 
-    argh.dispatch_commands([dnascope_longread])
+    parser.add_commands([dnascope_longread])
+    parser.dispatch()
 
 
 if __name__ == "__main__":
