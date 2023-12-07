@@ -6,7 +6,7 @@ import subprocess as sp
 import pathlib
 import shutil
 import tempfile
-from typing import Any, Callable, Optional, List
+from typing import Callable, Optional, List
 
 import argh
 import packaging.version
@@ -138,7 +138,6 @@ def path_arg(
 @arg(
     "-t",
     "--cores",
-    default=mp.cpu_count(),
     help="Number of threads/processes to use. %(default)s",
 )
 @arg(
@@ -146,43 +145,37 @@ def path_arg(
     "--gvcf",
     help="Generate a gVCF output file along with the VCF."
     " (default generates only the VCF)",
-    default=False,
     action="store_true",
 )
 @arg(
     "--tech",
     help="Sequencing technology used to generate the reads.",
-    default="HiFi",
     choices=["HiFi", "ONT"],
 )
 @arg(
     "--dry-run",
     help="Print the commands without running them.",
-    default=False,
-    action="store_true",
 )
-def dnascope_longread(**kwargs: Any):
+def dnascope_longread(
+    reference: pathlib.Path,
+    sample_input: list[pathlib.Path],
+    model_bundle: pathlib.Path,
+    output_vcf: pathlib.Path,
+    dbsnp: Optional[pathlib.Path] = None,
+    bed: Optional[pathlib.Path] = None,
+    cores: int = mp.cpu_count(),
+    gvcf: bool = False,
+    tech: str = "HiFi",
+    dry_run: bool = False,
+):
     """
     Run sentieon cli with the algo DNAscope command.
     """
-    logger.info(kwargs)
-
     for cmd, min_version in TOOL_MIN_VERSIONS.items():
         check_version(cmd, min_version)
 
     tmp_dir_obj = tmp()
     tmp_dir = pathlib.Path(tmp_dir_obj.name)
-
-    reference: pathlib.Path = kwargs["reference"]
-    sample_input: List[pathlib.Path] = kwargs["sample_input"]
-    model_bundle: pathlib.Path = kwargs["model_bundle"]
-    output_vcf: pathlib.Path = kwargs["output-vcf"]
-    dbsnp: Optional[pathlib.Path] = kwargs["dbsnp"]
-    bed: Optional[pathlib.Path] = kwargs["bed"]
-    cores: int = kwargs["cores"]
-    use_gvcf: bool = kwargs["gvcf"]
-    tech: str = kwargs["tech"]
-    dry_run: bool = kwargs["dry_run"]
 
     if dry_run:
         run = print
@@ -198,7 +191,7 @@ def dnascope_longread(**kwargs: Any):
         input=sample_input,
         interval=bed,
     )
-    if use_gvcf:
+    if gvcf:
         driver.add_algo(
             cmds.DNAscope(
                 diploid_gvcf_fn,
@@ -253,14 +246,14 @@ def dnascope_longread(**kwargs: Any):
     )
     run(" ".join(driver.build_cmd()))
 
-    if tech == "ONT":
+    if tech.upper() == "ONT":
         run(
             f"bcftools view -T {phased_bed} {phased_vcf} \
             | sentieon util vcfconvert - {phased_phased}"
         )
     run(
         cmds.cmd_bedtools_subtract(
-            bed, phased_bed, unphased_bed, tmp_dir, **kwargs
+            bed, phased_bed, unphased_bed, tmp_dir, reference
         )
     )
 
@@ -301,7 +294,7 @@ def dnascope_longread(**kwargs: Any):
             ),
         )
 
-        if tech == "HiFi":
+        if tech.upper() == "HIFI":
             # ONT doesn't do DNAscope in 2nd pass.
             driver.add_algo(
                 cmds.DNAscope(
@@ -320,6 +313,7 @@ def dnascope_longread(**kwargs: Any):
         )
         run(" ".join(driver.build_cmd()))
 
+    kwargs: dict[str, str] = {}
     kwargs["gvcf_combine_py"] = str(
         files("sentieon_cli.scripts").joinpath("gvcf_combine.py")
     )
@@ -333,8 +327,9 @@ def dnascope_longread(**kwargs: Any):
             str(patch_vcfs[0]),
             str(patch_vcfs[1]),
             f"{tmp_dir}/out_hap%d_%stmp.vcf.gz",
-            kwargs["tech"],
+            tech,
             str(phased_phased),
+            cores,
             kwargs,
         )
     )
@@ -384,6 +379,7 @@ def dnascope_longread(**kwargs: Any):
         str(diploid_unphased_patch),
         str(phased_unphased),
         str(diploid_unphased_hp),
+        cores,
         kwargs,
     )
     run(cmd)
@@ -409,15 +405,17 @@ def dnascope_longread(**kwargs: Any):
             str(phased_vcf),
             str(phased_bed),
             str(output_vcf),
+            cores,
             kwargs,
         )
     )
 
-    if use_gvcf:
+    if gvcf:
         run(
             cmds.cmd_pyexec_gvcf_combine(
                 str(diploid_gvcf_fn),
                 str(output_vcf),
+                cores,
                 kwargs,
             )
         )
