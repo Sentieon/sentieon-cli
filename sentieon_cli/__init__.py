@@ -156,6 +156,15 @@ def path_arg(
     "--dry-run",
     help="Print the commands without running them.",
 )
+@arg(
+    "--repeat-model",
+    type=path_arg(exists=True, is_file=True),
+    help=argparse.SUPPRESS,
+)
+@arg(
+    "--skip-version-check",
+    help=argparse.SUPPRESS,
+)
 def dnascope_longread(
     output_vcf: pathlib.Path,
     reference: Optional[pathlib.Path] = None,
@@ -167,6 +176,8 @@ def dnascope_longread(
     gvcf: bool = False,
     tech: str = "HiFi",
     dry_run: bool = False,
+    repeat_model: Optional[pathlib.Path] = None,
+    skip_version_check: bool = False,
     **kwargs: str,
 ):
     """
@@ -179,8 +190,9 @@ def dnascope_longread(
     logger.setLevel(kwargs["loglevel"])
     logger.info("Starting sentieon-cli version: %s", __version__)
 
-    for cmd, min_version in TOOL_MIN_VERSIONS.items():
-        check_version(cmd, min_version)
+    if not skip_version_check:
+        for cmd, min_version in TOOL_MIN_VERSIONS.items():
+            check_version(cmd, min_version)
 
     tmp_dir_obj = tmp()
     tmp_dir = pathlib.Path(tmp_dir_obj.name)
@@ -261,26 +273,27 @@ def dnascope_longread(
         )
     run(
         cmds.cmd_bedtools_subtract(
-            bed, phased_bed, unphased_bed, tmp_dir, reference
+            bed, phased_bed, unphased_bed, tmp_dir, reference, dry_run
         )
     )
 
-    repeat_model = tmp_dir.joinpath("out_repeat.model")
-    driver = cmds.Driver(
-        reference=reference,
-        thread_count=cores,
-        input=sample_input,
-        interval=phased_bed,
-        read_filter=f"PhasedReadFilter,phased_vcf={phased_ext},phase_select=tag",  # noqa: E501
-    )
-    driver.add_algo(
-        cmds.RepeatModel(
-            repeat_model,
-            phased=True,
-            read_flag_mask="drop=supplementary",
+    if not repeat_model:
+        repeat_model = tmp_dir.joinpath("out_repeat.model")
+        driver = cmds.Driver(
+            reference=reference,
+            thread_count=cores,
+            input=sample_input,
+            interval=phased_bed,
+            read_filter=f"PhasedReadFilter,phased_vcf={phased_ext},phase_select=tag",  # noqa: E501
         )
-    )
-    run(" ".join(driver.build_cmd()))
+        driver.add_algo(
+            cmds.RepeatModel(
+                repeat_model,
+                phased=True,
+                read_flag_mask="drop=supplementary",
+            )
+        )
+        run(" ".join(driver.build_cmd()))
 
     run(
         f"bcftools view -T {unphased_bed} {phased_vcf} \

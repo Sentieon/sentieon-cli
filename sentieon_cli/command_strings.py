@@ -203,16 +203,16 @@ def cmd_bedtools_subtract(
     unphased_bed: pathlib.Path,
     tmp_dir: pathlib.Path,
     reference: pathlib.Path,
+    dry_run: bool,
 ):
     if regions_bed is None:
         # set region to the full genome
         regions_bed = tmp_dir.joinpath("reference.bed")
-        with open(regions_bed, "wt", encoding="utf-8") as f:
-            for line in open(
-                name(reference) + ".fai", encoding="utf-8"
-            ):
-                toks = line.strip().split("\t")
-                f.write(f"{toks[0]}\t0\t{toks[1]}\n")
+        if not dry_run:
+            with open(regions_bed, "wt", encoding="utf-8") as f:
+                for line in open(name(reference) + ".fai", encoding="utf-8"):
+                    toks = line.strip().split("\t")
+                    f.write(f"{toks[0]}\t0\t{toks[1]}\n")
     cmd = f"bedtools subtract -a {regions_bed} -b {phased_bed} "
     cmd += f"> {unphased_bed}"
     return cmd
