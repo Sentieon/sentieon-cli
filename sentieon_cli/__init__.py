@@ -157,10 +157,10 @@ def path_arg(
     help="Print the commands without running them.",
 )
 def dnascope_longread(
-    reference: pathlib.Path,
-    sample_input: list[pathlib.Path],
-    model_bundle: pathlib.Path,
     output_vcf: pathlib.Path,
+    reference: Optional[pathlib.Path] = None,
+    sample_input: Optional[list[pathlib.Path]] = None,
+    model_bundle: Optional[pathlib.Path] = None,
     dbsnp: Optional[pathlib.Path] = None,
     bed: Optional[pathlib.Path] = None,
     cores: int = mp.cpu_count(),
@@ -171,6 +171,10 @@ def dnascope_longread(
     """
     Run sentieon cli with the algo DNAscope command.
     """
+    assert reference
+    assert sample_input
+    assert model_bundle
+
     for cmd, min_version in TOOL_MIN_VERSIONS.items():
         check_version(cmd, min_version)
 
