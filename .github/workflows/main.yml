@@ -1,0 +1,60 @@
+name: CI-main
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+env:
+  SENTIEON_VERSION: "202308.01"
+
+jobs:
+  smoke:
+    strategy:
+      fail-fast: true
+      matrix:
+        python-version: ["3.12"]
+        poetry-version: ["1.5.1"]
+        os: [ubuntu-22.04] #, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Run image
+        uses: abatilo/actions-poetry@v2
+        with:
+          poetry-version: ${{ matrix.poetry-version }}
+      - name: Install the project dependencies
+        run: |
+          poetry config virtualenvs.in-project true
+          poetry install
+      - name: Install bcftools
+        run: |
+          apt-get update
+          apt-get install -y bcftools
+      - name: Install bedtools
+        run: |
+          curl -L -o /usr/local/bin/bedtools "https://github.com/arq5x/bedtools2/releases/download/v2.31.0/bedtools.static"
+          chmod ugo+x /usr/local/bin/bedtools
+      - name: Install sentieon
+        run: |
+          curl -L https://s3.amazonaws.com/sentieon-release/software/sentieon-genomics-$SENTIEON_VERSION.tar.gz | tar -zxf -
+      - name: Download model
+        run: curl -LO "https://s3.amazonaws.com/sentieon-release/other/DNAscopePacBio2.0.bundle"
+      - name: Smoke test
+        run: |
+          SENTIEON_AUTH_DATA=$(python3 .github/scripts/license_message.py encrypt --key "$ENCRYPTION_KEY" --message "$LICENSE_MESSAGE")
+          export SENTIEON_AUTH_DATA
+          . .venv/bin/activate
+          export PATH=$(pwd)/sentieon-genomics-$SENTIEON_VERSION/bin:$PATH
+          gzip -dc tests/smoke/ref.fa.bgz > tests/smoke/ref.fa
+          sentieon-cli dnascope-longread -r tests/smoke/ref.fa -i tests/smoke/sample.cram -m DNAscopePacBio2.0.bundle --repeat-model tests/smoke/sample_repeat.model -g output_hifi.vcf.gz
+          sentieon-cli dnascope-longread --tech ONT -r tests/smoke/ref.fa -i tests/smoke/sample.cram -m DNAscopePacBio2.0.bundle --repeat-model tests/smoke/sample_repeat.model -g output_ont.vcf.gz
+        env:
+          SENTIEON_LICENSE: ${{ secrets.SENTIEON_LICENSE }}
+          SENTIEON_AUTH_MECH: "GitHub Actions - token"
+          ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
+          LICENSE_MESSAGE: ${{ secrets.LICENSE_MESSAGE }}
+      

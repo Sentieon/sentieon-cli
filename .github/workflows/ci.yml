@@ -1,5 +1,7 @@
 name: CI
-on: push
+on:
+  push:
+  pull_request:
 
 jobs:
   ci:
@@ -19,6 +21,25 @@ jobs:
         uses: abatilo/actions-poetry@v2
         with:
           poetry-version: ${{ matrix.poetry-version }}
+      - name: Test build
+        run: |
+          poetry config virtualenvs.in-project true
+          poetry install
+          . .venv/bin/activate
+          sentieon-cli -h
+  formatting:
+    strategy:
+      fail-fast: true
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+      - name: Run image
+        uses: abatilo/actions-poetry@v2
+        with:
+          poetry-version: "1.5.1"
       - name: Install the project dependencies
         run: poetry install
       - name: Run black formatter
@@ -26,7 +47,7 @@ jobs:
       - name: Run mypy
         run: poetry run mypy . 
       - name: Run flake8
-        run: poetry run flake8 . --ignore E231,E221 --exclude sentieon_cli/scripts/gvcf_combine.py,sentieon_cli/scripts/vcf_mod.py # false+ from python 3.12
+        run: poetry run flake8 . --ignore E231,E221 --exclude .github/scripts/license_message.py,sentieon_cli/scripts/gvcf_combine.py,sentieon_cli/scripts/vcf_mod.py # false+ from python 3.12
       - name: Run the automated tests (for example)
         run: poetry run pytest -v
       - name: Run doct tests
