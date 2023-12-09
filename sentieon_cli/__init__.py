@@ -168,7 +168,7 @@ def path_arg(
 def dnascope_longread(
     output_vcf: pathlib.Path,
     reference: Optional[pathlib.Path] = None,
-    sample_input: Optional[list[pathlib.Path]] = None,
+    sample_input: Optional[List[pathlib.Path]] = None,
     model_bundle: Optional[pathlib.Path] = None,
     dbsnp: Optional[pathlib.Path] = None,
     bed: Optional[pathlib.Path] = None,
