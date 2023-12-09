@@ -8,7 +8,7 @@ DNAscope LongRead is implemented using the Sentieon software package, which requ
 
 ## Prerequisites
 
-In order to run the pipeline scripts in this folder, you need to use the Sentieon software package version 202308 or higher. The pipeline also requires [Python] versions >2.7 or >3.3, [bcftools] version 1.10 or higher, and [bedtools]. The `sentieon`, `python`, `bcftools`, and `bedtools` executables will be accessed through the user's `PATH` environment variable.
+In order to run the pipeline, you need to use the Sentieon software package version 202308 or higher. The pipeline also requires [Python] versions >2.7 or >3.3, [bcftools] version 1.10 or higher, and [bedtools]. The `sentieon`, `python`, `bcftools`, and `bedtools` executables will be accessed through the user's `PATH` environment variable.
 
 ## Input data requirements
 
