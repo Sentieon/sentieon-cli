@@ -32,12 +32,12 @@ jobs:
           poetry install
       - name: Install bcftools
         run: |
-          apt-get update
-          apt-get install -y bcftools
+          sudo apt-get update
+          sudo apt-get install -y bcftools
       - name: Install bedtools
         run: |
-          curl -L -o /usr/local/bin/bedtools "https://github.com/arq5x/bedtools2/releases/download/v2.31.0/bedtools.static"
-          chmod ugo+x /usr/local/bin/bedtools
+          sudo curl -L -o /usr/local/bin/bedtools "https://github.com/arq5x/bedtools2/releases/download/v2.31.0/bedtools.static"
+          sudo chmod ugo+x /usr/local/bin/bedtools
       - name: Install sentieon
         run: |
           curl -L https://s3.amazonaws.com/sentieon-release/software/sentieon-genomics-$SENTIEON_VERSION.tar.gz | tar -zxf -
