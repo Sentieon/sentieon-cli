@@ -4,7 +4,6 @@ import sys
 import argparse
 import vcflib
 import copy
-import uuid
 import os
 import time
 import resource
@@ -19,24 +18,9 @@ class Combiner(vcflib.Shardable, vcflib.ShardResult):
         self.contigs = self.gvcf_in.contigs
         extras = self.extra_headers(self.gvcf_in, self.vcf_in)
         self.vcftmp = None
-        self.stdout = False
-        if gvcf_output == '-':
-            dir = os.getenv('SENTIEON_TMPDIR') 
-            if not dir:
-                dir = '/tmp'
-            gvcf_output = os.path.join(dir, str(uuid.uuid4()) + ".vcf")
-            self.stdout = True
         self.gvcf_out = vcflib.VCF(gvcf_output, 'w')
         self.gvcf_out.copy_header(self.gvcf_in, extras)
         self.gvcf_out.emit_header()
-        if self.stdout:
-            chr_line = ""
-            for line in self.gvcf_out.headers:
-                if line.startswith('#CHROM'):
-                    chr_line = line
-                    continue
-                sys.stdout.write(line + '\n')
-            sys.stdout.write(chr_line + '\n')
     
     @staticmethod
     def extra_headers(vcf1, vcf2):
@@ -49,10 +33,8 @@ class Combiner(vcflib.Shardable, vcflib.ShardResult):
     def __del__(self):
         self.vcf_in.close()
         self.gvcf_in.close()
-        self.gvcf_out.close()
-        if self.stdout and not hasattr(self, 'shard'):
-            os.unlink(self.gvcf_out.path)
-            os.unlink(self.gvcf_out.path + '.idx')
+        if self.gvcf_out != '-':
+            self.gvcf_out.close()
 
     @staticmethod
     def grouper(gvcfi, vcfi):
@@ -124,13 +106,7 @@ class Combiner(vcflib.Shardable, vcflib.ShardResult):
         return self.vcftmp.__getdata__()
     
     def __accum__(self, data):
-        if not self.stdout:
-            self.gvcf_out.__accum__(data)
-        else:
-            with open(data) as f:
-                for line in f:
-                    sys.stdout.write(line)
-        os.unlink(data)
+        self.gvcf_out.__accum__(data)
 
     def combine(self, shard=None):
         shard = shard or self.shard
@@ -153,6 +129,17 @@ class Combiner(vcflib.Shardable, vcflib.ShardResult):
                     self.vcftmp.emit(g)
             if v and pos >= start:
                 v.alt.append('<NON_REF>')
+                if "PL" in v.samples[0]:
+                    n_alt = len(v.alt)
+                    idx = -1
+                    for i in range(n_alt+1):
+                        idx += n_alt + 1 - i
+                        v.samples[0]['PL'].insert(idx, 100)
+                if "AD" in v.samples[0]:
+                    if "DP" not in v.samples[0]:
+                        v.samples[0]['AD'].append(0)
+                    else:
+                        v.samples[0]['AD'].append(v.samples[0]['DP'] - sum(v.samples[0]['AD']))
                 v.line = None
                 self.vcftmp.emit(v)
 

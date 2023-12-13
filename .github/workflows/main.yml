@@ -51,7 +51,9 @@ jobs:
           export PATH=$(pwd)/sentieon-genomics-$SENTIEON_VERSION/bin:$PATH
           gzip -dc tests/smoke/ref.fa.bgz > tests/smoke/ref.fa
           sentieon-cli dnascope-longread -r tests/smoke/ref.fa -i tests/smoke/sample.cram -m DNAscopePacBio2.0.bundle --repeat-model tests/smoke/sample_repeat.model -g output_hifi.vcf.gz
+          sentieon driver -r tests/smoke/ref.fa --algo GVCFtyper -v output_hifi.g.vcf.gz output_hifi_gvcftyper.vcf.gz
           sentieon-cli dnascope-longread --tech ONT -r tests/smoke/ref.fa -i tests/smoke/sample.cram -m DNAscopePacBio2.0.bundle --repeat-model tests/smoke/sample_repeat.model -g output_ont.vcf.gz
+          sentieon driver -r tests/smoke/ref.fa --algo GVCFtyper -v output_ont.g.vcf.gz output_hifi_gvcftyper.vcf.gz
         env:
           SENTIEON_LICENSE: ${{ secrets.SENTIEON_LICENSE }}
           SENTIEON_AUTH_MECH: "GitHub Actions - token"
