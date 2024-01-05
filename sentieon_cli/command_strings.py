@@ -36,13 +36,13 @@ class BaseAlgo:
             elif isinstance(v, list):
                 for i in v:
                     cmd.append(f"--{k}")
-                    cmd.append(str(i))
+                    cmd.append(f"'{i}'")
             elif isinstance(v, bool):
                 if v:
                     cmd.append(f"--{k}")
             else:
                 cmd.append(f"--{k}")
-                cmd.append(str(v))
+                cmd.append(f"'{v}'")
 
         if "output" in self.__dict__:
             cmd.append(str(self.__dict__["output"]))
@@ -183,13 +183,13 @@ class Driver:
             elif isinstance(v, list):
                 for i in v:
                     cmd.append(f"--{k}")
-                    cmd.append(str(i))
+                    cmd.append(f"'{i}'")
             elif isinstance(v, bool):
                 if v:
                     cmd.append(f"--{k}")
             else:
                 cmd.append(f"--{k}")
-                cmd.append(str(v))
+                cmd.append(f"'{v}'")
 
         for algo in self.algo:
             cmd.extend(algo.build_cmd())

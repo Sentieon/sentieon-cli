@@ -30,7 +30,7 @@ TOOL_MIN_VERSIONS = {
 def tmp():
     """Create a temporary directory for the current process."""
     tmp_base = os.getenv("SENTIEON_TMPDIR")
-    tmp_dir = tempfile.TemporaryDirectory(dir=tmp_base)
+    tmp_dir = tempfile.mkdtemp(dir=tmp_base)
     return tmp_dir
 
 
@@ -165,6 +165,10 @@ def path_arg(
     "--skip-version-check",
     help=argparse.SUPPRESS,
 )
+@arg(
+    "--retain-tmpdir",
+    help=argparse.SUPPRESS,
+)
 def dnascope_longread(
     output_vcf: pathlib.Path,
     reference: Optional[pathlib.Path] = None,
@@ -178,6 +182,7 @@ def dnascope_longread(
     dry_run: bool = False,
     repeat_model: Optional[pathlib.Path] = None,
     skip_version_check: bool = False,
+    retain_tmpdir: bool = False,
     **kwargs: str,
 ):
     """
@@ -194,8 +199,8 @@ def dnascope_longread(
         for cmd, min_version in TOOL_MIN_VERSIONS.items():
             check_version(cmd, min_version)
 
-    tmp_dir_obj = tmp()
-    tmp_dir = pathlib.Path(tmp_dir_obj.name)
+    tmp_dir_str = tmp()
+    tmp_dir = pathlib.Path(tmp_dir_str)
 
     if dry_run:
         run = print
@@ -440,7 +445,8 @@ def dnascope_longread(
             )
         )
 
-    shutil.rmtree(tmp_dir)
+    if not retain_tmpdir:
+        shutil.rmtree(tmp_dir_str)
     return
 
 
