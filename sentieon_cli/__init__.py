@@ -438,6 +438,7 @@ def dnascope_longread(
     if gvcf:
         run(
             cmds.cmd_pyexec_gvcf_combine(
+                reference,
                 str(diploid_gvcf_fn),
                 str(output_vcf),
                 cores,

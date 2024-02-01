@@ -10,6 +10,7 @@ Command strings may be partial--that is, they could be mixed with other
 command strings to get a full viable command.
 
 """
+
 import io
 import pathlib
 import typing
@@ -277,12 +278,16 @@ def cmd_pyexec_vcf_mod_patch(
 
 
 def cmd_pyexec_gvcf_combine(
-    gvcf: str, out_vcf: str, cores: int, kwargs: Dict[str, Any]
+    reference: pathlib.Path,
+    gvcf: str,
+    out_vcf: str,
+    cores: int,
+    kwargs: Dict[str, Any],
 ) -> str:
     """Combine gVCF files"""
 
     cmd = f"sentieon pyexec {kwargs['gvcf_combine_py']} -t {cores} "
-    cmd += f"{gvcf} {out_vcf} -"
+    cmd += f"{reference} {gvcf} {out_vcf} -"
     cmd += " | sentieon util vcfconvert - " + out_vcf.replace(
         ".vcf.gz", ".g.vcf.gz"
     )
