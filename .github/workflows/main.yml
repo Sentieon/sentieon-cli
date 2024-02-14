@@ -42,18 +42,31 @@ jobs:
         run: |
           curl -L https://s3.amazonaws.com/sentieon-release/software/sentieon-genomics-$SENTIEON_VERSION.tar.gz | tar -zxf -
       - name: Download model
-        run: curl -LO "https://s3.amazonaws.com/sentieon-release/other/DNAscopePacBio2.0.bundle"
+        run: |
+          curl -L "https://s3.amazonaws.com/sentieon-release/other/DNAscopePacBio2.1.bundle" \
+            > "DNAscope PacBio2.1.bundle"
       - name: Smoke test
         run: |
           SENTIEON_AUTH_DATA=$(python3 .github/scripts/license_message.py encrypt --key "$ENCRYPTION_KEY" --message "$LICENSE_MESSAGE")
           export SENTIEON_AUTH_DATA
           . .venv/bin/activate
           export PATH=$(pwd)/sentieon-genomics-$SENTIEON_VERSION/bin:$PATH
-          gzip -dc tests/smoke/ref.fa.bgz > tests/smoke/ref.fa
-          sentieon-cli dnascope-longread -r tests/smoke/ref.fa -i tests/smoke/sample.cram -m DNAscopePacBio2.0.bundle --repeat-model tests/smoke/sample_repeat.model -g output_hifi.vcf.gz
-          sentieon driver -r tests/smoke/ref.fa --algo GVCFtyper -v output_hifi.g.vcf.gz output_hifi_gvcftyper.vcf.gz
-          sentieon-cli dnascope-longread --tech ONT -r tests/smoke/ref.fa -i tests/smoke/sample.cram -m DNAscopePacBio2.0.bundle --repeat-model tests/smoke/sample_repeat.model -g output_ont.vcf.gz
-          sentieon driver -r tests/smoke/ref.fa --algo GVCFtyper -v output_ont.g.vcf.gz output_hifi_gvcftyper.vcf.gz
+          gzip -dc tests/smoke/ref.fa.bgz > "tests/smoke/r ef.fa"
+          mv tests/smoke/ref.fa.fai "tests/smoke/r ef.fa.fai"
+          mv tests/smoke/sample.cram "tests/smoke/sam ple.cram"
+          mv tests/smoke/sample.cram.crai "tests/smoke/sam ple.cram.crai"
+
+          sentieon-cli dnascope-longread -r "tests/smoke/r ef.fa" \
+            -i "tests/smoke/sam ple.cram" -m "DNAscope PacBio2.1.bundle" \
+            --repeat-model tests/smoke/sample_repeat.model -g "output hifi.vcf.gz"
+          sentieon driver -r "tests/smoke/r ef.fa" --algo GVCFtyper \
+            -v "output hifi.g.vcf.gz" output_hifi_gvcftyper.vcf.gz
+
+          sentieon-cli dnascope-longread --tech ONT -r "tests/smoke/r ef.fa" \
+            -i "tests/smoke/sam ple.cram" -m "DNAscope PacBio2.1.bundle" \
+            --repeat-model tests/smoke/sample_repeat.model -g "output ont.vcf.gz"
+          sentieon driver -r "tests/smoke/r ef.fa" --algo GVCFtyper \
+            -v "output ont.g.vcf.gz" output_hifi_gvcftyper.vcf.gz
         env:
           SENTIEON_LICENSE: ${{ secrets.SENTIEON_LICENSE }}
           SENTIEON_AUTH_MECH: "GitHub Actions - token"

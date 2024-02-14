@@ -13,6 +13,7 @@ command strings to get a full viable command.
 
 import io
 import pathlib
+import shlex
 import typing
 from typing import Any, Optional, List, Union, Dict
 from .logging import get_logger
@@ -37,13 +38,13 @@ class BaseAlgo:
             elif isinstance(v, list):
                 for i in v:
                     cmd.append(f"--{k}")
-                    cmd.append(f"'{i}'")
+                    cmd.append(str(i))
             elif isinstance(v, bool):
                 if v:
                     cmd.append(f"--{k}")
             else:
                 cmd.append(f"--{k}")
-                cmd.append(f"'{v}'")
+                cmd.append(str(v))
 
         if "output" in self.__dict__:
             cmd.append(str(self.__dict__["output"]))
@@ -184,13 +185,13 @@ class Driver:
             elif isinstance(v, list):
                 for i in v:
                     cmd.append(f"--{k}")
-                    cmd.append(f"'{i}'")
+                    cmd.append(str(i))
             elif isinstance(v, bool):
                 if v:
                     cmd.append(f"--{k}")
             else:
                 cmd.append(f"--{k}")
-                cmd.append(f"'{v}'")
+                cmd.append(str(v))
 
         for algo in self.algo:
             cmd.extend(algo.build_cmd())
@@ -214,9 +215,15 @@ def cmd_bedtools_subtract(
                 for line in open(name(reference) + ".fai", encoding="utf-8"):
                     toks = line.strip().split("\t")
                     f.write(f"{toks[0]}\t0\t{toks[1]}\n")
-    cmd = f"bedtools subtract -a {regions_bed} -b {phased_bed} "
-    cmd += f"> {unphased_bed}"
-    return cmd
+    cmd = [
+        "bedtools",
+        "subtract",
+        "-a",
+        str(regions_bed),
+        "-b",
+        str(phased_bed),
+    ]
+    return shlex.join(cmd) + ">" + shlex.quote(str(unphased_bed))
 
 
 def name(path: typing.Union[str, io.TextIOWrapper, pathlib.Path]) -> str:
@@ -272,9 +279,20 @@ def cmd_pyexec_vcf_mod_patch(
 ) -> str:
     """Patch DNAscope and DNAscopeHP VCF files"""
 
-    cmd = f"sentieon pyexec {kwargs['vcf_mod_py']} -t {cores} "
-    cmd += f"patch --vcf {vcf} --vcf_hp {vcf_hp} {out_vcf}"
-    return cmd
+    cmd = [
+        "sentieon",
+        "pyexec",
+        str(kwargs["vcf_mod_py"]),
+        "-t",
+        str(cores),
+        "patch",
+        "--vcf",
+        str(vcf),
+        "--vcf_hp",
+        str(vcf_hp),
+        str(out_vcf),
+    ]
+    return shlex.join(cmd)
 
 
 def cmd_pyexec_gvcf_combine(
@@ -286,12 +304,25 @@ def cmd_pyexec_gvcf_combine(
 ) -> str:
     """Combine gVCF files"""
 
-    cmd = f"sentieon pyexec {kwargs['gvcf_combine_py']} -t {cores} "
-    cmd += f"{reference} {gvcf} {out_vcf} -"
-    cmd += " | sentieon util vcfconvert - " + out_vcf.replace(
-        ".vcf.gz", ".g.vcf.gz"
-    )
-    return cmd
+    cmd1 = [
+        "sentieon",
+        "pyexec",
+        str(kwargs["gvcf_combine_py"]),
+        "-t",
+        str(cores),
+        str(reference),
+        gvcf,
+        out_vcf,
+        "-",
+    ]
+    cmd2 = [
+        "sentieon",
+        "util",
+        "vcfconvert",
+        "-",
+        out_vcf.replace(".vcf.gz", ".g.vcf.gz"),
+    ]
+    return shlex.join(cmd1) + "|" + shlex.join(cmd2)
 
 
 def cmd_pyexec_vcf_mod_merge(
@@ -306,10 +337,23 @@ def cmd_pyexec_vcf_mod_merge(
 ) -> str:
     """Merge haploid VCF files"""
 
-    cmd = f"sentieon pyexec {kwargs['vcf_mod_py']} -t {cores} "
-    cmd += (
-        f"merge --hap1 {hap1_vcf} --hap2 {hap2_vcf} --unphased {unphased_vcf} "
-    )
-    cmd += f"--phased {phased_vcf} --bed {phased_bed} {out_vcf}"
-
-    return cmd
+    cmd = [
+        "sentieon",
+        "pyexec",
+        kwargs["vcf_mod_py"],
+        "-t",
+        str(cores),
+        "merge",
+        "--hap1",
+        hap1_vcf,
+        "--hap2",
+        hap2_vcf,
+        "--unphased",
+        unphased_vcf,
+        "--phased",
+        phased_vcf,
+        "--bed",
+        phased_bed,
+        out_vcf,
+    ]
+    return shlex.join(cmd)

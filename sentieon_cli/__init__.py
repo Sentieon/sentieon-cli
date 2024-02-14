@@ -4,6 +4,7 @@ import os
 import sys
 import subprocess as sp
 import pathlib
+import shlex
 import shutil
 import tempfile
 from typing import Callable, Optional, List
@@ -232,7 +233,7 @@ def dnascope_longread(
             model=model_bundle.joinpath("diploid_model"),
         )
     )
-    run(" ".join(driver.build_cmd()))
+    run(shlex.join(driver.build_cmd()))
 
     diploid_vcf = tmp_dir.joinpath("out_diploid.vcf.gz")
     driver = cmds.Driver(
@@ -246,7 +247,7 @@ def dnascope_longread(
             diploid_vcf,
         )
     )
-    run(" ".join(driver.build_cmd()))
+    run(shlex.join(driver.build_cmd()))
 
     # Phasing and RepeatModel
     phased_bed = tmp_dir.joinpath("out_diploid_phased.bed")
@@ -269,7 +270,7 @@ def dnascope_longread(
             out_ext=phased_ext,
         )
     )
-    run(" ".join(driver.build_cmd()))
+    run(shlex.join(driver.build_cmd()))
 
     if tech.upper() == "ONT":
         run(
@@ -298,7 +299,7 @@ def dnascope_longread(
                 read_flag_mask="drop=supplementary",
             )
         )
-        run(" ".join(driver.build_cmd()))
+        shlex.join(driver.build_cmd())
 
     run(
         f"bcftools view -T {unphased_bed} {phased_vcf} \
@@ -337,7 +338,7 @@ def dnascope_longread(
                 pcr_indel_model=repeat_model,
             )
         )
-        run(" ".join(driver.build_cmd()))
+        run(shlex.join(driver.build_cmd()))
 
     kwargs["gvcf_combine_py"] = str(
         files("sentieon_cli.scripts").joinpath("gvcf_combine.py")
@@ -373,7 +374,7 @@ def dnascope_longread(
                 hap_vcf,
             )
         )
-        run(" ".join(driver.build_cmd()))
+        run(shlex.join(driver.build_cmd()))
 
     # Second pass - unphased regions
     diploid_unphased_hp = tmp_dir.joinpath(
@@ -393,7 +394,7 @@ def dnascope_longread(
             pcr_indel_model=repeat_model,
         )
     )
-    run(" ".join(driver.build_cmd()))
+    run(shlex.join(driver.build_cmd()))
 
     # Patch DNA and DNAHP variants
     diploid_unphased_patch = tmp_dir.joinpath(
@@ -419,7 +420,7 @@ def dnascope_longread(
             diploid_unphased,
         )
     )
-    run(" ".join(driver.build_cmd()))
+    run(shlex.join(driver.build_cmd()))
 
     # merge calls to create the output
     run(
