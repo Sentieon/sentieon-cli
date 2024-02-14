@@ -9,6 +9,7 @@ sys.path.insert(
 )
 
 import sentieon_cli  # NOQA
+import sentieon_cli.util  # NOQA
 
 
 def test_one():
@@ -17,7 +18,7 @@ def test_one():
 
 def test_tmp():
     """basic test for tmp()"""
-    tmp_dir = sentieon_cli.tmp()
+    tmp_dir = sentieon_cli.util.tmp()
     assert os.path.exists(tmp_dir)
     assert os.path.isdir(tmp_dir)
     shutil.rmtree(tmp_dir)
