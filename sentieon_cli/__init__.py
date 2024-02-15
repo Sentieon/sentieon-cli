@@ -299,7 +299,7 @@ def dnascope_longread(
                 read_flag_mask="drop=supplementary",
             )
         )
-        shlex.join(driver.build_cmd())
+        run(shlex.join(driver.build_cmd()))
 
     run(
         f"bcftools view -T {unphased_bed} {phased_vcf} \
