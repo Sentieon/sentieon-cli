@@ -150,6 +150,28 @@ class DNAscopeHP(BaseAlgo):
         self.pcr_indel_model = pcr_indel_model
 
 
+class LongReadSV(BaseAlgo):
+    """algo LongReadSV"""
+
+    name = "LongReadSV"
+
+    def __init__(
+        self,
+        output: pathlib.Path,
+        model: Optional[pathlib.Path] = None,
+        min_map_qual: Optional[int] = None,
+        min_sv_size: Optional[int] = None,
+        min_dp: Optional[int] = None,
+        min_af: Optional[float] = None,
+    ):
+        self.output = output
+        self.model = model
+        self.min_map_qual = min_map_qual
+        self.min_sv_size = min_sv_size
+        self.min_dp = min_dp
+        self.min_af = min_af
+
+
 class Driver:
     """Representing the Sentieon driver"""
 

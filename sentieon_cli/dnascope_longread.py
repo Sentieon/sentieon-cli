@@ -7,7 +7,7 @@ import multiprocessing as mp
 import pathlib
 import shlex
 import shutil
-from typing import List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import packaging.version
 
@@ -23,88 +23,18 @@ TOOL_MIN_VERSIONS = {
     "bedtools": None,
 }
 
+SV_MIN_VERSIONS = {
+    "sentieon driver": packaging.version.Version("202308"),
+}
 
-@arg(
-    "-r",
-    "--reference",
-    required=True,
-    help="fasta for reference genome",
-    type=path_arg(exists=True, is_file=True),
-)
-@arg(
-    "-i",
-    "--sample-input",
-    required=True,
-    nargs="+",
-    help="sample BAM or CRAM file",
-    type=path_arg(exists=True, is_file=True),
-)
-@arg(
-    "-m",
-    "--model-bundle",
-    help="The model bundle file",
-    required=True,
-    type=path_arg(exists=True, is_file=True),
-)
-@arg(
-    "output-vcf",
-    help="Output VCF File. The file name must end in .vcf.gz",
-    type=path_arg(),
-)
-@arg(
-    "-d",
-    "--dbsnp",
-    help="dbSNP vcf file Supplying this file will annotate variants with \
-         their dbSNP refSNP ID numbers.",
-    default=None,
-    type=path_arg(exists=True, is_file=True),
-)
-@arg(
-    "-b",
-    "--bed",
-    help="Region BED file. Supplying this file will limit variant calling \
-    to the intervals inside the BED file.",
-    type=path_arg(exists=True, is_file=True),
-)
-@arg(
-    "-t",
-    "--cores",
-    help="Number of threads/processes to use. %(default)s",
-)
-@arg(
-    "-g",
-    "--gvcf",
-    help="Generate a gVCF output file along with the VCF."
-    " (default generates only the VCF)",
-    action="store_true",
-)
-@arg(
-    "--tech",
-    help="Sequencing technology used to generate the reads.",
-    choices=["HiFi", "ONT"],
-)
-@arg(
-    "--dry-run",
-    help="Print the commands without running them.",
-)
-@arg(
-    "--repeat-model",
-    type=path_arg(exists=True, is_file=True),
-    help=argparse.SUPPRESS,
-)
-@arg(
-    "--skip-version-check",
-    help=argparse.SUPPRESS,
-)
-@arg(
-    "--retain-tmpdir",
-    help=argparse.SUPPRESS,
-)
-def dnascope_longread(
+
+def call_variants(
+    run: Callable[[str], None],
+    tmp_dir: pathlib.Path,
     output_vcf: pathlib.Path,
-    reference: Optional[pathlib.Path] = None,
-    sample_input: Optional[List[pathlib.Path]] = None,
-    model_bundle: Optional[pathlib.Path] = None,
+    reference: pathlib.Path,
+    sample_input: List[pathlib.Path],
+    model_bundle: pathlib.Path,
     dbsnp: Optional[pathlib.Path] = None,
     bed: Optional[pathlib.Path] = None,
     cores: int = mp.cpu_count(),
@@ -113,30 +43,14 @@ def dnascope_longread(
     dry_run: bool = False,
     repeat_model: Optional[pathlib.Path] = None,
     skip_version_check: bool = False,
-    retain_tmpdir: bool = False,
-    **kwargs: str,
-):
+    **_kwargs: Any,
+) -> int:
     """
-    Run sentieon cli with the algo DNAscope command.
+    Call SNVs and indels using the DNAscope LongRead pipeline
     """
-    assert reference
-    assert sample_input
-    assert model_bundle
-
-    logger.setLevel(kwargs["loglevel"])
-    logger.info("Starting sentieon-cli version: %s", __version__)
-
     if not skip_version_check:
         for cmd, min_version in TOOL_MIN_VERSIONS.items():
             check_version(cmd, min_version)
-
-    tmp_dir_str = tmp()
-    tmp_dir = pathlib.Path(tmp_dir_str)
-
-    if dry_run:
-        run = print
-    else:
-        from .runner import run  # type: ignore[assignment]
 
     # First pass - diploid calling
     diploid_gvcf_fn = tmp_dir.joinpath("out_diploid.g.vcf.gz")
@@ -270,6 +184,7 @@ def dnascope_longread(
         )
         run(shlex.join(driver.build_cmd()))
 
+    kwargs: Dict[str, str] = dict()
     kwargs["gvcf_combine_py"] = str(
         files("sentieon_cli.scripts").joinpath("gvcf_combine.py")
     )
@@ -376,6 +291,175 @@ def dnascope_longread(
                 kwargs,
             )
         )
+    return 0
+
+
+def call_svs(
+    run: Callable[[str], None],
+    output_vcf: pathlib.Path,
+    reference: pathlib.Path,
+    sample_input: List[pathlib.Path],
+    model_bundle: pathlib.Path,
+    bed: Optional[pathlib.Path] = None,
+    cores: int = mp.cpu_count(),
+    skip_version_check: bool = False,
+    **_kwargs: Any,
+) -> int:
+    """
+    Call SVs using Sentieon LongReadSV
+    """
+    if not skip_version_check:
+        for cmd, min_version in SV_MIN_VERSIONS.items():
+            check_version(cmd, min_version)
+
+    sv_vcf = pathlib.Path(str(output_vcf).replace(".vcf.gz", ".sv.vcf.gz"))
+    driver = cmds.Driver(
+        reference=reference,
+        thread_count=cores,
+        input=sample_input,
+        interval=bed,
+    )
+    driver.add_algo(
+        cmds.LongReadSV(
+            sv_vcf,
+            model_bundle.joinpath("longreadsv.model"),
+        )
+    )
+    run(shlex.join(driver.build_cmd()))
+    return 0
+
+
+@arg(
+    "-r",
+    "--reference",
+    required=True,
+    help="fasta for reference genome",
+    type=path_arg(exists=True, is_file=True),
+)
+@arg(
+    "-i",
+    "--sample-input",
+    required=True,
+    nargs="+",
+    help="sample BAM or CRAM file",
+    type=path_arg(exists=True, is_file=True),
+)
+@arg(
+    "-m",
+    "--model-bundle",
+    help="The model bundle file",
+    required=True,
+    type=path_arg(exists=True, is_file=True),
+)
+@arg(
+    "output-vcf",
+    help="Output VCF File. The file name must end in .vcf.gz",
+    type=path_arg(),
+)
+@arg(
+    "-d",
+    "--dbsnp",
+    help="dbSNP vcf file Supplying this file will annotate variants with \
+         their dbSNP refSNP ID numbers.",
+    default=None,
+    type=path_arg(exists=True, is_file=True),
+)
+@arg(
+    "-b",
+    "--bed",
+    help="Region BED file. Supplying this file will limit variant calling \
+    to the intervals inside the BED file.",
+    type=path_arg(exists=True, is_file=True),
+)
+@arg(
+    "-t",
+    "--cores",
+    help="Number of threads/processes to use. %(default)s",
+)
+@arg(
+    "-g",
+    "--gvcf",
+    help="Generate a gVCF output file along with the VCF."
+    " (default generates only the VCF)",
+    action="store_true",
+)
+@arg(
+    "--tech",
+    help="Sequencing technology used to generate the reads.",
+    choices=["HiFi", "ONT"],
+)
+@arg(
+    "--dry-run",
+    help="Print the commands without running them.",
+)
+@arg(
+    "--skip-small-variants",
+    help="Skip small variant (SNV/indel) calling",
+)
+@arg(
+    "--skip-svs",
+    help="Skip SV calling",
+)
+@arg(
+    "--repeat-model",
+    type=path_arg(exists=True, is_file=True),
+    help=argparse.SUPPRESS,
+)
+@arg(
+    "--skip-version-check",
+    help=argparse.SUPPRESS,
+)
+@arg(
+    "--retain-tmpdir",
+    help=argparse.SUPPRESS,
+)
+def dnascope_longread(
+    output_vcf: pathlib.Path,  # pylint: disable=W0613
+    reference: Optional[pathlib.Path] = None,
+    sample_input: Optional[List[pathlib.Path]] = None,
+    model_bundle: Optional[pathlib.Path] = None,
+    dbsnp: Optional[pathlib.Path] = None,  # pylint: disable=W0613
+    bed: Optional[pathlib.Path] = None,  # pylint: disable=W0613
+    cores: int = mp.cpu_count(),  # pylint: disable=W0613
+    gvcf: bool = False,  # pylint: disable=W0613
+    tech: str = "HiFi",  # pylint: disable=W0613
+    dry_run: bool = False,
+    skip_small_variants: bool = False,
+    skip_svs: bool = False,
+    repeat_model: Optional[pathlib.Path] = None,  # pylint: disable=W0613
+    skip_version_check: bool = False,  # pylint: disable=W0613
+    retain_tmpdir: bool = False,
+    **kwargs: str,
+):
+    """
+    Run sentieon cli with the algo DNAscope command.
+    """
+    assert reference
+    assert sample_input
+    assert model_bundle
+
+    logger.setLevel(kwargs["loglevel"])
+    logger.info("Starting sentieon-cli version: %s", __version__)
+
+    tmp_dir_str = tmp()
+    tmp_dir = pathlib.Path(tmp_dir_str)  # type: ignore  # pylint: disable=W0641  # noqa: E501
+
+    if dry_run:
+        run = print  # type: ignore  # pylint: disable=W0641
+    else:
+        from .runner import run  # type: ignore[assignment]  # noqa: F401
+
+    if not skip_small_variants:
+        res = call_variants(**locals())
+        if res != 0:
+            logger.error("Small variant calling failed")
+            return
+
+    if not skip_svs:
+        res = call_svs(**locals())
+        if res != 0:
+            logger.error("SV calling failed")
+            return
 
     if not retain_tmpdir:
         shutil.rmtree(tmp_dir_str)

@@ -61,12 +61,18 @@ jobs:
             --repeat-model tests/smoke/sample_repeat.model -g "output hifi.vcf.gz"
           sentieon driver -r "tests/smoke/r ef.fa" --algo GVCFtyper \
             -v "output hifi.g.vcf.gz" output_hifi_gvcftyper.vcf.gz
+          if [ ! -f "output hifi.sv.vcf.gz" ]; then
+            exit 1
+          fi
 
           sentieon-cli dnascope-longread --tech ONT -r "tests/smoke/r ef.fa" \
             -i "tests/smoke/sam ple.cram" -m "DNAscope PacBio2.1.bundle" \
             --repeat-model tests/smoke/sample_repeat.model -g "output ont.vcf.gz"
           sentieon driver -r "tests/smoke/r ef.fa" --algo GVCFtyper \
             -v "output ont.g.vcf.gz" output_hifi_gvcftyper.vcf.gz
+          if [ ! -f "output ont.sv.vcf.gz" ]; then
+            exit 1
+          fi
         env:
           SENTIEON_LICENSE: ${{ secrets.SENTIEON_LICENSE }}
           SENTIEON_AUTH_MECH: "GitHub Actions - token"
