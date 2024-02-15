@@ -18,7 +18,7 @@ from . import command_strings as cmds
 from .util import __version__, check_version, logger, path_arg, tmp, library_preloaded
 
 TOOL_MIN_VERSIONS = {
-    "sentieon driver": packaging.version.Version("202308"),
+    "sentieon driver": packaging.version.Version("202308.01"),
     "bcftools": packaging.version.Version("1.10"),
     "bedtools": None,
 }

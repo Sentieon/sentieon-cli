@@ -5,16 +5,14 @@ on:
       - main
   pull_request:
 
-env:
-  SENTIEON_VERSION: "202308.01"
-
 jobs:
   smoke:
     strategy:
       fail-fast: true
       matrix:
-        python-version: ["3.12"]
+        python-version: ["3.8", "3.12"]
         poetry-version: ["1.5.1"]
+        sentieon-version: ["202308.01", "202308.02"]
         os: [ubuntu-22.04] #, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
@@ -41,6 +39,8 @@ jobs:
       - name: Install sentieon
         run: |
           curl -L https://s3.amazonaws.com/sentieon-release/software/sentieon-genomics-$SENTIEON_VERSION.tar.gz | tar -zxf -
+        env:
+          SENTIEON_VERSION: ${{ matrix.sentieon-version }}
       - name: Download model
         run: |
           curl -L "https://s3.amazonaws.com/sentieon-release/other/DNAscopePacBio2.1.bundle" \
@@ -78,4 +78,5 @@ jobs:
           SENTIEON_AUTH_MECH: "GitHub Actions - token"
           ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
           LICENSE_MESSAGE: ${{ secrets.LICENSE_MESSAGE }}
+          SENTIEON_VERSION: ${{ matrix.sentieon-version }}
       
