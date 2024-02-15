@@ -5,6 +5,7 @@ Utility functions
 import argparse
 import os
 import pathlib
+import re
 import shutil
 import subprocess as sp
 import sys
@@ -18,6 +19,9 @@ from .logging import get_logger
 __version__ = "0.1.0"
 
 logger = get_logger(__name__)
+
+PRELOAD_SEP = r":| "
+PRELOAD_SEP_PAT = re.compile(PRELOAD_SEP)
 
 
 def tmp():
@@ -84,3 +88,12 @@ def path_arg(
         return p
 
     return _path_arg
+
+def library_preloaded(library_name: str) -> bool:
+    """Check if a shared library is preloaded through LD_PRELOAD"""
+    ld_preload = os.getenv("LD_PRELOAD", "")
+    for lib in PRELOAD_SEP_PAT.split(ld_preload):
+        lib_base = os.path.basename(lib)
+        if library_name in lib_base:
+            return True
+    return False

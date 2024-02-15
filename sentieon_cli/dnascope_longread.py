@@ -15,7 +15,7 @@ from argh import arg
 from importlib_resources import files
 
 from . import command_strings as cmds
-from .util import __version__, check_version, logger, path_arg, tmp
+from .util import __version__, check_version, logger, path_arg, tmp, library_preloaded
 
 TOOL_MIN_VERSIONS = {
     "sentieon driver": packaging.version.Version("202308"),
@@ -440,6 +440,12 @@ def dnascope_longread(
 
     logger.setLevel(kwargs["loglevel"])
     logger.info("Starting sentieon-cli version: %s", __version__)
+
+    if not library_preloaded("libjemalloc.so"):
+        logger.warning(
+            "jemalloc is recommended, but is not preloaded. See "
+            "https://support.sentieon.com/appnotes/jemalloc/"
+        )
 
     tmp_dir_str = tmp()
     tmp_dir = pathlib.Path(tmp_dir_str)  # type: ignore  # pylint: disable=W0641  # noqa: E501
