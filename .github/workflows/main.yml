@@ -68,6 +68,9 @@ jobs:
           if [ ! -f "output hifi.sv.vcf.gz" ]; then
             exit 1
           fi
+          if [ ! -f "output hifi.haploid.vcf.gz"]; then
+            exit 1
+          fi
 
           sentieon-cli dnascope-longread --tech ONT -t 1 -r "tests/smoke/r ef.fa" \
             -i "tests/smoke/sam ple.cram" -m "DNAscope PacBio2.1.bundle" \
