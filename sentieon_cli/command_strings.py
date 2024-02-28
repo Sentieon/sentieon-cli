@@ -379,3 +379,29 @@ def cmd_pyexec_vcf_mod_merge(
         out_vcf,
     ]
     return shlex.join(cmd)
+
+
+def cmd_pyexec_vcf_mod_haploid_patch2(
+    out_vcf: str,
+    vcf: str,
+    vcf_hp: str,
+    cores: int,
+    kwargs: Dict[str, Any],
+) -> str:
+    """Patch a single pair of haploid DNAscope and DNAscopeHP VCFs"""
+
+    cmd = [
+        "sentieon",
+        "pyexec",
+        str(kwargs["vcf_mod_py"]),
+        "-t",
+        str(cores),
+        "haploid_patch2",
+        "--vcf",
+        vcf,
+        "--vcf_hp",
+        vcf_hp,
+        "--patch_vcf",
+        out_vcf,
+    ]
+    return shlex.join(cmd)

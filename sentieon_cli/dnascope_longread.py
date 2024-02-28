@@ -7,6 +7,7 @@ import multiprocessing as mp
 import pathlib
 import shlex
 import shutil
+import sys
 from typing import Any, Callable, Dict, List, Optional
 
 import packaging.version
@@ -15,7 +16,14 @@ from argh import arg
 from importlib_resources import files
 
 from . import command_strings as cmds
-from .util import __version__, check_version, logger, path_arg, tmp, library_preloaded
+from .util import (
+    __version__,
+    check_version,
+    logger,
+    path_arg,
+    tmp,
+    library_preloaded,
+)
 
 TOOL_MIN_VERSIONS = {
     "sentieon driver": packaging.version.Version("202308.01"),
@@ -37,6 +45,7 @@ def call_variants(
     model_bundle: pathlib.Path,
     dbsnp: Optional[pathlib.Path] = None,
     bed: Optional[pathlib.Path] = None,
+    haploid_bed: Optional[pathlib.Path] = None,
     cores: int = mp.cpu_count(),
     gvcf: bool = False,
     tech: str = "HiFi",
@@ -48,6 +57,19 @@ def call_variants(
     """
     Call SNVs and indels using the DNAscope LongRead pipeline
     """
+    if haploid_bed and not bed:
+        logger.error(
+            "Please supply a BED file of diploid regions to distinguish "
+            "haploid and diploid regions of the genome."
+        )
+        sys.exit(1)
+
+    if not bed:
+        logger.warning(
+            "A BED file is recommended to restrict variant calling to diploid "
+            "regions of the genome."
+        )
+
     if not skip_version_check:
         for cmd, min_version in TOOL_MIN_VERSIONS.items():
             check_version(cmd, min_version)
@@ -143,7 +165,7 @@ def call_variants(
                 read_flag_mask="drop=supplementary",
             )
         )
-        shlex.join(driver.build_cmd())
+        run(shlex.join(driver.build_cmd()))
 
     run(
         f"bcftools view -T {unphased_bed} {phased_vcf} \
@@ -291,6 +313,44 @@ def call_variants(
                 kwargs,
             )
         )
+
+    if haploid_bed:
+        # Haploid variant calling
+        haploid_fn = tmp_dir.joinpath("haploid.vcf.gz")
+        haploid_hp_fn = tmp_dir.joinpath("haploid_hp.vcf.gz")
+        haploid_out_fn = str(output_vcf).replace(".vcf.gz", ".haploid.vcf.gz")
+        driver = cmds.Driver(
+            reference=reference,
+            thread_count=cores,
+            input=sample_input,
+            interval=haploid_bed,
+        )
+        driver.add_algo(
+            cmds.DNAscope(
+                haploid_fn,
+                dbsnp=dbsnp,
+                model=model_bundle.joinpath("haploid_model"),
+            )
+        )
+        driver.add_algo(
+            cmds.DNAscopeHP(
+                haploid_hp_fn,
+                dbsnp=dbsnp,
+                model=model_bundle.joinpath("haploid_hp_model"),
+                pcr_indel_model=repeat_model,
+            )
+        )
+        run(shlex.join(driver.build_cmd()))
+
+        run(
+            cmds.cmd_pyexec_vcf_mod_haploid_patch2(
+                haploid_out_fn,
+                str(haploid_fn),
+                str(haploid_hp_fn),
+                cores,
+                kwargs,
+            )
+        )
     return 0
 
 
@@ -372,6 +432,14 @@ def call_svs(
     type=path_arg(exists=True, is_file=True),
 )
 @arg(
+    "--haploid-bed",
+    help=(
+        "A BED file of haploid regions. Supplying this file will perform "
+        "haploid variant calling across these regions."
+    ),
+    type=path_arg(exists=True, is_file=True),
+)
+@arg(
     "-t",
     "--cores",
     help="Number of threads/processes to use. %(default)s",
@@ -420,6 +488,7 @@ def dnascope_longread(
     model_bundle: Optional[pathlib.Path] = None,
     dbsnp: Optional[pathlib.Path] = None,  # pylint: disable=W0613
     bed: Optional[pathlib.Path] = None,  # pylint: disable=W0613
+    haploid_bed: Optional[pathlib.Path] = None,  # pylint: disable=W0613
     cores: int = mp.cpu_count(),  # pylint: disable=W0613
     gvcf: bool = False,  # pylint: disable=W0613
     tech: str = "HiFi",  # pylint: disable=W0613

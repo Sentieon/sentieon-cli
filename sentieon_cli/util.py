@@ -89,6 +89,7 @@ def path_arg(
 
     return _path_arg
 
+
 def library_preloaded(library_name: str) -> bool:
     """Check if a shared library is preloaded through LD_PRELOAD"""
     ld_preload = os.getenv("LD_PRELOAD", "")

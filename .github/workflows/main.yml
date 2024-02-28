@@ -9,6 +9,7 @@ jobs:
   smoke:
     strategy:
       fail-fast: true
+      max-parallel: 1
       matrix:
         python-version: ["3.8", "3.12"]
         poetry-version: ["1.5.1"]
@@ -56,19 +57,22 @@ jobs:
           mv tests/smoke/sample.cram "tests/smoke/sam ple.cram"
           mv tests/smoke/sample.cram.crai "tests/smoke/sam ple.cram.crai"
 
-          sentieon-cli dnascope-longread -r "tests/smoke/r ef.fa" \
+          sentieon-cli dnascope-longread -t 1 -r "tests/smoke/r ef.fa" \
             -i "tests/smoke/sam ple.cram" -m "DNAscope PacBio2.1.bundle" \
-            --repeat-model tests/smoke/sample_repeat.model -g "output hifi.vcf.gz"
-          sentieon driver -r "tests/smoke/r ef.fa" --algo GVCFtyper \
+            --repeat-model tests/smoke/sample_repeat.model -g \
+            -b "tests/smoke/diploid.bed" \
+            --haploid-bed "tests/smoke/haploid.bed" \
+            "output hifi.vcf.gz"
+          sentieon driver -r "tests/smoke/r ef.fa" -t 1 --algo GVCFtyper \
             -v "output hifi.g.vcf.gz" output_hifi_gvcftyper.vcf.gz
           if [ ! -f "output hifi.sv.vcf.gz" ]; then
             exit 1
           fi
 
-          sentieon-cli dnascope-longread --tech ONT -r "tests/smoke/r ef.fa" \
+          sentieon-cli dnascope-longread --tech ONT -t 1 -r "tests/smoke/r ef.fa" \
             -i "tests/smoke/sam ple.cram" -m "DNAscope PacBio2.1.bundle" \
             --repeat-model tests/smoke/sample_repeat.model -g "output ont.vcf.gz"
-          sentieon driver -r "tests/smoke/r ef.fa" --algo GVCFtyper \
+          sentieon driver -r "tests/smoke/r ef.fa" -t 1 --algo GVCFtyper \
             -v "output ont.g.vcf.gz" output_hifi_gvcftyper.vcf.gz
           if [ ! -f "output ont.sv.vcf.gz" ]; then
             exit 1
