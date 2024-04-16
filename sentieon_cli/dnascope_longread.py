@@ -35,6 +35,60 @@ SV_MIN_VERSIONS = {
     "sentieon driver": packaging.version.Version("202308"),
 }
 
+ALN_MIN_VERSIONS = {
+    "sentieon driver": packaging.version.Version("202308"),
+    "samtools": packaging.version.Version("1.16"),
+}
+
+
+def align_inputs(
+    run: Callable[[str], None],
+    output_vcf: pathlib.Path,
+    reference: pathlib.Path,
+    sample_input: List[pathlib.Path],
+    model_bundle: pathlib.Path,
+    cores: int = mp.cpu_count(),
+    dry_run: bool = False,
+    skip_version_check: bool = False,
+    bam_format: bool = False,
+    fastq_taglist: str = "*",
+    util_sort_args: str = "--cram_write_options version=3.0,compressor=rans",
+    **_kwargs: Any,
+) -> List[pathlib.Path]:
+    """
+    Align reads to the reference genome using minimap2
+    """
+    if not skip_version_check:
+        for cmd, min_version in ALN_MIN_VERSIONS.items():
+            check_version(cmd, min_version)
+
+    res: List[pathlib.Path] = []
+    suffix = "bam" if bam_format else "cram"
+    for i, input_aln in enumerate(sample_input):
+        out_aln = pathlib.Path(
+            str(output_vcf).replace(".vcf.gz", f"_mm2_sorted_{i}.{suffix}")
+        )
+        rg_lines = cmds.get_rg_lines(
+            input_aln,
+            reference,
+            dry_run,
+        )
+
+        run(
+            cmds.cmd_samtools_fastq_minimap2(
+                out_aln,
+                input_aln,
+                reference,
+                model_bundle,
+                cores,
+                rg_lines,
+                fastq_taglist,
+                util_sort_args,
+            )
+        )
+        res.append(out_aln)
+    return res
+
 
 def call_variants(
     run: Callable[[str], None],
@@ -469,6 +523,25 @@ def call_svs(
     help="Skip SV calling",
 )
 @arg(
+    "--align",
+    help="Align the input BAM/CRAM/uBAM file to the reference genome",
+    action="store_true",
+)
+@arg(
+    "--fastq_taglist",
+    help="A comma-separated list of tags to retain. Defaults to '%(default)s'"
+    " and the 'RG' tag is required",
+)
+@arg(
+    "--bam_format",
+    help="Use the BAM format instead of CRAM for output aligned files",
+    action="store_true",
+)
+@arg(
+    "--util_sort_args",
+    help="Extra arguments for sentieon util sort",
+)
+@arg(
     "--repeat-model",
     type=path_arg(exists=True, is_file=True),
     help=argparse.SUPPRESS,
@@ -495,6 +568,12 @@ def dnascope_longread(
     dry_run: bool = False,
     skip_small_variants: bool = False,
     skip_svs: bool = False,
+    align: bool = False,
+    fastq_taglist: str = "*",  # pylint: disable=W0613
+    bam_format: bool = False,  # pylint: disable=W0613
+    util_sort_args: str = (
+        "--cram_write_options version=3.0,compressor=rans"
+    ),  # pylint: disable=W0613
     repeat_model: Optional[pathlib.Path] = None,  # pylint: disable=W0613
     skip_version_check: bool = False,  # pylint: disable=W0613
     retain_tmpdir: bool = False,
@@ -523,6 +602,9 @@ def dnascope_longread(
         run = print  # type: ignore  # pylint: disable=W0641
     else:
         from .runner import run  # type: ignore[assignment]  # noqa: F401
+
+    if align:
+        sample_input = align_inputs(**locals())
 
     if not skip_small_variants:
         res = call_variants(**locals())

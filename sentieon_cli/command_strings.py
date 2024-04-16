@@ -14,6 +14,7 @@ command strings to get a full viable command.
 import io
 import pathlib
 import shlex
+import subprocess as sp
 import typing
 from typing import Any, Optional, List, Union, Dict
 from .logging import get_logger
@@ -405,3 +406,97 @@ def cmd_pyexec_vcf_mod_haploid_patch2(
         out_vcf,
     ]
     return shlex.join(cmd)
+
+
+def get_rg_lines(
+    input_aln: pathlib.Path,
+    reference: pathlib.Path,
+    dry_run: bool,
+) -> List[str]:
+    """Read the @RG lines from an alignment file"""
+    cmd = shlex.join(
+        [
+            "samtools",
+            "view",
+            "-H",
+            "--reference",
+            str(reference),
+            str(input_aln),
+        ]
+    )
+    rg_lines: List[str] = []
+    if not dry_run:
+        res = sp.run(cmd, shell=True, check=True, stdout=sp.PIPE)
+        for line in res.stdout.decode("utf-8").split("\n"):
+            if line.startswith("@RG"):
+                rg_lines.append(line)
+    else:
+        rg_lines.append("@RG\tID:mysample-1\tSM:mysample")
+    return rg_lines
+
+
+# TODO - if input ref is different from output
+def cmd_samtools_fastq_minimap2(
+    out_aln: pathlib.Path,
+    input_aln: pathlib.Path,
+    reference: pathlib.Path,
+    model_bundle: pathlib.Path,
+    cores: int,
+    rg_lines: List[str],
+    fastq_taglist: str = "*",
+    util_sort_args: str = "--cram_write_options version=3.0,compressor=rans",
+) -> str:
+    """Re-align an input BAM/CRAM/uBAM/uCRAM file with minimap2"""
+
+    cmd1 = [
+        "samtools",
+        "fastq",
+        "--reference",
+        str(reference),
+        "-@",
+        str(cores),
+        "-T",
+        fastq_taglist,
+        str(input_aln),
+    ]
+    cmd2 = [
+        "sentieon",
+        "minimap2",
+        "-y",
+        "-t",
+        str(cores),
+        "-a",
+        "-x",
+        f"{model_bundle}/minimap2.model",
+        str(reference),
+        "/dev/stdin",
+    ]
+    cmd3 = [
+        "sentieon",
+        "util",
+        "sort",
+        "-i",
+        "-",
+        "--reference",
+        str(reference),
+        "-o",
+        str(out_aln),
+        "--sam2bam",
+    ] + util_sort_args.split()
+
+    # Commands to replace the @RG lines in the header
+    rg_cmds: List[List[str]] = []
+    for rg_line in rg_lines:
+        rg_cmds.append(
+            [
+                "samtools",
+                "addreplacerg",
+                "-r",
+                str(rg_line),
+                "-m",
+                "orphan_only",
+                "-",
+            ]
+        )
+
+    return " | ".join([shlex.join(x) for x in (cmd1, cmd2, *rg_cmds, cmd3)])
