@@ -410,7 +410,6 @@ def cmd_pyexec_vcf_mod_haploid_patch2(
 
 def get_rg_lines(
     input_aln: pathlib.Path,
-    reference: pathlib.Path,
     dry_run: bool,
 ) -> List[str]:
     """Read the @RG lines from an alignment file"""
@@ -419,8 +418,6 @@ def get_rg_lines(
             "samtools",
             "view",
             "-H",
-            "--reference",
-            str(reference),
             str(input_aln),
         ]
     )
@@ -435,7 +432,6 @@ def get_rg_lines(
     return rg_lines
 
 
-# TODO - if input ref is different from output
 def cmd_samtools_fastq_minimap2(
     out_aln: pathlib.Path,
     input_aln: pathlib.Path,
@@ -443,22 +439,29 @@ def cmd_samtools_fastq_minimap2(
     model_bundle: pathlib.Path,
     cores: int,
     rg_lines: List[str],
+    input_ref: Optional[pathlib.Path] = None,
     fastq_taglist: str = "*",
     util_sort_args: str = "--cram_write_options version=3.0,compressor=rans",
 ) -> str:
     """Re-align an input BAM/CRAM/uBAM/uCRAM file with minimap2"""
 
-    cmd1 = [
-        "samtools",
-        "fastq",
-        "--reference",
-        str(reference),
-        "-@",
-        str(cores),
-        "-T",
-        fastq_taglist,
-        str(input_aln),
-    ]
+    ref_cmd: List[str] = []
+    if input_ref:
+        ref_cmd = ["--reference", str(reference)]
+    cmd1 = (
+        [
+            "samtools",
+            "fastq",
+        ]
+        + ref_cmd
+        + [
+            "-@",
+            str(cores),
+            "-T",
+            fastq_taglist,
+            str(input_aln),
+        ]
+    )
     cmd2 = [
         "sentieon",
         "minimap2",

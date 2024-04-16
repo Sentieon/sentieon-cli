@@ -53,6 +53,7 @@ def align_inputs(
     bam_format: bool = False,
     fastq_taglist: str = "*",
     util_sort_args: str = "--cram_write_options version=3.0,compressor=rans",
+    input_ref: Optional[pathlib.Path] = None,
     **_kwargs: Any,
 ) -> List[pathlib.Path]:
     """
@@ -70,7 +71,6 @@ def align_inputs(
         )
         rg_lines = cmds.get_rg_lines(
             input_aln,
-            reference,
             dry_run,
         )
 
@@ -82,6 +82,7 @@ def align_inputs(
                 model_bundle,
                 cores,
                 rg_lines,
+                input_ref,
                 fastq_taglist,
                 util_sort_args,
             )
@@ -528,6 +529,12 @@ def call_svs(
     action="store_true",
 )
 @arg(
+    "--input_ref",
+    help="Used to decode the input alignment file. Required if the input file"
+    " is in the CRAM/uCRAM formats",
+    type=path_arg(exists=True, is_file=True),
+)
+@arg(
     "--fastq_taglist",
     help="A comma-separated list of tags to retain. Defaults to '%(default)s'"
     " and the 'RG' tag is required",
@@ -569,6 +576,7 @@ def dnascope_longread(
     skip_small_variants: bool = False,
     skip_svs: bool = False,
     align: bool = False,
+    input_ref: Optional[pathlib.Path] = None,
     fastq_taglist: str = "*",  # pylint: disable=W0613
     bam_format: bool = False,  # pylint: disable=W0613
     util_sort_args: str = (
