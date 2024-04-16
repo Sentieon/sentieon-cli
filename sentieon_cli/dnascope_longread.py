@@ -556,10 +556,12 @@ def call_svs(
 @arg(
     "--skip-version-check",
     help=argparse.SUPPRESS,
+    action="store_true",
 )
 @arg(
     "--retain-tmpdir",
     help=argparse.SUPPRESS,
+    action="store_true",
 )
 def dnascope_longread(
     output_vcf: pathlib.Path,  # pylint: disable=W0613
