@@ -503,3 +503,48 @@ def cmd_samtools_fastq_minimap2(
         )
 
     return " | ".join([shlex.join(x) for x in (cmd1, cmd2, *rg_cmds, cmd3)])
+
+
+def cmd_fastq_minimap2(
+    out_aln: pathlib.Path,
+    fastq: pathlib.Path,
+    readgroup: str,
+    reference: pathlib.Path,
+    model_bundle: pathlib.Path,
+    cores: int,
+    unzip: str = "gzip",
+    util_sort_args: str = "--cram_write_options version=3.0,compressor=rans",
+) -> str:
+    """Align an input fastq file with minimap2"""
+
+    cmd1 = [
+        unzip,
+        "-dc",
+        str(fastq),
+    ]
+    cmd2 = [
+        "sentieon",
+        "minimap2",
+        "-t",
+        str(cores),
+        "-a",
+        "-x",
+        f"{model_bundle}/minimap2.model",
+        "-R",
+        readgroup,
+        str(reference),
+        "/dev/stdin",
+    ]
+    cmd3 = [
+        "sentieon",
+        "util",
+        "sort",
+        "-i",
+        "-",
+        "--reference",
+        str(reference),
+        "-o",
+        str(out_aln),
+        "--sam2bam",
+    ] + util_sort_args.split()
+    return " | ".join([shlex.join(x) for x in (cmd1, cmd2, cmd3)])

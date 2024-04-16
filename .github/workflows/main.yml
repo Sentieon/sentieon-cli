@@ -70,10 +70,7 @@ jobs:
             "output hifi.vcf.gz"
           sentieon driver -r "tests/smoke/r ef.fa" -t 1 --algo GVCFtyper \
             -v "output hifi.g.vcf.gz" output_hifi_gvcftyper.vcf.gz
-          if [ ! -f "output hifi.sv.vcf.gz" ]; then
-            exit 1
-          fi
-          if [ ! -f "output hifi.haploid.vcf.gz"]; then
+          if [ ! -f "output hifi.sv.vcf.gz" -o ! -f "output hifi.haploid.vcf.gz" ]; then
             exit 1
           fi
 
@@ -86,14 +83,22 @@ jobs:
             exit 1
           fi
 
-          sentieon-cli -d dnascope-longread -t 1 -r "tests/smoke/r ef.fa" \
+          sentieon-cli dnascope-longread -t 1 -r "tests/smoke/r ef.fa" \
             -i "tests/smoke/sam ple.cram" -m "DNAscope PacBio2.1.bundle" \
             --repeat-model tests/smoke/sample_repeat.model --align \
-            "output realigned.vcf.gz"
-          if [ ! -f "output realigned.vcf.gz" ]; then
+            --input_ref "tests/smoke/r ef.fa" "output realigned.vcf.gz"
+          if [ ! -f "output realigned.vcf.gz" -o ! -f "output realigned_mm2_sorted_0.cram" ]; then
             exit 1
           fi
-          if [ ! -f "output realigned_mm2_sorted_0.cram"]; then
+
+          samtools fastq --reference "tests/smoke/r ef.fa" \
+            "tests/smoke/sam ple.cram" | \
+            gzip -c > sample.fq.gz
+          sentieon-cli dnascope-longread -t 1 -r "tests/smoke/r ef.fa" \
+            --fastq sample.fq.gz --readgroups '@RG\tID:sample-1\tSM:sample' \
+            -m "DNAscope PacBio2.1.bundle" \
+            --repeat-model tests/smoke/sample_repeat.model "output fq.vcf.gz"
+          if [ ! -f "output fq.vcf.gz" -o ! -f "output fq_mm2_sorted_fq_0.cram" -o ! -f "output fq.sv.vcf.gz" ]; then
             exit 1
           fi
 

@@ -40,6 +40,10 @@ ALN_MIN_VERSIONS = {
     "samtools": packaging.version.Version("1.16"),
 }
 
+FQ_MIN_VERSIONS = {
+    "sentieon driver": packaging.version.Version("202308"),
+}
+
 
 def align_inputs(
     run: Callable[[str], None],
@@ -84,6 +88,64 @@ def align_inputs(
                 rg_lines,
                 input_ref,
                 fastq_taglist,
+                util_sort_args,
+            )
+        )
+        res.append(out_aln)
+    return res
+
+
+def align_fastq(
+    run: Callable[[str], None],
+    output_vcf: pathlib.Path,
+    reference: pathlib.Path,
+    model_bundle: pathlib.Path,
+    cores: int = mp.cpu_count(),
+    fastq: Optional[List[pathlib.Path]] = None,
+    readgroups: Optional[List[str]] = None,
+    skip_version_check: bool = False,
+    bam_format: bool = False,
+    util_sort_args: str = "--cram_write_options version=3.0,compressor=rans",
+    **_kwargs: Any,
+) -> List[pathlib.Path]:
+    """
+    Align fastq to the reference genome using minimap2
+    """
+    res: List[pathlib.Path] = []
+    if fastq is None and readgroups is None:
+        return res
+    if (not fastq or not readgroups) or (len(fastq) != len(readgroups)):
+        logger.error(
+            "The number of readgroups does not equal the number of fastq files"
+        )
+        sys.exit(1)
+
+    if not skip_version_check:
+        for cmd, min_version in FQ_MIN_VERSIONS.items():
+            check_version(cmd, min_version)
+
+    unzip = "igzip"
+    if not shutil.which(unzip):
+        logger.warning(
+            "igzip is recommended for decompression, but is not available. "
+            "Falling back to gzip."
+        )
+        unzip = "gzip"
+
+    suffix = "bam" if bam_format else "cram"
+    for i, (fq, rg) in enumerate(zip(fastq, readgroups)):
+        out_aln = pathlib.Path(
+            str(output_vcf).replace(".vcf.gz", f"_mm2_sorted_fq_{i}.{suffix}")
+        )
+        run(
+            cmds.cmd_fastq_minimap2(
+                out_aln,
+                fq,
+                rg,
+                reference,
+                model_bundle,
+                cores,
+                unzip,
                 util_sort_args,
             )
         )
@@ -454,10 +516,20 @@ def call_svs(
 @arg(
     "-i",
     "--sample-input",
-    required=True,
-    nargs="+",
+    nargs="*",
     help="sample BAM or CRAM file",
     type=path_arg(exists=True, is_file=True),
+)
+@arg(
+    "--fastq",
+    nargs="*",
+    help="Sample fastq files",
+    type=path_arg(exists=True, is_file=True),
+)
+@arg(
+    "--readgroups",
+    nargs="*",
+    help="Readgroup information for the fastq files",
 )
 @arg(
     "-m",
@@ -567,6 +639,8 @@ def dnascope_longread(
     output_vcf: pathlib.Path,  # pylint: disable=W0613
     reference: Optional[pathlib.Path] = None,
     sample_input: Optional[List[pathlib.Path]] = None,
+    fastq: Optional[List[pathlib.Path]] = None,
+    readgroups: Optional[List[str]] = None,
     model_bundle: Optional[pathlib.Path] = None,
     dbsnp: Optional[pathlib.Path] = None,  # pylint: disable=W0613
     bed: Optional[pathlib.Path] = None,  # pylint: disable=W0613
@@ -593,7 +667,7 @@ def dnascope_longread(
     Run sentieon cli with the algo DNAscope command.
     """
     assert reference
-    assert sample_input
+    assert sample_input or fastq
     assert model_bundle
 
     logger.setLevel(kwargs["loglevel"])
@@ -613,8 +687,10 @@ def dnascope_longread(
     else:
         from .runner import run  # type: ignore[assignment]  # noqa: F401
 
+    sample_input = sample_input if sample_input else []
     if align:
         sample_input = align_inputs(**locals())
+    sample_input.extend(align_fastq(**locals()))
 
     if not skip_small_variants:
         res = call_variants(**locals())
