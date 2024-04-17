@@ -16,6 +16,15 @@ from argh import arg
 from importlib_resources import files
 
 from . import command_strings as cmds
+from .driver import (
+    Driver,
+    DNAscope,
+    DNAscopeHP,
+    DNAModelApply,
+    LongReadSV,
+    RepeatModel,
+    VariantPhaser,
+)
 from .util import (
     __version__,
     check_version,
@@ -194,7 +203,7 @@ def call_variants(
     # First pass - diploid calling
     diploid_gvcf_fn = tmp_dir.joinpath("out_diploid.g.vcf.gz")
     diploid_tmp_vcf = tmp_dir.joinpath("out_diploid_tmp.vcf.gz")
-    driver = cmds.Driver(
+    driver = Driver(
         reference=reference,
         thread_count=cores,
         input=sample_input,
@@ -202,7 +211,7 @@ def call_variants(
     )
     if gvcf:
         driver.add_algo(
-            cmds.DNAscope(
+            DNAscope(
                 diploid_gvcf_fn,
                 dbsnp=dbsnp,
                 emit_mode="gvcf",
@@ -210,7 +219,7 @@ def call_variants(
             )
         )
     driver.add_algo(
-        cmds.DNAscope(
+        DNAscope(
             diploid_tmp_vcf,
             dbsnp=dbsnp,
             model=model_bundle.joinpath("diploid_model"),
@@ -219,12 +228,12 @@ def call_variants(
     run(shlex.join(driver.build_cmd()))
 
     diploid_vcf = tmp_dir.joinpath("out_diploid.vcf.gz")
-    driver = cmds.Driver(
+    driver = Driver(
         reference=reference,
         thread_count=cores,
     )
     driver.add_algo(
-        cmds.DNAModelApply(
+        DNAModelApply(
             model_bundle.joinpath("diploid_model"),
             diploid_tmp_vcf,
             diploid_vcf,
@@ -239,14 +248,14 @@ def call_variants(
     phased_ext = tmp_dir.joinpath("out_diploid_phased.ext.vcf.gz")
     phased_unphased = tmp_dir.joinpath("out_diploid_phased_unphased.vcf.gz")
     phased_phased = tmp_dir.joinpath("out_diploid_phased_phased.vcf.gz")
-    driver = cmds.Driver(
+    driver = Driver(
         reference=reference,
         thread_count=cores,
         input=sample_input,
         interval=bed,
     )
     driver.add_algo(
-        cmds.VariantPhaser(
+        VariantPhaser(
             diploid_vcf,
             phased_vcf,
             out_bed=phased_bed,
@@ -268,7 +277,7 @@ def call_variants(
 
     if not repeat_model:
         repeat_model = tmp_dir.joinpath("out_repeat.model")
-        driver = cmds.Driver(
+        driver = Driver(
             reference=reference,
             thread_count=cores,
             input=sample_input,
@@ -276,7 +285,7 @@ def call_variants(
             read_filter=f"PhasedReadFilter,phased_vcf={phased_ext},phase_select=tag",  # noqa: E501
         )
         driver.add_algo(
-            cmds.RepeatModel(
+            RepeatModel(
                 repeat_model,
                 phased=True,
                 read_flag_mask="drop=supplementary",
@@ -293,7 +302,7 @@ def call_variants(
     for phase in (1, 2):
         hp_std_vcf = tmp_dir.joinpath(f"out_hap{phase}_nohp_tmp.vcf.gz")
         hp_vcf = tmp_dir.joinpath(f"out_hap{phase}_tmp.vcf.gz")
-        driver = cmds.Driver(
+        driver = Driver(
             reference=reference,
             thread_count=cores,
             input=sample_input,
@@ -307,14 +316,14 @@ def call_variants(
         if tech.upper() == "HIFI":
             # ONT doesn't do DNAscope in 2nd pass.
             driver.add_algo(
-                cmds.DNAscope(
+                DNAscope(
                     hp_std_vcf,
                     dbsnp=dbsnp,
                     model=model_bundle.joinpath("haploid_model"),
                 )
             )
         driver.add_algo(
-            cmds.DNAscopeHP(
+            DNAscopeHP(
                 hp_vcf,
                 dbsnp=dbsnp,
                 model=model_bundle.joinpath("haploid_hp_model"),
@@ -347,12 +356,12 @@ def call_variants(
     # apply trained model to the patched vcfs.
     hap_vcfs = [tmp_dir.joinpath(f"out_hap{i}.vcf.gz") for i in (1, 2)]
     for patch_vcf, hap_vcf in zip(patch_vcfs, hap_vcfs):
-        driver = cmds.Driver(
+        driver = Driver(
             reference=reference,
             thread_count=cores,
         )
         driver.add_algo(
-            cmds.DNAModelApply(
+            DNAModelApply(
                 model_bundle.joinpath("haploid_model"),
                 patch_vcf,
                 hap_vcf,
@@ -364,14 +373,14 @@ def call_variants(
     diploid_unphased_hp = tmp_dir.joinpath(
         "out_diploid_phased_unphased_hp.vcf.gz"
     )
-    driver = cmds.Driver(
+    driver = Driver(
         reference=reference,
         thread_count=cores,
         input=sample_input,
         interval=unphased_bed,
     )
     driver.add_algo(
-        cmds.DNAscopeHP(
+        DNAscopeHP(
             diploid_unphased_hp,
             dbsnp=dbsnp,
             model=model_bundle.joinpath("diploid_hp_model"),
@@ -393,12 +402,12 @@ def call_variants(
         kwargs,
     )
     run(cmd)
-    driver = cmds.Driver(
+    driver = Driver(
         reference=reference,
         thread_count=cores,
     )
     driver.add_algo(
-        cmds.DNAModelApply(
+        DNAModelApply(
             model_bundle.joinpath("diploid_model_unphased"),
             diploid_unphased_patch,
             diploid_unphased,
@@ -436,21 +445,21 @@ def call_variants(
         haploid_fn = tmp_dir.joinpath("haploid.vcf.gz")
         haploid_hp_fn = tmp_dir.joinpath("haploid_hp.vcf.gz")
         haploid_out_fn = str(output_vcf).replace(".vcf.gz", ".haploid.vcf.gz")
-        driver = cmds.Driver(
+        driver = Driver(
             reference=reference,
             thread_count=cores,
             input=sample_input,
             interval=haploid_bed,
         )
         driver.add_algo(
-            cmds.DNAscope(
+            DNAscope(
                 haploid_fn,
                 dbsnp=dbsnp,
                 model=model_bundle.joinpath("haploid_model"),
             )
         )
         driver.add_algo(
-            cmds.DNAscopeHP(
+            DNAscopeHP(
                 haploid_hp_fn,
                 dbsnp=dbsnp,
                 model=model_bundle.joinpath("haploid_hp_model"),
@@ -490,14 +499,14 @@ def call_svs(
             check_version(cmd, min_version)
 
     sv_vcf = pathlib.Path(str(output_vcf).replace(".vcf.gz", ".sv.vcf.gz"))
-    driver = cmds.Driver(
+    driver = Driver(
         reference=reference,
         thread_count=cores,
         input=sample_input,
         interval=bed,
     )
     driver.add_algo(
-        cmds.LongReadSV(
+        LongReadSV(
             sv_vcf,
             model_bundle.joinpath("longreadsv.model"),
         )
