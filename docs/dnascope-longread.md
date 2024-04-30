@@ -42,7 +42,7 @@ The Sentieon LongRead pipeline requires the following arguments:
 - `--fastq INPUT_FASTQ`: the input sample file in FASTQ format. One or more files can be supplied by passing multiple files after the `--fastq` argument.
 - `--readgroups READGROUP`: readgroup information for the read data. The `--readgroups` argument is required if the input data is in the fastq format. This argument expects complete readgroup strings and these strings will be passed to `minimap2` through the `-R` argument. An example argument is `--readgroups '@RG\tID:foo\tSM:bar'`.
 - `-m MODEL_BUNDLE`: the location of the model bundle. Model bundle files can be found in the [sentieon-models] repository.
-- `--tech HiFi|ONT`: Sequencing technology used to generate the reads. Supported arguments are `ONT` or `HiFi`. 
+- `--tech HiFi|ONT`: Sequencing technology used to generate the reads. Supported arguments are `ONT` or `HiFi`.
 
 The Sentieon LongRead pipeline accepts the following optional arguments:
 - `-d DBSNP`: the location of the Single Nucleotide Polymorphism database (dbSNP) used to label known variants in VCF (`.vcf`) or bgzip compressed VCF (`.vcf.gz`) format. Only one file is supported. Supplying this file will annotate variants with their dbSNP refSNP ID numbers. A VCF index file is required.
