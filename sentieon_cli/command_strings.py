@@ -1,202 +1,17 @@
 """
-This module contains the functions that accept kwargs and return the
+This module contains the functions that accept arguments and return the
 command strings.
-
-We expect that the kwargs are created from user-input (to argh) or a config
-file. Where appropriate, we use named args, but for flexibility, kwargs are
-also used.
-
-Command strings may be partial--that is, they could be mixed with other
-command strings to get a full viable command.
-
 """
 
 import io
 import pathlib
 import shlex
+import subprocess as sp
 import typing
-from typing import Any, Optional, List, Union, Dict
+from typing import Any, Optional, List, Dict
 from .logging import get_logger
 
 logger = get_logger(__name__)
-
-
-class BaseAlgo:
-    """A base class for Sentieon algos"""
-
-    name = "BaseAlgo"
-
-    def build_cmd(self) -> List[str]:
-        """Build a command line for the algo"""
-        cmd: List[str] = ["--algo", self.name]
-
-        for k, v in self.__dict__.items():
-            if k == "output":
-                continue
-            elif v is None:
-                continue
-            elif isinstance(v, list):
-                for i in v:
-                    cmd.append(f"--{k}")
-                    cmd.append(str(i))
-            elif isinstance(v, bool):
-                if v:
-                    cmd.append(f"--{k}")
-            else:
-                cmd.append(f"--{k}")
-                cmd.append(str(v))
-
-        if "output" in self.__dict__:
-            cmd.append(str(self.__dict__["output"]))
-
-        return cmd
-
-
-class VariantPhaser(BaseAlgo):
-    """algo VariantPhaser"""
-
-    name = "VariantPhaser"
-
-    def __init__(
-        self,
-        vcf: pathlib.Path,
-        output: pathlib.Path,
-        out_bed: Optional[pathlib.Path] = None,
-        out_ext: Optional[pathlib.Path] = None,
-        max_depth: int = 1000,
-    ):
-        self.vcf = vcf
-        self.output = output
-        self.out_bed = out_bed
-        self.out_ext = out_ext
-        self.max_depth = max_depth
-
-
-class RepeatModel(BaseAlgo):
-    """algo RepeatModel"""
-
-    name = "RepeatModel"
-
-    def __init__(
-        self,
-        output: pathlib.Path,
-        phased: bool = False,
-        min_map_qual: int = 1,
-        min_group_count: int = 10000,
-        read_flag_mask: Optional[str] = None,
-        repeat_extension: int = 5,
-        max_repeat_unit_size: int = 2,
-        min_repeat_count: int = 6,
-    ):
-        self.output = output
-        self.phased = phased
-        self.min_map_qual = min_map_qual
-        self.min_group_count = min_group_count
-        self.read_flag_mask = read_flag_mask
-        self.repeat_extension = repeat_extension
-        self.max_repeat_unit_size = max_repeat_unit_size
-        self.min_repeat_count = min_repeat_count
-
-
-class DNAModelApply(BaseAlgo):
-    """algo DNAModelApply"""
-
-    name = "DNAModelApply"
-
-    def __init__(
-        self,
-        model: pathlib.Path,
-        vcf: pathlib.Path,
-        output: pathlib.Path,
-    ):
-        self.model = model
-        self.vcf = vcf
-        self.output = output
-
-
-class DNAscope(BaseAlgo):
-    """algo DNAscope"""
-
-    name = "DNAscope"
-
-    def __init__(
-        self,
-        output: pathlib.Path,
-        dbsnp: Optional[pathlib.Path] = None,
-        emit_mode: str = "variant",
-        model: Optional[pathlib.Path] = None,
-    ):
-        self.output = output
-        self.dbsnp = dbsnp
-        self.emit_mode = emit_mode
-        self.model = model
-
-
-class DNAscopeHP(BaseAlgo):
-    """algo DNAscopeHP"""
-
-    name = "DNAscopeHP"
-
-    def __init__(
-        self,
-        output: pathlib.Path,
-        dbsnp: Optional[pathlib.Path] = None,
-        model: Optional[pathlib.Path] = None,
-        pcr_indel_model: Optional[pathlib.Path] = None,
-    ):
-        self.output = output
-        self.dbsnp = dbsnp
-        self.model = model
-        self.pcr_indel_model = pcr_indel_model
-
-
-class Driver:
-    """Representing the Sentieon driver"""
-
-    def __init__(
-        self,
-        reference: Optional[pathlib.Path] = None,
-        thread_count: Optional[int] = None,
-        interval: Optional[Union[pathlib.Path, str]] = None,
-        read_filter: Optional[str] = None,
-        input: Optional[List[pathlib.Path]] = None,
-        algo: Optional[List[BaseAlgo]] = None,
-    ):
-        self.reference = reference
-        self.input = input
-        self.thread_count = thread_count
-        self.interval = interval
-        self.read_filter = read_filter
-        self.algo = algo if algo else []
-
-    def add_algo(self, algo: BaseAlgo):
-        """Add an algo to the driver"""
-        self.algo.append(algo)
-
-    def build_cmd(self) -> List[str]:
-        """Build a command line for the driver"""
-        cmd: List[str] = ["sentieon", "driver"]
-
-        for k, v in self.__dict__.items():
-            if k == "algo":
-                continue
-            elif v is None:
-                continue
-            elif isinstance(v, list):
-                for i in v:
-                    cmd.append(f"--{k}")
-                    cmd.append(str(i))
-            elif isinstance(v, bool):
-                if v:
-                    cmd.append(f"--{k}")
-            else:
-                cmd.append(f"--{k}")
-                cmd.append(str(v))
-
-        for algo in self.algo:
-            cmd.extend(algo.build_cmd())
-
-        return cmd
 
 
 def cmd_bedtools_subtract(
@@ -357,3 +172,175 @@ def cmd_pyexec_vcf_mod_merge(
         out_vcf,
     ]
     return shlex.join(cmd)
+
+
+def cmd_pyexec_vcf_mod_haploid_patch2(
+    out_vcf: str,
+    vcf: str,
+    vcf_hp: str,
+    cores: int,
+    kwargs: Dict[str, Any],
+) -> str:
+    """Patch a single pair of haploid DNAscope and DNAscopeHP VCFs"""
+
+    cmd = [
+        "sentieon",
+        "pyexec",
+        str(kwargs["vcf_mod_py"]),
+        "-t",
+        str(cores),
+        "haploid_patch2",
+        "--vcf",
+        vcf,
+        "--vcf_hp",
+        vcf_hp,
+        "--patch_vcf",
+        out_vcf,
+    ]
+    return shlex.join(cmd)
+
+
+def get_rg_lines(
+    input_aln: pathlib.Path,
+    dry_run: bool,
+) -> List[str]:
+    """Read the @RG lines from an alignment file"""
+    cmd = shlex.join(
+        [
+            "samtools",
+            "view",
+            "-H",
+            str(input_aln),
+        ]
+    )
+    rg_lines: List[str] = []
+    if not dry_run:
+        res = sp.run(cmd, shell=True, check=True, stdout=sp.PIPE)
+        for line in res.stdout.decode("utf-8").split("\n"):
+            if line.startswith("@RG"):
+                rg_lines.append(line)
+    else:
+        rg_lines.append("@RG\tID:mysample-1\tSM:mysample")
+    return rg_lines
+
+
+def cmd_samtools_fastq_minimap2(
+    out_aln: pathlib.Path,
+    input_aln: pathlib.Path,
+    reference: pathlib.Path,
+    model_bundle: pathlib.Path,
+    cores: int,
+    rg_lines: List[str],
+    input_ref: Optional[pathlib.Path] = None,
+    fastq_taglist: str = "*",
+    util_sort_args: str = "--cram_write_options version=3.0,compressor=rans",
+) -> str:
+    """Re-align an input BAM/CRAM/uBAM/uCRAM file with minimap2"""
+
+    ref_cmd: List[str] = []
+    if input_ref:
+        ref_cmd = ["--reference", str(reference)]
+    cmd1 = (
+        [
+            "samtools",
+            "fastq",
+        ]
+        + ref_cmd
+        + [
+            "-@",
+            str(cores),
+            "-T",
+            fastq_taglist,
+            str(input_aln),
+        ]
+    )
+    cmd2 = [
+        "sentieon",
+        "minimap2",
+        "-y",
+        "-t",
+        str(cores),
+        "-a",
+        "-x",
+        f"{model_bundle}/minimap2.model",
+        str(reference),
+        "/dev/stdin",
+    ]
+    cmd3 = [
+        "sentieon",
+        "util",
+        "sort",
+        "-i",
+        "-",
+        "-t",
+        str(cores),
+        "--reference",
+        str(reference),
+        "-o",
+        str(out_aln),
+        "--sam2bam",
+    ] + util_sort_args.split()
+
+    # Commands to replace the @RG lines in the header
+    rg_cmds: List[List[str]] = []
+    for rg_line in rg_lines:
+        rg_cmds.append(
+            [
+                "samtools",
+                "addreplacerg",
+                "-r",
+                str(rg_line),
+                "-m",
+                "orphan_only",
+                "-",
+            ]
+        )
+
+    return " | ".join([shlex.join(x) for x in (cmd1, cmd2, *rg_cmds, cmd3)])
+
+
+def cmd_fastq_minimap2(
+    out_aln: pathlib.Path,
+    fastq: pathlib.Path,
+    readgroup: str,
+    reference: pathlib.Path,
+    model_bundle: pathlib.Path,
+    cores: int,
+    unzip: str = "gzip",
+    util_sort_args: str = "--cram_write_options version=3.0,compressor=rans",
+) -> str:
+    """Align an input fastq file with minimap2"""
+
+    cmd1 = [
+        unzip,
+        "-dc",
+        str(fastq),
+    ]
+    cmd2 = [
+        "sentieon",
+        "minimap2",
+        "-t",
+        str(cores),
+        "-a",
+        "-x",
+        f"{model_bundle}/minimap2.model",
+        "-R",
+        readgroup,
+        str(reference),
+        "/dev/stdin",
+    ]
+    cmd3 = [
+        "sentieon",
+        "util",
+        "sort",
+        "-i",
+        "-",
+        "-t",
+        str(cores),
+        "--reference",
+        str(reference),
+        "-o",
+        str(out_aln),
+        "--sam2bam",
+    ] + util_sort_args.split()
+    return " | ".join([shlex.join(x) for x in (cmd1, cmd2, cmd3)])

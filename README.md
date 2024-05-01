@@ -6,7 +6,16 @@ A command-line interface for the Sentieon software
 
 ## Setup
 
-`sentieon-cli` uses [poetry](https://pypi.org/project/poetry/) for packaging and dependency management. Initially, you will need to install poetry into your environment:
+Create a new python virtual environment for the project, if needed:
+```
+# Create a new venv, if needed
+python3 -m venv /path/to/new/virtal/environment/sentieon_cli
+
+# Activate the venv
+source /path/to/new/virtal/environment/sentieon_cli/bin/activate
+```
+
+`sentieon-cli` uses [poetry](https://pypi.org/project/poetry/) for packaging and dependency management. Initially, you will need to install poetry:
 ```
 pip install poetry
 ```
@@ -17,19 +26,13 @@ git clone https://github.com/sentieon/sentieon-cli.git
 cd sentieon-cli
 ```
 
-Use poetry to install the `sentieon-cli` into a virtualenv.
+Use poetry to install the `sentieon-cli` into the virtual environment:
 ```
 poetry install
 ```
 
-You can then run commands through poetry.
+You can then run commands from the virtual environment:
 ```
-poetry run sentieon-cli ...
-```
-
-Alternatively, you can use `poetry shell` to activate the environment with the `sentieon-cli`.
-```
-poetry shell
 sentieon-cli ...
 ```
 

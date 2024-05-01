@@ -187,6 +187,57 @@ def open_vcfs(input_vcf_fns, output_vcf_fns, update=None, hdr_idx=0):
 
     return (input_vcfs, output_vcfs)
 
+def haploid_patch_main(args):
+    input_vcfs, output_vcfs = open_vcfs(
+        (args.vcf, args.vcf_hp),
+        (args.patch_vcf,),
+        update=(
+            '##INFO=<ID=DELTA,Number=0,Type=Flag,Description="Delta flag">',
+        ),
+        hdr_idx=None,
+    )
+    vcfs = input_vcfs + output_vcfs
+    result = sharded_run(
+        args.thread_count,
+        input_vcfs[0].contigs,
+        haploid_patch,
+        100 * 1000 * 1000,
+        None,
+        *vcfs
+    )
+
+    for f in vcfs:
+        if f:
+            f.close()
+    return 0
+
+def haploid_patch(vcfi1, vcfd1, vcfo1, **kwargs):
+    for pos, grp, ovl in grouper(vcfi1, vcfd1):
+        v1, d1 = grp
+
+        if d1 and d1.samples[0].get('GT') is None:
+            d1 = None
+        if not v1 or d1 and compatible(v1, d1):
+            v1 = d1
+        if not v1:
+            continue
+
+        v1 = trim1(v1 == d1 and vcfd1 or vcfi1, v1)
+        i1, p1 = getpl(v1, None)
+
+        # skip high conf ref calls
+        if (i1 == 0 and p1 == 0 and 
+            (not v1 or v1.samples[0].get('GQ') >= 20)):
+            continue
+
+        if v1:
+            if v1 == d1 or v1.info.get('STR') and v1.info.get('RPA')[0]>=4:
+                v1.info['DELTA'] = True
+            v1.info.pop('ML_PROB', None)
+            v1.filter = []
+            v1.line = None
+            vcfo1.emit(v1)
+
 def merge_main(args):
     input_vcfs, output_vcfs = open_vcfs(
         (args.hap1, args.hap2, args.unphased, args.phased),
@@ -695,6 +746,21 @@ def parse_args(argv=None):
     )
     patch_parser.add_argument("output_vcf", help="The patched output VCF")
     patch_parser.set_defaults(func=patch2_main)
+
+    haploid_patch2_parser = subparsers.add_parser(
+        "haploid_patch2",
+        help="Patch a single pair of haploid DNAscope and DNAscopeHP VCFs",
+    )
+    haploid_patch2_parser.add_argument(
+        "--vcf", required=True, help="The DNAscope vcf"
+    )
+    haploid_patch2_parser.add_argument(
+        "--vcf_hp", required=True, help="The DNAscopeHP vcf"
+    )
+    haploid_patch2_parser.add_argument(
+        "--patch_vcf", required=True, help="The output patch vcf"
+    )
+    haploid_patch2_parser.set_defaults(func=haploid_patch_main)
 
     return (parser.parse_args(argv), parser, subparsers)
 

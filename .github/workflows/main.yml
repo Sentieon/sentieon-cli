@@ -5,16 +5,15 @@ on:
       - main
   pull_request:
 
-env:
-  SENTIEON_VERSION: "202308.01"
-
 jobs:
   smoke:
     strategy:
       fail-fast: true
+      max-parallel: 1
       matrix:
-        python-version: ["3.12"]
+        python-version: ["3.8", "3.12"]
         poetry-version: ["1.5.1"]
+        sentieon-version: ["202308.01", "202308.02"]
         os: [ubuntu-22.04] #, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
@@ -34,6 +33,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y bcftools
+      - name: Install samtools
+        run: |
+          curl -L https://github.com/samtools/samtools/releases/download/1.19.2/samtools-1.19.2.tar.bz2 | tar -jxf -
+          cd samtools-1.19.2
+          ./configure && sudo make install
       - name: Install bedtools
         run: |
           sudo curl -L -o /usr/local/bin/bedtools "https://github.com/arq5x/bedtools2/releases/download/v2.31.0/bedtools.static"
@@ -41,6 +45,8 @@ jobs:
       - name: Install sentieon
         run: |
           curl -L https://s3.amazonaws.com/sentieon-release/software/sentieon-genomics-$SENTIEON_VERSION.tar.gz | tar -zxf -
+        env:
+          SENTIEON_VERSION: ${{ matrix.sentieon-version }}
       - name: Download model
         run: |
           curl -L "https://s3.amazonaws.com/sentieon-release/other/DNAscopePacBio2.1.bundle" \
@@ -56,20 +62,50 @@ jobs:
           mv tests/smoke/sample.cram "tests/smoke/sam ple.cram"
           mv tests/smoke/sample.cram.crai "tests/smoke/sam ple.cram.crai"
 
-          sentieon-cli dnascope-longread -r "tests/smoke/r ef.fa" \
+          sentieon-cli dnascope-longread -t 1 -r "tests/smoke/r ef.fa" \
             -i "tests/smoke/sam ple.cram" -m "DNAscope PacBio2.1.bundle" \
-            --repeat-model tests/smoke/sample_repeat.model -g "output hifi.vcf.gz"
-          sentieon driver -r "tests/smoke/r ef.fa" --algo GVCFtyper \
+            --repeat-model tests/smoke/sample_repeat.model -g \
+            -b "tests/smoke/diploid.bed" \
+            --haploid-bed "tests/smoke/haploid.bed" \
+            "output hifi.vcf.gz"
+          sentieon driver -r "tests/smoke/r ef.fa" -t 1 --algo GVCFtyper \
             -v "output hifi.g.vcf.gz" output_hifi_gvcftyper.vcf.gz
+          if [ ! -f "output hifi.sv.vcf.gz" -o ! -f "output hifi.haploid.vcf.gz" ]; then
+            exit 1
+          fi
 
-          sentieon-cli dnascope-longread --tech ONT -r "tests/smoke/r ef.fa" \
+          sentieon-cli dnascope-longread --tech ONT -t 1 -r "tests/smoke/r ef.fa" \
             -i "tests/smoke/sam ple.cram" -m "DNAscope PacBio2.1.bundle" \
             --repeat-model tests/smoke/sample_repeat.model -g "output ont.vcf.gz"
-          sentieon driver -r "tests/smoke/r ef.fa" --algo GVCFtyper \
+          sentieon driver -r "tests/smoke/r ef.fa" -t 1 --algo GVCFtyper \
             -v "output ont.g.vcf.gz" output_hifi_gvcftyper.vcf.gz
+          if [ ! -f "output ont.sv.vcf.gz" ]; then
+            exit 1
+          fi
+
+          sentieon-cli dnascope-longread -t 1 -r "tests/smoke/r ef.fa" \
+            -i "tests/smoke/sam ple.cram" -m "DNAscope PacBio2.1.bundle" \
+            --repeat-model tests/smoke/sample_repeat.model --align \
+            --input_ref "tests/smoke/r ef.fa" "output realigned.vcf.gz"
+          if [ ! -f "output realigned.vcf.gz" -o ! -f "output realigned_mm2_sorted_0.cram" ]; then
+            exit 1
+          fi
+
+          samtools fastq --reference "tests/smoke/r ef.fa" \
+            "tests/smoke/sam ple.cram" | \
+            gzip -c > sample.fq.gz
+          sentieon-cli dnascope-longread -t 1 -r "tests/smoke/r ef.fa" \
+            --fastq sample.fq.gz --readgroups '@RG\tID:sample-1\tSM:sample' \
+            -m "DNAscope PacBio2.1.bundle" \
+            --repeat-model tests/smoke/sample_repeat.model "output fq.vcf.gz"
+          if [ ! -f "output fq.vcf.gz" -o ! -f "output fq_mm2_sorted_fq_0.cram" -o ! -f "output fq.sv.vcf.gz" ]; then
+            exit 1
+          fi
+
         env:
           SENTIEON_LICENSE: ${{ secrets.SENTIEON_LICENSE }}
           SENTIEON_AUTH_MECH: "GitHub Actions - token"
           ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
           LICENSE_MESSAGE: ${{ secrets.LICENSE_MESSAGE }}
+          SENTIEON_VERSION: ${{ matrix.sentieon-version }}
       
