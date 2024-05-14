@@ -110,11 +110,15 @@ class DNAscope(BaseAlgo):
         dbsnp: Optional[pathlib.Path] = None,
         emit_mode: str = "variant",
         model: Optional[pathlib.Path] = None,
+        pcr_indel_model: str = "CONSERVATIVE",
+        var_type: str = "SNP,INDEL",
     ):
         self.output = output
         self.dbsnp = dbsnp
         self.emit_mode = emit_mode
         self.model = model
+        self.pcr_indel_model = pcr_indel_model
+        self.var_type = var_type
 
 
 class DNAscopeHP(BaseAlgo):
@@ -155,6 +159,78 @@ class LongReadSV(BaseAlgo):
         self.min_sv_size = min_sv_size
         self.min_dp = min_dp
         self.min_af = min_af
+
+
+class LocusCollector(BaseAlgo):
+    """algo LocusCollector"""
+
+    name = "LocusCollector"
+
+    def __init__(
+        self,
+        output: pathlib.Path,
+        rna: bool = False,
+        consensus: bool = False,
+        umi_tag: Optional[str] = None,
+        umi_ecc_dist: Optional[int] = None,
+        umi_ecc_lev_dist: Optional[int] = None,
+    ):
+        self.output = output
+        self.rna = rna
+        self.consensus = consensus
+        self.umi_tag = umi_tag
+        self.umi_ecc_dist = umi_ecc_dist
+        self.umi_ecc_lev_dist = umi_ecc_lev_dist
+
+
+class Dedup(BaseAlgo):
+    """algo Dedup"""
+
+    name = "Dedup"
+
+    def __init__(
+        self,
+        output: pathlib.Path,
+        score_info: pathlib.Path,
+        bam_compression: Optional[int] = None,
+        cram_write_options: Optional[str] = None,
+        metrics: Optional[pathlib.Path] = None,
+        rmdup: bool = False,
+    ):
+        self.output = output
+        self.score_info = score_info
+        self.bam_compression = bam_compression
+        self.cram_write_options = cram_write_options
+        self.metrics = metrics
+        self.rmdup = rmdup
+
+
+class GVCFtyper(BaseAlgo):
+    """algo GVCFtyper"""
+
+    name = "GVCFtyper"
+
+    def __init__(
+        self,
+        output: pathlib.Path,
+        vcf: pathlib.Path,
+    ):
+        self.output = output
+        self.vcf = vcf
+
+
+class SVSolver(BaseAlgo):
+    """algo SVSolver"""
+
+    name = "SVSolver"
+
+    def __init__(
+        self,
+        output: pathlib.Path,
+        vcf: pathlib.Path,
+    ):
+        self.output = output
+        self.vcf = vcf
 
 
 class Driver:
