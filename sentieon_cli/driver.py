@@ -233,6 +233,84 @@ class SVSolver(BaseAlgo):
         self.vcf = vcf
 
 
+class InsertSizeMetricAlgo(BaseAlgo):
+    """algo InsertSizeMetricAlgo"""
+
+    name = "InsertSizeMetricAlgo"
+
+    def __init__(self, output: pathlib.Path):
+        self.output = output
+
+
+class MeanQualityByCycle(BaseAlgo):
+    """algo MeanQualityByCycle"""
+
+    name = "MeanQualityByCycle"
+
+    def __init__(self, output: pathlib.Path):
+        self.output = output
+
+
+class BaseDistributionByCycle(BaseAlgo):
+    """algo BaseDistributionByCycle"""
+
+    name = "BaseDistributionByCycle"
+
+    def __init__(self, output: pathlib.Path):
+        self.output = output
+
+
+class QualDistribution(BaseAlgo):
+    """algo QualDistribution"""
+
+    name = "QualDistribution"
+
+    def __init__(self, output: pathlib.Path):
+        self.output = output
+
+
+class GCBias(BaseAlgo):
+    """algo GCBias"""
+
+    name = "GCBias"
+
+    def __init__(
+        self,
+        output: pathlib.Path,
+        summary: Optional[pathlib.Path] = None,
+    ):
+        self.output = output
+        self.summary = summary
+
+
+class AlignmentStat(BaseAlgo):
+    """algo AlignmentStat"""
+
+    name = "AlignmentStat"
+
+    def __init__(
+        self,
+        output: pathlib.Path,
+        adapter_seq: str = "''",
+    ):
+        self.output = output
+        self.adapter_seq = adapter_seq
+
+
+class CoverageMetrics(BaseAlgo):
+    """algo CoverageMetrics"""
+
+    name = "CoverageMetrics"
+
+    def __init__(
+        self,
+        output: pathlib.Path,
+        omit_base_output: bool = True,
+    ):
+        self.output = output
+        self.omit_base_output = omit_base_output
+
+
 class Driver:
     """Representing the Sentieon driver"""
 

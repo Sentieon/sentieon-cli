@@ -16,12 +16,19 @@ from argh import arg
 
 from . import command_strings as cmds
 from .driver import (
+    AlignmentStat,
+    BaseDistributionByCycle,
+    CoverageMetrics,
     Dedup,
     DNAModelApply,
     DNAscope,
     Driver,
+    GCBias,
     GVCFtyper,
+    InsertSizeMetricAlgo,
+    MeanQualityByCycle,
     LocusCollector,
+    QualDistribution,
     SVSolver,
 )
 from .util import (
@@ -178,14 +185,30 @@ def dedup_and_metrics(
     out_score = pathlib.Path(
         str(output_vcf).replace(".vcf.gz", "_score.txt.gz")
     )
-    # TODO
-    # is_metrics = pathlib.Path(str(output_vcf).replace(".vcf.gz", "_is_metrics.txt"))
-    # mqbc_metrics = pathlib.Path(str(output_vcf).replace(".vcf.gz", "_mqbc_metrics.txt"))
-    # bdbc_metrics = pathlib.Path(str(output_vcf).replace(".vcf.gz", "_bdbc_metrics.txt"))
-    # qualdist_metrics = pathlib.Path(str(output_vcf).replace(".vcf.gz", "_qd_metrics.txt"))
-    # gc_metrics = pathlib.Path(str(output_vcf).replace(".vcf.gz", "_gc_metrics.txt"))
-    # as_metrics = pathlib.Path(str(output_vcf).replace(".vcf.gz", "_as_metrics.txt"))
-    # coverage_metrics = pathlib.Path(str(output_vcf).replace(".vcf.gz", "_coverage_metrics.txt"))
+    is_metrics = pathlib.Path(
+        str(output_vcf).replace(".vcf.gz", "_is_metrics.txt")
+    )
+    mqbc_metrics = pathlib.Path(
+        str(output_vcf).replace(".vcf.gz", "_mqbc_metrics.txt")
+    )
+    bdbc_metrics = pathlib.Path(
+        str(output_vcf).replace(".vcf.gz", "_bdbc_metrics.txt")
+    )
+    qualdist_metrics = pathlib.Path(
+        str(output_vcf).replace(".vcf.gz", "_qd_metrics.txt")
+    )
+    gc_metrics = pathlib.Path(
+        str(output_vcf).replace(".vcf.gz", "_gc_metrics.txt")
+    )
+    gc_summary = pathlib.Path(
+        str(output_vcf).replace(".vcf.gz", "_gc_summary.txt")
+    )
+    as_metrics = pathlib.Path(
+        str(output_vcf).replace(".vcf.gz", "_as_metrics.txt")
+    )
+    coverage_metrics = pathlib.Path(
+        str(output_vcf).replace(".vcf.gz", "_coverage_metrics.txt")
+    )
 
     driver = Driver(
         reference=reference,
@@ -199,6 +222,14 @@ def dedup_and_metrics(
                 consensus=consensus,
             )
         )
+    driver.add_algo(InsertSizeMetricAlgo(is_metrics))
+    driver.add_algo(MeanQualityByCycle(mqbc_metrics))
+    driver.add_algo(BaseDistributionByCycle(bdbc_metrics))
+    driver.add_algo(QualDistribution(qualdist_metrics))
+    driver.add_algo(GCBias(gc_metrics, summary=gc_summary))
+    driver.add_algo(AlignmentStat(as_metrics))
+    driver.add_algo(CoverageMetrics(coverage_metrics))
+
     run(shlex.join(driver.build_cmd()))
 
     if duplicate_marking == "none":
