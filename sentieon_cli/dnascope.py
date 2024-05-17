@@ -511,7 +511,7 @@ def dnascope(
     cores: int = mp.cpu_count(),  # pylint: disable=W0613
     pcr_free: bool = False,  # pylint: disable=W0613
     gvcf: bool = False,  # pylint: disable=W0613
-    duplicate_marking: str = "markdup",  # pylint: disable=W0613
+    duplicate_marking: str = "markdup",
     consensus: bool = False,  # pylint: disable=W0613
     dry_run: bool = False,
     skip_small_variants: bool = False,
@@ -556,6 +556,14 @@ def dnascope(
     sample_input.extend(align_fastq(**locals()))
 
     deduped = dedup_and_metrics(**locals())  # pylint: disable=W0641
+
+    # Remove the bwa output before duplicate marking
+    if duplicate_marking != "none":
+        for aln in sample_input:
+            for idx_suffix in (".bai", ".crai"):
+                idx = pathlib.Path(str(aln) + idx_suffix)
+                idx.unlink(missing_ok=True)
+            aln.unlink()
 
     if not skip_small_variants:
         res = call_variants(**locals())
