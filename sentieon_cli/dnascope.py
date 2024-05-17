@@ -3,6 +3,7 @@ DNAscope alignment and variant calling
 """
 
 import argparse
+import itertools
 import multiprocessing as mp
 import pathlib
 import shlex
@@ -123,9 +124,7 @@ def align_fastq(
     res: List[pathlib.Path] = []
     if r1_fastq is None and readgroups is None:
         return res
-    if (not r1_fastq or not r2_fastq or not readgroups) or (
-        len(r1_fastq) != len(r2_fastq) != len(readgroups)
-    ):
+    if (not r1_fastq or not readgroups) or (len(r1_fastq) != len(readgroups)):
         logger.error(
             "The number of readgroups does not equal the number of fastq files"
         )
@@ -144,7 +143,10 @@ def align_fastq(
         unzip = "gzip"
 
     suffix = "bam" if bam_format else "cram"
-    for i, (r1, r2, rg) in enumerate(zip(r1_fastq, r2_fastq, readgroups)):
+    r2_fastq = [] if r2_fastq is None else r2_fastq
+    for i, (r1, r2, rg) in enumerate(
+        itertools.zip_longest(r1_fastq, r2_fastq, readgroups)
+    ):
         out_aln = pathlib.Path(
             str(output_vcf).replace(".vcf.gz", f"_bwa_sorted_fq_{i}.{suffix}")
         )
@@ -528,7 +530,7 @@ def dnascope(
     Run the DNAscope pipeline
     """
     assert reference
-    assert sample_input or (r1_fastq and r2_fastq)
+    assert sample_input or (r1_fastq and readgroups)
     assert model_bundle
 
     logger.setLevel(kwargs["loglevel"])

@@ -412,7 +412,7 @@ def cmd_fastq_minimap2(
 def cmd_fastq_bwa(
     out_aln: pathlib.Path,
     r1: pathlib.Path,
-    r2: pathlib.Path,
+    r2: Optional[pathlib.Path],
     readgroup: str,
     reference: pathlib.Path,
     model_bundle: pathlib.Path,
@@ -444,11 +444,13 @@ def cmd_fastq_bwa(
         "-dc",
         str(r1),
     ]
-    cmd3 = [
-        str(unzip),
-        "-dc",
-        str(r2),
-    ]
+    cmd3 = []
+    if r2:
+        cmd3 = [
+            str(unzip),
+            "-dc",
+            str(r2),
+        ]
     cmd4 = [
         "sentieon",
         "util",
@@ -465,4 +467,8 @@ def cmd_fastq_bwa(
     ] + util_sort_args.split()
 
     cmds = [shlex.join(x) for x in (cmd1, cmd2, cmd3, cmd4)]
-    return cmds[0] + "<(" + cmds[1] + ") <(" + cmds[2] + ") | " + cmds[3]
+    cmd_str = cmds[0] + "<(" + cmds[1] + ") "
+    if cmds[2]:
+        cmd_str += " <(" + cmds[2] + ") "
+    cmd_str += " | " + cmds[3]
+    return cmd_str
