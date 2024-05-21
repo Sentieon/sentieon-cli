@@ -26,11 +26,14 @@ from .driver import (
     Driver,
     GCBias,
     GVCFtyper,
+    HsMetricAlgo,
     InsertSizeMetricAlgo,
     MeanQualityByCycle,
     LocusCollector,
     QualDistribution,
+    SequenceArtifactMetricsAlgo,
     SVSolver,
+    WgsMetricsAlgo,
 )
 from .util import (
     __version__,
@@ -173,8 +176,11 @@ def dedup_and_metrics(
     output_vcf: pathlib.Path,
     reference: pathlib.Path,
     sample_input: List[pathlib.Path],
+    dbsnp: Optional[pathlib.Path] = None,
+    bed: Optional[pathlib.Path] = None,
     cores: int = mp.cpu_count(),
     duplicate_marking: str = "markdup",
+    assay: str = "WGS",
     consensus: bool = False,
     bam_format: bool = False,
     cram_write_options: str = "version=3.0,compressor=rans",
@@ -212,6 +218,19 @@ def dedup_and_metrics(
         str(output_vcf).replace(".vcf.gz", "_coverage_metrics.txt")
     )
 
+    # WES metrics
+    hs_metrics = pathlib.Path(
+        str(output_vcf).replace(".vcf.gz", "_hs_metrics.txt")
+    )
+    sa_metrics = pathlib.Path(
+        str(output_vcf).replace(".vcf.gz", "_sa_metrics.txt")
+    )
+
+    # WGS metrics
+    wgs_metrics = pathlib.Path(
+        str(output_vcf).replace(".vcf.gz", "_wgs_metrics.txt")
+    )
+
     driver = Driver(
         reference=reference,
         thread_count=cores,
@@ -231,6 +250,12 @@ def dedup_and_metrics(
     driver.add_algo(GCBias(gc_metrics, summary=gc_summary))
     driver.add_algo(AlignmentStat(as_metrics))
     driver.add_algo(CoverageMetrics(coverage_metrics))
+    if assay == "WES":
+        driver.add_algo(SequenceArtifactMetricsAlgo(sa_metrics, dbsnp))
+        if bed:
+            driver.add_algo(HsMetricAlgo(hs_metrics, bed, bed))
+    elif assay == "WGS":
+        driver.add_algo(WgsMetricsAlgo(wgs_metrics))
 
     run(shlex.join(driver.build_cmd()))
 
@@ -270,6 +295,7 @@ def call_variants(
     model_bundle: pathlib.Path,
     dbsnp: Optional[pathlib.Path] = None,
     bed: Optional[pathlib.Path] = None,
+    interval_padding: int = 0,
     cores: int = mp.cpu_count(),
     pcr_free: bool = False,
     gvcf: bool = False,
@@ -306,6 +332,7 @@ def call_variants(
         thread_count=cores,
         input=deduped,
         interval=bed,
+        interval_padding=interval_padding,
     )
     driver.add_algo(
         DNAscope(
@@ -432,6 +459,10 @@ def call_variants(
     type=path_arg(exists=True, is_file=True),
 )
 @arg(
+    "--interval_padding",
+    help="Amount to pad all intervals.",
+)
+@arg(
     "-t",
     "--cores",
     help="Number of threads/processes to use. %(default)s",
@@ -452,6 +483,11 @@ def call_variants(
     "--duplicate-marking",
     help="Options for duplicate marking.",
     choices=["markdup", "rmdup", "none"],
+)
+@arg(
+    "--assay",
+    help="The type of assay, WGS or WES. %(default)s",
+    choices=["WGS", "WES"],
 )
 @arg(
     "--consensus",
@@ -508,11 +544,13 @@ def dnascope(
     readgroups: Optional[List[str]] = None,
     model_bundle: Optional[pathlib.Path] = None,
     dbsnp: Optional[pathlib.Path] = None,  # pylint: disable=W0613
-    bed: Optional[pathlib.Path] = None,  # pylint: disable=W0613
+    bed: Optional[pathlib.Path] = None,
+    interval_padding: int = 0,  # pylint: disable=W0613
     cores: int = mp.cpu_count(),  # pylint: disable=W0613
     pcr_free: bool = False,  # pylint: disable=W0613
     gvcf: bool = False,  # pylint: disable=W0613
     duplicate_marking: str = "markdup",
+    assay: str = "WGS",
     consensus: bool = False,  # pylint: disable=W0613
     dry_run: bool = False,
     skip_small_variants: bool = False,
@@ -542,6 +580,18 @@ def dnascope(
             "jemalloc is recommended, but is not preloaded. See "
             "https://support.sentieon.com/appnotes/jemalloc/"
         )
+
+    if bed is None:
+        if assay == "WES":
+            logger.warning(
+                "A BED file is recommended with WES assays to restrict "
+                "variant calling to target regions."
+            )
+        else:
+            logger.info(
+                "A BED file is recommended to avoid variant calling across "
+                "decoy and unplaced contigs."
+            )
 
     tmp_dir_str = tmp()
     tmp_dir = pathlib.Path(tmp_dir_str)  # type: ignore  # pylint: disable=W0641  # noqa: E501

@@ -311,6 +311,48 @@ class CoverageMetrics(BaseAlgo):
         self.omit_base_output = omit_base_output
 
 
+class HsMetricAlgo(BaseAlgo):
+    """algo HsMetricAlgo"""
+
+    name = "HsMetricAlgo"
+
+    def __init__(
+        self,
+        output: pathlib.Path,
+        targets_list: pathlib.Path,
+        baits_list: pathlib.Path,
+    ):
+        self.output = output
+        self.targets_list = targets_list
+        self.baits_list = baits_list
+
+
+class SequenceArtifactMetricsAlgo(BaseAlgo):
+    """algo SequenceArtifactMetricsAlgo"""
+
+    name = "SequenceArtifactMetricsAlgo"
+
+    def __init__(
+        self,
+        output: pathlib.Path,
+        dbsnp: Optional[pathlib.Path] = None,
+    ):
+        self.output = output
+        self.dbsnp = dbsnp
+
+
+class WgsMetricsAlgo(BaseAlgo):
+    """algo WgsMetricsAlgo"""
+
+    name = "WgsMetricsAlgo"
+
+    def __init__(
+        self,
+        output: pathlib.Path,
+    ):
+        self.output = output
+
+
 class Driver:
     """Representing the Sentieon driver"""
 
@@ -319,6 +361,7 @@ class Driver:
         reference: Optional[pathlib.Path] = None,
         thread_count: Optional[int] = None,
         interval: Optional[Union[pathlib.Path, str]] = None,
+        interval_padding: int = 0,
         read_filter: Optional[str] = None,
         input: Optional[List[pathlib.Path]] = None,
         algo: Optional[List[BaseAlgo]] = None,
@@ -327,6 +370,7 @@ class Driver:
         self.input = input
         self.thread_count = thread_count
         self.interval = interval
+        self.interval_padding = interval_padding
         self.read_filter = read_filter
         self.algo = algo if algo else []
 

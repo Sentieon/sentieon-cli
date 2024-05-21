@@ -74,6 +74,7 @@ jobs:
           cp tests/smoke/sample.cram "tests/smoke/sam ple.cram"
           cp tests/smoke/sample.cram.crai "tests/smoke/sam ple.cram.crai"
           sentieon bwa index "tests/smoke/r ef.fa"
+          echo -e "chr20\t0\t2500" > "tests/smoke/r ef.bed"
       - name: Smoke test - short-read
         run: |
           . .venv/bin/activate
@@ -92,7 +93,8 @@ jobs:
           sentieon-cli dnascope -t 1 -r "tests/smoke/r ef.fa" --pcr-free \
           --r1-fastq sr_r1.fastq.gz --r2-fastq sr_r2.fastq.gz \
             --readgroups "@RG\tID:HG002-1\tSM:HG002" \
-            -m "DNAscope IlluminaWGS2.0.bundle" "output_sr2.vcf.gz"
+            -m "DNAscope IlluminaWGS2.0.bundle" --assay WES \
+            --bed "tests/smoke/r ef.bed" "output_sr2.vcf.gz"
           if [ ! -f "output_sr2.vcf.gz" ]; then
             exit 1
           fi
