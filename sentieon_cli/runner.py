@@ -11,5 +11,12 @@ def run(cmd: str):
     """Run a command."""
     logger.debug("running: %s", cmd)
     t0 = time.time()
-    sp.run(cmd, shell=True, check=True, stdout=sys.stdout, stderr=sys.stderr)
+    sp.run(
+        cmd,
+        shell=True,
+        check=True,
+        stdout=sys.stdout,
+        stderr=sys.stderr,
+        executable="/bin/bash",
+    )
     logger.debug("finished in: %s seconds", f"{time.time() - t0:.1f}")

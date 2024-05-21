@@ -97,8 +97,8 @@ def align_inputs(
                 cores,
                 rg_header,
                 input_ref,
-                bwa_args,
-                util_sort_args,
+                bwa_args=bwa_args,
+                util_sort_args=util_sort_args,
             )
         )
         res.append(out_aln)
@@ -289,7 +289,7 @@ def call_variants(
     out_svs = pathlib.Path(str(output_vcf).replace(".vcf.gz", "_svs.vcf.gz"))
     emit_mode = "gvcf" if gvcf else "variant"
     pcr_indel_model = "NONE" if pcr_free else "CONSERVATIVE"
-    model = pathlib.Path(str(model_bundle) + "/dnascope.model")
+    model = model_bundle.joinpath("dnascope.model")
 
     # Call variants with DNAscope
     emit_mode = "variant"
@@ -313,6 +313,7 @@ def call_variants(
             dbsnp=dbsnp,
             emit_mode=emit_mode,
             pcr_indel_model=pcr_indel_model,
+            model=model,
         )
     )
     if not skip_svs:

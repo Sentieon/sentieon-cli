@@ -308,6 +308,7 @@ def cmd_samtools_fastq_bwa(
     rg_header: pathlib.Path,
     input_ref: Optional[pathlib.Path] = None,
     bwa_args: str = "-K 100000000",
+    fastq_taglist: str = "RG",
     util_sort_args: str = "--cram_write_options version=3.0,compressor=rans",
 ) -> str:
     """Re-align an input BAM/CRAM/uBAM/uCRAM file with bwa"""
@@ -323,7 +324,8 @@ def cmd_samtools_fastq_bwa(
         + [
             "-@",
             str(cores),
-            "-t",
+            "-T",
+            fastq_taglist,
             str(input_aln),
         ]
     )
@@ -467,7 +469,7 @@ def cmd_fastq_bwa(
     ] + util_sort_args.split()
 
     cmds = [shlex.join(x) for x in (cmd1, cmd2, cmd3, cmd4)]
-    cmd_str = cmds[0] + "<(" + cmds[1] + ") "
+    cmd_str = cmds[0] + " <(" + cmds[1] + ") "
     if cmds[2]:
         cmd_str += " <(" + cmds[2] + ") "
     cmd_str += " | " + cmds[3]
