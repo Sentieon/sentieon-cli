@@ -31,7 +31,6 @@ from .driver import (
     MeanQualityByCycle,
     LocusCollector,
     QualDistribution,
-    SequenceArtifactMetricsAlgo,
     SVSolver,
     WgsMetricsAlgo,
 )
@@ -182,7 +181,6 @@ def dedup_and_metrics(
     output_vcf: pathlib.Path,
     reference: pathlib.Path,
     sample_input: List[pathlib.Path],
-    dbsnp: Optional[pathlib.Path] = None,
     bed: Optional[pathlib.Path] = None,
     cores: int = mp.cpu_count(),
     duplicate_marking: str = "markdup",
@@ -207,17 +205,16 @@ def dedup_and_metrics(
     mqbc_metrics = metrics_dir.joinpath("mean_qual_by_cycle.txt")
     bdbc_metrics = metrics_dir.joinpath("base_distribution_by_cycle.txt")
     qualdist_metrics = metrics_dir.joinpath("qual_distribution.txt")
-    gc_metrics = metrics_dir.joinpath("gc_bias.txt")
-    gc_summary = metrics_dir.joinpath("gc_bias_summary.txt")
     as_metrics = metrics_dir.joinpath("alignment_stat.txt")
     coverage_metrics = metrics_dir.joinpath("coverage")
 
     # WES metrics
     hs_metrics = metrics_dir.joinpath("hybrid-selection.txt")
-    sa_metrics = metrics_dir.joinpath("sequence_artifact.txt")
 
     # WGS metrics
     wgs_metrics = metrics_dir.joinpath("wgs.txt")
+    gc_metrics = metrics_dir.joinpath("gc_bias.txt")
+    gc_summary = metrics_dir.joinpath("gc_bias_summary.txt")
 
     driver = Driver(
         reference=reference,
@@ -231,19 +228,17 @@ def dedup_and_metrics(
                 consensus=consensus,
             )
         )
-    driver.add_algo(InsertSizeMetricAlgo(is_metrics))
+
+    # Prefer to run InsertSizeMetricAlgo after duplicate marking
+    if assay == "WES" and not bed:
+        driver.add_algo(InsertSizeMetricAlgo(is_metrics))
+
     driver.add_algo(MeanQualityByCycle(mqbc_metrics))
     driver.add_algo(BaseDistributionByCycle(bdbc_metrics))
     driver.add_algo(QualDistribution(qualdist_metrics))
-    driver.add_algo(GCBias(gc_metrics, summary=gc_summary))
     driver.add_algo(AlignmentStat(as_metrics))
-    driver.add_algo(CoverageMetrics(coverage_metrics))
-    if assay == "WES":
-        driver.add_algo(SequenceArtifactMetricsAlgo(sa_metrics, dbsnp))
-        if bed:
-            driver.add_algo(HsMetricAlgo(hs_metrics, bed, bed))
-    elif assay == "WGS":
-        driver.add_algo(WgsMetricsAlgo(wgs_metrics))
+    if assay == "WGS":
+        driver.add_algo(GCBias(gc_metrics, summary=gc_summary))
 
     run(shlex.join(driver.build_cmd()))
 
@@ -272,6 +267,25 @@ def dedup_and_metrics(
         )
     )
     run(shlex.join(driver.build_cmd()))
+
+    # Run HsMetricAlgo after duplicate marking to account for duplicate reads
+    driver = Driver(
+        reference=reference,
+        thread_count=cores,
+        input=[deduped] if deduped else sample_input,
+        interval=bed,
+    )
+    if assay == "WES" and bed:
+        driver.add_algo(HsMetricAlgo(hs_metrics, bed, bed))
+        driver.add_algo(InsertSizeMetricAlgo(is_metrics))
+        run(shlex.join(driver.build_cmd()))
+
+    # Run WgsMetricsAlgo after duplicate marking to account for duplicate reads
+    if assay == "WGS":
+        driver.add_algo(InsertSizeMetricAlgo(is_metrics))
+        driver.add_algo(WgsMetricsAlgo(wgs_metrics, include_unpaired="true"))
+        driver.add_algo(CoverageMetrics(coverage_metrics))
+        run(shlex.join(driver.build_cmd()))
     return [deduped]
 
 

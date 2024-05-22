@@ -349,8 +349,10 @@ class WgsMetricsAlgo(BaseAlgo):
     def __init__(
         self,
         output: pathlib.Path,
+        include_unpaired: Optional[str] = None,
     ):
         self.output = output
+        self.include_unpaired = include_unpaired
 
 
 class Driver:

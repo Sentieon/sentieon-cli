@@ -481,6 +481,7 @@ def cmd_multiqc(
     output_directory: pathlib.Path,
     comment: Optional[str],
 ) -> str:
+    """Run MultiQC"""
     cmd = [
         "multiqc",
         "-o",
