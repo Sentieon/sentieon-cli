@@ -388,6 +388,11 @@ def call_variants(
     )
     run(shlex.join(driver.build_cmd()))
 
+    # Remove the tmp_vcf
+    tmp_vcf_idx = pathlib.Path(str(tmp_vcf) + ".tbi")
+    tmp_vcf_idx.unlink(missing_ok=True)
+    tmp_vcf.unlink()
+
     # Genotype gVCFs
     if gvcf:
         driver = Driver(
