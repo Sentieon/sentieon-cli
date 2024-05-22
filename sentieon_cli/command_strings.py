@@ -474,3 +474,28 @@ def cmd_fastq_bwa(
         cmd_str += " <(" + cmds[2] + ") "
     cmd_str += " | " + cmds[3]
     return cmd_str
+
+
+def cmd_multiqc(
+    input_directory: pathlib.Path,
+    output_directory: pathlib.Path,
+    comment: Optional[str],
+) -> str:
+    cmd = [
+        "multiqc",
+        "-o",
+        str(output_directory),
+    ]
+    if comment:
+        cmd.extend(
+            [
+                "-b",
+                comment,
+            ]
+        )
+    cmd.extend(
+        [
+            str(input_directory),
+        ]
+    )
+    return shlex.join(cmd)
