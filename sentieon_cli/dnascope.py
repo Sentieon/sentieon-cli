@@ -77,7 +77,8 @@ def align_inputs(
     """Align input BAM/CRAM/uBAM/uCRAM files with bwa"""
     if not skip_version_check:
         for cmd, min_version in ALN_MIN_VERSIONS.items():
-            check_version(cmd, min_version)
+            if not check_version(cmd, min_version):
+                sys.exit(2)
 
     res: List[pathlib.Path] = []
     suffix = "bam" if bam_format else "cram"
@@ -135,7 +136,8 @@ def align_fastq(
 
     if not skip_version_check:
         for cmd, min_version in FQ_MIN_VERSIONS.items():
-            check_version(cmd, min_version)
+            if not check_version(cmd, min_version):
+                sys.exit(2)
 
     unzip = "igzip"
     if not shutil.which(unzip):
@@ -191,9 +193,7 @@ def dedup_and_metrics(
     suffix = "bam" if bam_format else "cram"
 
     # Create the metrics directory
-    metrics_dir = pathlib.Path(
-        str(output_vcf).replace(".vcf.gz", "_metrics")
-    )
+    metrics_dir = pathlib.Path(str(output_vcf).replace(".vcf.gz", "_metrics"))
     if not dry_run:
         metrics_dir.mkdir(exist_ok=True)
 
@@ -290,7 +290,8 @@ def call_variants(
     """Call SNVs, indels, and SVs using DNAscope"""
     if not skip_version_check:
         for cmd, min_version in VARIANTS_MIN_VERSIONS.items():
-            check_version(cmd, min_version)
+            if not check_version(cmd, min_version):
+                sys.exit(2)
 
     out_gvcf = pathlib.Path(str(output_vcf).replace(".vcf.gz", ".g.vcf.gz"))
     out_svs_tmp = pathlib.Path(
