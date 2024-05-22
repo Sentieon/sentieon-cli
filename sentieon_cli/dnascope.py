@@ -182,6 +182,7 @@ def dedup_and_metrics(
     duplicate_marking: str = "markdup",
     assay: str = "WGS",
     consensus: bool = False,
+    dry_run: bool = False,
     bam_format: bool = False,
     cram_write_options: str = "version=3.0,compressor=rans",
     **_kwargs: Any,
@@ -189,47 +190,30 @@ def dedup_and_metrics(
     """Perform dedup and metrics collection"""
     suffix = "bam" if bam_format else "cram"
 
+    # Create the metrics directory
+    metrics_dir = pathlib.Path(
+        str(output_vcf).replace(".vcf.gz", "_metrics")
+    )
+    if not dry_run:
+        metrics_dir.mkdir(exist_ok=True)
+
     # LocusCollector and Metrics
-    out_score = pathlib.Path(
-        str(output_vcf).replace(".vcf.gz", "_score.txt.gz")
-    )
-    is_metrics = pathlib.Path(
-        str(output_vcf).replace(".vcf.gz", "_is_metrics.txt")
-    )
-    mqbc_metrics = pathlib.Path(
-        str(output_vcf).replace(".vcf.gz", "_mqbc_metrics.txt")
-    )
-    bdbc_metrics = pathlib.Path(
-        str(output_vcf).replace(".vcf.gz", "_bdbc_metrics.txt")
-    )
-    qualdist_metrics = pathlib.Path(
-        str(output_vcf).replace(".vcf.gz", "_qd_metrics.txt")
-    )
-    gc_metrics = pathlib.Path(
-        str(output_vcf).replace(".vcf.gz", "_gc_metrics.txt")
-    )
-    gc_summary = pathlib.Path(
-        str(output_vcf).replace(".vcf.gz", "_gc_summary.txt")
-    )
-    as_metrics = pathlib.Path(
-        str(output_vcf).replace(".vcf.gz", "_as_metrics.txt")
-    )
-    coverage_metrics = pathlib.Path(
-        str(output_vcf).replace(".vcf.gz", "_coverage_metrics.txt")
-    )
+    out_score = metrics_dir.joinpath("score.txt.gz")
+    is_metrics = metrics_dir.joinpath("insert_size.txt")
+    mqbc_metrics = metrics_dir.joinpath("mean_qual_by_cycle.txt")
+    bdbc_metrics = metrics_dir.joinpath("base_distribution_by_cycle.txt")
+    qualdist_metrics = metrics_dir.joinpath("qual_distribution.txt")
+    gc_metrics = metrics_dir.joinpath("gc_bias.txt")
+    gc_summary = metrics_dir.joinpath("gc_bias_summary.txt")
+    as_metrics = metrics_dir.joinpath("alignment_stat.txt")
+    coverage_metrics = metrics_dir.joinpath("coverage")
 
     # WES metrics
-    hs_metrics = pathlib.Path(
-        str(output_vcf).replace(".vcf.gz", "_hs_metrics.txt")
-    )
-    sa_metrics = pathlib.Path(
-        str(output_vcf).replace(".vcf.gz", "_sa_metrics.txt")
-    )
+    hs_metrics = metrics_dir.joinpath("hybrid-selection.txt")
+    sa_metrics = metrics_dir.joinpath("sequence_artifact.txt")
 
     # WGS metrics
-    wgs_metrics = pathlib.Path(
-        str(output_vcf).replace(".vcf.gz", "_wgs_metrics.txt")
-    )
+    wgs_metrics = metrics_dir.joinpath("wgs.txt")
 
     driver = Driver(
         reference=reference,
@@ -486,7 +470,7 @@ def call_variants(
 )
 @arg(
     "--assay",
-    help="The type of assay, WGS or WES. %(default)s",
+    help="The type of assay, WGS or WES.",
     choices=["WGS", "WES"],
 )
 @arg(
@@ -609,7 +593,7 @@ def dnascope(
     deduped = dedup_and_metrics(**locals())  # pylint: disable=W0641
 
     # Remove the bwa output before duplicate marking
-    if duplicate_marking != "none":
+    if duplicate_marking != "none" and not dry_run:
         for aln in sample_input:
             for idx_suffix in (".bai", ".crai"):
                 idx = pathlib.Path(str(aln) + idx_suffix)

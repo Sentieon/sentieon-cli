@@ -291,7 +291,7 @@ class AlignmentStat(BaseAlgo):
     def __init__(
         self,
         output: pathlib.Path,
-        adapter_seq: str = "''",
+        adapter_seq: str = "",
     ):
         self.output = output
         self.adapter_seq = adapter_seq
