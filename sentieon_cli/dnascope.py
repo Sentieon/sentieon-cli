@@ -70,6 +70,7 @@ def align_inputs(
     model_bundle: pathlib.Path,
     cores: int = mp.cpu_count(),
     dry_run: bool = False,
+    collate_align: bool = False,
     skip_version_check: bool = False,
     bam_format: bool = False,
     bwa_args: str = "-K 100000000",
@@ -104,6 +105,7 @@ def align_inputs(
                 cores,
                 rg_header,
                 input_ref,
+                collate=collate_align,
                 bwa_args=bwa_args,
                 util_sort_args=util_sort_args,
             )
@@ -293,6 +295,7 @@ def multiqc(
     run: Callable[[str], None],
     output_vcf: pathlib.Path,
     skip_version_check: bool = False,
+    **_kwargs: Any,
 ) -> int:
     """Run MultiQC on the metrics files"""
 
@@ -551,7 +554,14 @@ def call_variants(
 )
 @arg(
     "--align",
-    help="Align the input BAM/CRAM/uBAM file to the reference genome",
+    help="Align the reads in the input uBAM/uCRAM file to the reference "
+    "genome. Assumes paired reads are collated in the input file.",
+    action="store_true",
+)
+@arg(
+    "--collate-align",
+    help="Collate and align the reads in the input BAM/CRAM file to the "
+    "reference genome. Suitable for coordinate-sorted BAM/CRAM input.",
     action="store_true",
 )
 @arg(
@@ -600,6 +610,7 @@ def dnascope(
     skip_svs: bool = False,
     skip_multiqc: bool = False,
     align: bool = False,
+    collate_align: bool = False,
     input_ref: Optional[pathlib.Path] = None,
     bam_format: bool = False,  # pylint: disable=W0613
     bwa_args: str = "-K 100000000",  # pylint: disable=W0613
@@ -646,7 +657,7 @@ def dnascope(
         from .runner import run  # type: ignore[assignment]  # noqa: F401
 
     sample_input = sample_input if sample_input else []
-    if align:
+    if align or collate_align:
         sample_input = align_inputs(**locals())
     sample_input.extend(align_fastq(**locals()))
 

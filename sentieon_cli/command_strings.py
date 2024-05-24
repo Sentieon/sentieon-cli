@@ -307,6 +307,7 @@ def cmd_samtools_fastq_bwa(
     cores: int,
     rg_header: pathlib.Path,
     input_ref: Optional[pathlib.Path] = None,
+    collate: bool = False,
     bwa_args: str = "-K 100000000",
     fastq_taglist: str = "RG",
     util_sort_args: str = "--cram_write_options version=3.0,compressor=rans",
@@ -315,20 +316,48 @@ def cmd_samtools_fastq_bwa(
     ref_cmd: List[str] = []
     if input_ref:
         ref_cmd = ["--reference", str(reference)]
-    cmd1 = (
-        [
+
+    if collate:
+        cmd0 = (
+            [
+                "samtools",
+                "collate",
+            ]
+            + ref_cmd
+            + [
+                "-@",
+                str(cores),
+                "-O",
+                "-u",
+                "-f",
+                str(input_aln),
+            ]
+        )
+        cmd1 = [
             "samtools",
             "fastq",
-        ]
-        + ref_cmd
-        + [
             "-@",
             str(cores),
             "-T",
             fastq_taglist,
-            str(input_aln),
+            "-",
         ]
-    )
+    else:
+        cmd0 = []
+        cmd1 = (
+            [
+                "samtools",
+                "fastq",
+            ]
+            + ref_cmd
+            + [
+                "-@",
+                str(cores),
+                "-T",
+                fastq_taglist,
+                str(input_aln),
+            ]
+        )
     cmd2 = (
         [
             "sentieon",
@@ -361,7 +390,10 @@ def cmd_samtools_fastq_bwa(
         "--sam2bam",
     ] + util_sort_args.split()
 
-    return " | ".join([shlex.join(x) for x in (cmd1, cmd2, cmd3)])
+    if cmd0:
+        return " | ".join([shlex.join(x) for x in (cmd0, cmd1, cmd2, cmd3)])
+    else:
+        return " | ".join([shlex.join(x) for x in (cmd1, cmd2, cmd3)])
 
 
 def cmd_fastq_minimap2(
