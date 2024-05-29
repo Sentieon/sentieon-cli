@@ -457,6 +457,10 @@ def call_variants(
             )
         )
         run(shlex.join(driver.build_cmd()))
+        out_svs_tmp_idx = pathlib.Path(str(out_svs_tmp) + ".tbi")
+        out_svs_tmp.unlink()
+        out_svs_tmp_idx.unlink(missing_ok=True)
+
     return 0
 
 
