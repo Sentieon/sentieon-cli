@@ -197,26 +197,35 @@ def dedup_and_metrics(
     suffix = "bam" if bam_format else "cram"
 
     # Create the metrics directory
+    sample_name = output_vcf.name.replace(".vcf.gz", "")
+    metric_base = sample_name + ".txt"
     metrics_dir = pathlib.Path(str(output_vcf).replace(".vcf.gz", "_metrics"))
     if not dry_run:
         metrics_dir.mkdir(exist_ok=True)
 
     # LocusCollector and Metrics
-    out_score = metrics_dir.joinpath("score.txt.gz")
-    is_metrics = metrics_dir.joinpath("insert_size.txt")
-    mqbc_metrics = metrics_dir.joinpath("mean_qual_by_cycle.txt")
-    bdbc_metrics = metrics_dir.joinpath("base_distribution_by_cycle.txt")
-    qualdist_metrics = metrics_dir.joinpath("qual_distribution.txt")
-    as_metrics = metrics_dir.joinpath("alignment_stat.txt")
+    out_score = metrics_dir.joinpath(metric_base + ".score.txt.gz")
+    is_metrics = metrics_dir.joinpath(metric_base + ".insert_size.txt")
+    mqbc_metrics = metrics_dir.joinpath(
+        metric_base + ".mean_qual_by_cycle.txt"
+    )
+    bdbc_metrics = metrics_dir.joinpath(
+        metric_base + ".base_distribution_by_cycle.txt"
+    )
+    qualdist_metrics = metrics_dir.joinpath(
+        metric_base + ".qual_distribution.txt"
+    )
+    as_metrics = metrics_dir.joinpath(metric_base + ".alignment_stat.txt")
     coverage_metrics = metrics_dir.joinpath("coverage")
 
     # WES metrics
-    hs_metrics = metrics_dir.joinpath("hybrid-selection.txt")
+    hs_metrics = metrics_dir.joinpath(metric_base + ".hybrid-selection.txt")
 
     # WGS metrics
-    wgs_metrics = metrics_dir.joinpath("wgs.txt")
-    gc_metrics = metrics_dir.joinpath("gc_bias.txt")
-    gc_summary = metrics_dir.joinpath("gc_bias_summary.txt")
+    wgs_metrics = metrics_dir.joinpath(metric_base + ".wgs.txt")
+    wgs_metrics_tmp = metrics_dir.joinpath(metric_base + ".wgs.txt.tmp")
+    gc_metrics = metrics_dir.joinpath(metric_base + ".gc_bias.txt")
+    gc_summary = metrics_dir.joinpath(metric_base + ".gc_bias_summary.txt")
 
     driver = Driver(
         reference=reference,
@@ -251,9 +260,7 @@ def dedup_and_metrics(
     deduped = pathlib.Path(
         str(output_vcf).replace(".vcf.gz", f"_deduped.{suffix}")
     )
-    dedup_metrics = pathlib.Path(
-        str(output_vcf).replace(".vcf.gz", "_dedup_metrics.txt")
-    )
+    dedup_metrics = metrics_dir.joinpath(metric_base + ".dedup_metrics.txt")
     driver = Driver(
         reference=reference,
         thread_count=cores,
@@ -288,6 +295,17 @@ def dedup_and_metrics(
         driver.add_algo(WgsMetricsAlgo(wgs_metrics, include_unpaired="true"))
         driver.add_algo(CoverageMetrics(coverage_metrics))
         run(shlex.join(driver.build_cmd()))
+
+        # Rehead WGS metrics so they are recognized by MultiQC
+        wgs_metrics.rename(wgs_metrics_tmp)
+        with open(wgs_metrics, "w", encoding="utf-8") as fho, open(
+            wgs_metrics_tmp, encoding="utf-8"
+        ) as fhi:
+            print("## METRICS CLASS WgsMetrics", file=fho)
+            for line in fhi:
+                line = line.rstrip()
+                print(line, file=fho)
+        wgs_metrics_tmp.unlink()
     return [deduped]
 
 
