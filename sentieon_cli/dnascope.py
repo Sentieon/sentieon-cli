@@ -302,6 +302,7 @@ def dedup_and_metrics(
             wgs_metrics_tmp, encoding="utf-8"
         ) as fhi:
             print("## METRICS CLASS WgsMetrics", file=fho)
+            _ = fhi.readline()  # remove the Sentieon header
             for line in fhi:
                 line = line.rstrip()
                 print(line, file=fho)
