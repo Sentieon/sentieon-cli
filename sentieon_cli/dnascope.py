@@ -612,7 +612,7 @@ def call_variants(
     action="store_true",
 )
 def dnascope(
-    output_vcf: pathlib.Path,  # pylint: disable=W0613
+    output_vcf: pathlib.Path,
     reference: Optional[pathlib.Path] = None,
     sample_input: Optional[List[pathlib.Path]] = None,
     r1_fastq: Optional[List[pathlib.Path]] = None,
@@ -649,6 +649,7 @@ def dnascope(
     assert reference
     assert sample_input or (r1_fastq and readgroups)
     assert model_bundle
+    assert str(output_vcf).endswith(".vcf.gz")
 
     logger.setLevel(kwargs["loglevel"])
     logger.info("Starting sentieon-cli version: %s", __version__)

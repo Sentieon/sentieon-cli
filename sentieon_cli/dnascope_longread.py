@@ -649,7 +649,7 @@ def call_svs(
     action="store_true",
 )
 def dnascope_longread(
-    output_vcf: pathlib.Path,  # pylint: disable=W0613
+    output_vcf: pathlib.Path,
     reference: Optional[pathlib.Path] = None,
     sample_input: Optional[List[pathlib.Path]] = None,
     fastq: Optional[List[pathlib.Path]] = None,
@@ -682,6 +682,7 @@ def dnascope_longread(
     assert reference
     assert sample_input or fastq
     assert model_bundle
+    assert str(output_vcf).endswith(".vcf.gz")
 
     logger.setLevel(kwargs["loglevel"])
     logger.info("Starting sentieon-cli version: %s", __version__)
