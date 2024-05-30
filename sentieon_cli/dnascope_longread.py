@@ -74,7 +74,8 @@ def align_inputs(
     """
     if not skip_version_check:
         for cmd, min_version in ALN_MIN_VERSIONS.items():
-            check_version(cmd, min_version)
+            if not check_version(cmd, min_version):
+                sys.exit(2)
 
     res: List[pathlib.Path] = []
     suffix = "bam" if bam_format else "cram"
@@ -131,7 +132,8 @@ def align_fastq(
 
     if not skip_version_check:
         for cmd, min_version in FQ_MIN_VERSIONS.items():
-            check_version(cmd, min_version)
+            if not check_version(cmd, min_version):
+                sys.exit(2)
 
     unzip = "igzip"
     if not shutil.which(unzip):
@@ -198,7 +200,8 @@ def call_variants(
 
     if not skip_version_check:
         for cmd, min_version in TOOL_MIN_VERSIONS.items():
-            check_version(cmd, min_version)
+            if not check_version(cmd, min_version):
+                sys.exit(2)
 
     # First pass - diploid calling
     diploid_gvcf_fn = tmp_dir.joinpath("out_diploid.g.vcf.gz")
@@ -496,7 +499,8 @@ def call_svs(
     """
     if not skip_version_check:
         for cmd, min_version in SV_MIN_VERSIONS.items():
-            check_version(cmd, min_version)
+            if not check_version(cmd, min_version):
+                sys.exit(2)
 
     sv_vcf = pathlib.Path(str(output_vcf).replace(".vcf.gz", ".sv.vcf.gz"))
     driver = Driver(
@@ -645,7 +649,7 @@ def call_svs(
     action="store_true",
 )
 def dnascope_longread(
-    output_vcf: pathlib.Path,  # pylint: disable=W0613
+    output_vcf: pathlib.Path,
     reference: Optional[pathlib.Path] = None,
     sample_input: Optional[List[pathlib.Path]] = None,
     fastq: Optional[List[pathlib.Path]] = None,
@@ -678,6 +682,7 @@ def dnascope_longread(
     assert reference
     assert sample_input or fastq
     assert model_bundle
+    assert str(output_vcf).endswith(".vcf.gz")
 
     logger.setLevel(kwargs["loglevel"])
     logger.info("Starting sentieon-cli version: %s", __version__)

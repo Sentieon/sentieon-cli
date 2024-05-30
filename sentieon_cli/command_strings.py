@@ -299,6 +299,103 @@ def cmd_samtools_fastq_minimap2(
     return " | ".join([shlex.join(x) for x in (cmd1, cmd2, *rg_cmds, cmd3)])
 
 
+def cmd_samtools_fastq_bwa(
+    out_aln: pathlib.Path,
+    input_aln: pathlib.Path,
+    reference: pathlib.Path,
+    model_bundle: pathlib.Path,
+    cores: int,
+    rg_header: pathlib.Path,
+    input_ref: Optional[pathlib.Path] = None,
+    collate: bool = False,
+    bwa_args: str = "-K 100000000",
+    fastq_taglist: str = "RG",
+    util_sort_args: str = "--cram_write_options version=3.0,compressor=rans",
+) -> str:
+    """Re-align an input BAM/CRAM/uBAM/uCRAM file with bwa"""
+    ref_cmd: List[str] = []
+    if input_ref:
+        ref_cmd = ["--reference", str(reference)]
+
+    if collate:
+        cmd0 = (
+            [
+                "samtools",
+                "collate",
+            ]
+            + ref_cmd
+            + [
+                "-@",
+                str(cores),
+                "-O",
+                "-u",
+                "-f",
+                str(input_aln),
+            ]
+        )
+        cmd1 = [
+            "samtools",
+            "fastq",
+            "-@",
+            str(cores),
+            "-T",
+            fastq_taglist,
+            "-",
+        ]
+    else:
+        cmd0 = []
+        cmd1 = (
+            [
+                "samtools",
+                "fastq",
+            ]
+            + ref_cmd
+            + [
+                "-@",
+                str(cores),
+                "-T",
+                fastq_taglist,
+                str(input_aln),
+            ]
+        )
+    cmd2 = (
+        [
+            "sentieon",
+            "bwa",
+            "mem",
+            "-p",
+            "-C",
+            "-H",
+            str(rg_header),
+            "-t",
+            str(cores),
+            "-x",
+            f"{model_bundle}/bwa.model",
+        ]
+        + bwa_args.split()
+        + [str(reference), "/dev/stdin"]
+    )
+    cmd3 = [
+        "sentieon",
+        "util",
+        "sort",
+        "-i",
+        "-",
+        "-t",
+        str(cores),
+        "--reference",
+        str(reference),
+        "-o",
+        str(out_aln),
+        "--sam2bam",
+    ] + util_sort_args.split()
+
+    if cmd0:
+        return " | ".join([shlex.join(x) for x in (cmd0, cmd1, cmd2, cmd3)])
+    else:
+        return " | ".join([shlex.join(x) for x in (cmd1, cmd2, cmd3)])
+
+
 def cmd_fastq_minimap2(
     out_aln: pathlib.Path,
     fastq: pathlib.Path,
@@ -344,3 +441,94 @@ def cmd_fastq_minimap2(
         "--sam2bam",
     ] + util_sort_args.split()
     return " | ".join([shlex.join(x) for x in (cmd1, cmd2, cmd3)])
+
+
+def cmd_fastq_bwa(
+    out_aln: pathlib.Path,
+    r1: pathlib.Path,
+    r2: Optional[pathlib.Path],
+    readgroup: str,
+    reference: pathlib.Path,
+    model_bundle: pathlib.Path,
+    cores: int,
+    unzip: str = "gzip",
+    bwa_args: str = "-K 100000000",
+    util_sort_args: str = "--cram_write_options version=3.0,compressor=rans",
+) -> str:
+    """Align an input fastq file with bwa"""
+    cmd1 = (
+        [
+            "sentieon",
+            "bwa",
+            "mem",
+            "-R",
+            readgroup,
+            "-t",
+            str(cores),
+            "-x",
+            f"{model_bundle}/bwa.model",
+        ]
+        + bwa_args.split()
+        + [
+            str(reference),
+        ]
+    )
+    cmd2 = [
+        str(unzip),
+        "-dc",
+        str(r1),
+    ]
+    cmd3 = []
+    if r2:
+        cmd3 = [
+            str(unzip),
+            "-dc",
+            str(r2),
+        ]
+    cmd4 = [
+        "sentieon",
+        "util",
+        "sort",
+        "-i",
+        "-",
+        "-t",
+        str(cores),
+        "--reference",
+        str(reference),
+        "-o",
+        str(out_aln),
+        "--sam2bam",
+    ] + util_sort_args.split()
+
+    cmds = [shlex.join(x) for x in (cmd1, cmd2, cmd3, cmd4)]
+    cmd_str = cmds[0] + " <(" + cmds[1] + ") "
+    if cmds[2]:
+        cmd_str += " <(" + cmds[2] + ") "
+    cmd_str += " | " + cmds[3]
+    return cmd_str
+
+
+def cmd_multiqc(
+    input_directory: pathlib.Path,
+    output_directory: pathlib.Path,
+    comment: Optional[str],
+) -> str:
+    """Run MultiQC"""
+    cmd = [
+        "multiqc",
+        "-o",
+        str(output_directory),
+    ]
+    if comment:
+        cmd.extend(
+            [
+                "-b",
+                comment,
+            ]
+        )
+    cmd.extend(
+        [
+            str(input_directory),
+        ]
+    )
+    return shlex.join(cmd)

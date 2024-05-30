@@ -1,6 +1,6 @@
 import argh
 
-from . import dnascope_longread
+from . import dnascope, dnascope_longread
 
 
 def main():
@@ -24,7 +24,12 @@ def main():
         const="DEBUG",
     )
 
-    parser.add_commands([dnascope_longread.dnascope_longread])
+    parser.add_commands(
+        [
+            dnascope.dnascope,
+            dnascope_longread.dnascope_longread,
+        ]
+    )
     parser.dispatch()
 
 

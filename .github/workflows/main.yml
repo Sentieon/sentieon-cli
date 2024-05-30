@@ -5,6 +5,12 @@ on:
       - main
   pull_request:
 
+env:
+  SENTIEON_LICENSE: ${{ secrets.SENTIEON_LICENSE }}
+  SENTIEON_AUTH_MECH: "GitHub Actions - token"
+  ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
+  LICENSE_MESSAGE: ${{ secrets.LICENSE_MESSAGE }}
+
 jobs:
   smoke:
     strategy:
@@ -45,23 +51,56 @@ jobs:
       - name: Install sentieon
         run: |
           curl -L https://s3.amazonaws.com/sentieon-release/software/sentieon-genomics-$SENTIEON_VERSION.tar.gz | tar -zxf -
+          echo "SENTIEON_VERSION=$SENTIEON_VERSION" >> $GITHUB_ENV
+          echo "PATH=$(pwd)/sentieon-genomics-$SENTIEON_VERSION/bin:$PATH" >> $GITHUB_ENV
         env:
           SENTIEON_VERSION: ${{ matrix.sentieon-version }}
-      - name: Download model
+      - name: Download long-read model
         run: |
           curl -L "https://s3.amazonaws.com/sentieon-release/other/DNAscopePacBio2.1.bundle" \
             > "DNAscope PacBio2.1.bundle"
-      - name: Smoke test
+      - name: Download short-read model
+        run: |
+          curl -L "https://s3.amazonaws.com/sentieon-release/other/DNAscopeIlluminaWGS2.0.bundle" \
+            > "DNAscope IlluminaWGS2.0.bundle"
+      - name: set SENTIEON_AUTH_DATA
         run: |
           SENTIEON_AUTH_DATA=$(python3 .github/scripts/license_message.py encrypt --key "$ENCRYPTION_KEY" --message "$LICENSE_MESSAGE")
-          export SENTIEON_AUTH_DATA
-          . .venv/bin/activate
-          export PATH=$(pwd)/sentieon-genomics-$SENTIEON_VERSION/bin:$PATH
+          echo "SENTIEON_AUTH_DATA=$SENTIEON_AUTH_DATA" >> $GITHUB_ENV
+      - name: Test spaces
+        run: |
           gzip -dc tests/smoke/ref.fa.bgz > "tests/smoke/r ef.fa"
-          mv tests/smoke/ref.fa.fai "tests/smoke/r ef.fa.fai"
-          mv tests/smoke/sample.cram "tests/smoke/sam ple.cram"
-          mv tests/smoke/sample.cram.crai "tests/smoke/sam ple.cram.crai"
-
+          cp tests/smoke/ref.fa.fai "tests/smoke/r ef.fa.fai"
+          cp tests/smoke/sample.cram "tests/smoke/sam ple.cram"
+          cp tests/smoke/sample.cram.crai "tests/smoke/sam ple.cram.crai"
+          sentieon bwa index "tests/smoke/r ef.fa"
+          echo -e "chr20\t0\t2500" > "tests/smoke/r ef.bed"
+      - name: Smoke test - short-read
+        run: |
+          . .venv/bin/activate
+          sentieon-cli dnascope -t 1 -r "tests/smoke/r ef.fa" --pcr-free -g \
+            --duplicate-marking rmdup --consensus --align \
+            --input_ref "tests/smoke/r ef.fa" -i "tests/smoke/illumina.cram" \
+            -m "DNAscope IlluminaWGS2.0.bundle" "output_sr.vcf.gz"
+          if [ ! -f "output_sr.vcf.gz" -o ! -f "output_sr.g.vcf.gz" ]; then
+            exit 1
+          fi
+      - name: Smoke test - short-read fastq
+        run: |
+          . .venv/bin/activate
+          samtools fastq --reference "tests/smoke/r ef.fa" -1 sr_r1.fastq.gz \
+            -2 sr_r2.fastq.gz "tests/smoke/illumina.cram" > /dev/null
+          sentieon-cli dnascope -t 1 -r "tests/smoke/r ef.fa" --pcr-free \
+          --r1-fastq sr_r1.fastq.gz --r2-fastq sr_r2.fastq.gz \
+            --readgroups "@RG\tID:HG002-1\tSM:HG002" \
+            -m "DNAscope IlluminaWGS2.0.bundle" --assay WES \
+            --bed "tests/smoke/r ef.bed" "output_sr2.vcf.gz"
+          if [ ! -f "output_sr2.vcf.gz" ]; then
+            exit 1
+          fi
+      - name: Smoke test - long-read
+        run: |
+          . .venv/bin/activate
           sentieon-cli dnascope-longread -t 1 -r "tests/smoke/r ef.fa" \
             -i "tests/smoke/sam ple.cram" -m "DNAscope PacBio2.1.bundle" \
             --repeat-model tests/smoke/sample_repeat.model -g \
@@ -73,7 +112,9 @@ jobs:
           if [ ! -f "output hifi.sv.vcf.gz" -o ! -f "output hifi.haploid.vcf.gz" ]; then
             exit 1
           fi
-
+      - name: Smoke test - gVCF
+        run: |
+          . .venv/bin/activate
           sentieon-cli dnascope-longread --tech ONT -t 1 -r "tests/smoke/r ef.fa" \
             -i "tests/smoke/sam ple.cram" -m "DNAscope PacBio2.1.bundle" \
             --repeat-model tests/smoke/sample_repeat.model -g "output ont.vcf.gz"
@@ -82,7 +123,9 @@ jobs:
           if [ ! -f "output ont.sv.vcf.gz" ]; then
             exit 1
           fi
-
+      - name: Smoke test - realignment
+        run: |
+          . .venv/bin/activate
           sentieon-cli dnascope-longread -t 1 -r "tests/smoke/r ef.fa" \
             -i "tests/smoke/sam ple.cram" -m "DNAscope PacBio2.1.bundle" \
             --repeat-model tests/smoke/sample_repeat.model --align \
@@ -90,7 +133,9 @@ jobs:
           if [ ! -f "output realigned.vcf.gz" -o ! -f "output realigned_mm2_sorted_0.cram" ]; then
             exit 1
           fi
-
+      - name: Smoke test - fastq
+        run: |
+          . .venv/bin/activate
           samtools fastq --reference "tests/smoke/r ef.fa" \
             "tests/smoke/sam ple.cram" | \
             gzip -c > sample.fq.gz
@@ -101,11 +146,4 @@ jobs:
           if [ ! -f "output fq.vcf.gz" -o ! -f "output fq_mm2_sorted_fq_0.cram" -o ! -f "output fq.sv.vcf.gz" ]; then
             exit 1
           fi
-
-        env:
-          SENTIEON_LICENSE: ${{ secrets.SENTIEON_LICENSE }}
-          SENTIEON_AUTH_MECH: "GitHub Actions - token"
-          ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
-          LICENSE_MESSAGE: ${{ secrets.LICENSE_MESSAGE }}
-          SENTIEON_VERSION: ${{ matrix.sentieon-version }}
       

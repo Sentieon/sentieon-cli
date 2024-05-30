@@ -110,11 +110,15 @@ class DNAscope(BaseAlgo):
         dbsnp: Optional[pathlib.Path] = None,
         emit_mode: str = "variant",
         model: Optional[pathlib.Path] = None,
+        pcr_indel_model: str = "CONSERVATIVE",
+        var_type: str = "SNP,INDEL",
     ):
         self.output = output
         self.dbsnp = dbsnp
         self.emit_mode = emit_mode
         self.model = model
+        self.pcr_indel_model = pcr_indel_model
+        self.var_type = var_type
 
 
 class DNAscopeHP(BaseAlgo):
@@ -157,6 +161,200 @@ class LongReadSV(BaseAlgo):
         self.min_af = min_af
 
 
+class LocusCollector(BaseAlgo):
+    """algo LocusCollector"""
+
+    name = "LocusCollector"
+
+    def __init__(
+        self,
+        output: pathlib.Path,
+        rna: bool = False,
+        consensus: bool = False,
+        umi_tag: Optional[str] = None,
+        umi_ecc_dist: Optional[int] = None,
+        umi_ecc_lev_dist: Optional[int] = None,
+    ):
+        self.output = output
+        self.rna = rna
+        self.consensus = consensus
+        self.umi_tag = umi_tag
+        self.umi_ecc_dist = umi_ecc_dist
+        self.umi_ecc_lev_dist = umi_ecc_lev_dist
+
+
+class Dedup(BaseAlgo):
+    """algo Dedup"""
+
+    name = "Dedup"
+
+    def __init__(
+        self,
+        output: pathlib.Path,
+        score_info: pathlib.Path,
+        bam_compression: Optional[int] = None,
+        cram_write_options: Optional[str] = None,
+        metrics: Optional[pathlib.Path] = None,
+        rmdup: bool = False,
+    ):
+        self.output = output
+        self.score_info = score_info
+        self.bam_compression = bam_compression
+        self.cram_write_options = cram_write_options
+        self.metrics = metrics
+        self.rmdup = rmdup
+
+
+class GVCFtyper(BaseAlgo):
+    """algo GVCFtyper"""
+
+    name = "GVCFtyper"
+
+    def __init__(
+        self,
+        output: pathlib.Path,
+        vcf: pathlib.Path,
+    ):
+        self.output = output
+        self.vcf = vcf
+
+
+class SVSolver(BaseAlgo):
+    """algo SVSolver"""
+
+    name = "SVSolver"
+
+    def __init__(
+        self,
+        output: pathlib.Path,
+        vcf: pathlib.Path,
+    ):
+        self.output = output
+        self.vcf = vcf
+
+
+class InsertSizeMetricAlgo(BaseAlgo):
+    """algo InsertSizeMetricAlgo"""
+
+    name = "InsertSizeMetricAlgo"
+
+    def __init__(self, output: pathlib.Path):
+        self.output = output
+
+
+class MeanQualityByCycle(BaseAlgo):
+    """algo MeanQualityByCycle"""
+
+    name = "MeanQualityByCycle"
+
+    def __init__(self, output: pathlib.Path):
+        self.output = output
+
+
+class BaseDistributionByCycle(BaseAlgo):
+    """algo BaseDistributionByCycle"""
+
+    name = "BaseDistributionByCycle"
+
+    def __init__(self, output: pathlib.Path):
+        self.output = output
+
+
+class QualDistribution(BaseAlgo):
+    """algo QualDistribution"""
+
+    name = "QualDistribution"
+
+    def __init__(self, output: pathlib.Path):
+        self.output = output
+
+
+class GCBias(BaseAlgo):
+    """algo GCBias"""
+
+    name = "GCBias"
+
+    def __init__(
+        self,
+        output: pathlib.Path,
+        summary: Optional[pathlib.Path] = None,
+    ):
+        self.output = output
+        self.summary = summary
+
+
+class AlignmentStat(BaseAlgo):
+    """algo AlignmentStat"""
+
+    name = "AlignmentStat"
+
+    def __init__(
+        self,
+        output: pathlib.Path,
+        adapter_seq: str = "",
+    ):
+        self.output = output
+        self.adapter_seq = adapter_seq
+
+
+class CoverageMetrics(BaseAlgo):
+    """algo CoverageMetrics"""
+
+    name = "CoverageMetrics"
+
+    def __init__(
+        self,
+        output: pathlib.Path,
+        omit_base_output: bool = True,
+    ):
+        self.output = output
+        self.omit_base_output = omit_base_output
+
+
+class HsMetricAlgo(BaseAlgo):
+    """algo HsMetricAlgo"""
+
+    name = "HsMetricAlgo"
+
+    def __init__(
+        self,
+        output: pathlib.Path,
+        targets_list: pathlib.Path,
+        baits_list: pathlib.Path,
+    ):
+        self.output = output
+        self.targets_list = targets_list
+        self.baits_list = baits_list
+
+
+class SequenceArtifactMetricsAlgo(BaseAlgo):
+    """algo SequenceArtifactMetricsAlgo"""
+
+    name = "SequenceArtifactMetricsAlgo"
+
+    def __init__(
+        self,
+        output: pathlib.Path,
+        dbsnp: Optional[pathlib.Path] = None,
+    ):
+        self.output = output
+        self.dbsnp = dbsnp
+
+
+class WgsMetricsAlgo(BaseAlgo):
+    """algo WgsMetricsAlgo"""
+
+    name = "WgsMetricsAlgo"
+
+    def __init__(
+        self,
+        output: pathlib.Path,
+        include_unpaired: Optional[str] = None,
+    ):
+        self.output = output
+        self.include_unpaired = include_unpaired
+
+
 class Driver:
     """Representing the Sentieon driver"""
 
@@ -165,6 +363,7 @@ class Driver:
         reference: Optional[pathlib.Path] = None,
         thread_count: Optional[int] = None,
         interval: Optional[Union[pathlib.Path, str]] = None,
+        interval_padding: int = 0,
         read_filter: Optional[str] = None,
         input: Optional[List[pathlib.Path]] = None,
         algo: Optional[List[BaseAlgo]] = None,
@@ -173,6 +372,7 @@ class Driver:
         self.input = input
         self.thread_count = thread_count
         self.interval = interval
+        self.interval_padding = interval_padding
         self.read_filter = read_filter
         self.algo = algo if algo else []
 

@@ -1,0 +1,167 @@
+# DNAscope
+
+Sentieon DNAscope is a pipeline for alignment and germline variant calling (SNVs, SVs and indels) from short-read DNA sequence data. The DNAscope pipeline uses a combination of traditional statistical approaches and machine learning to achieve high variant calling accuracy.
+
+The pipeline accepts as input aligned reads in BAM or CRAM format, or un-aligned reads in FASTQ, uBAM, or uCRAM format. The pipeline will output variants in the VCF (or gVCF) formats and aligned reads in BAM or CRAM formats.
+
+DNAscope is implemented using the Sentieon software package, which requires a valid license for use. Please contact info@sentieon.com for access to the Sentieon software and an evaluation license.
+
+## Prerequisites
+
+- Sentieon software package version 202308 or higher.
+- [samtools] version 1.16 or higher for alignment of read in uBAM or uCRAM format or re-alignment of previously aligned reads.
+- [MultiQC] version 1.18 or higher for metrics report generation.
+
+The `sentieon`, `samtools`, and `multiqc` executables will be accessed through the user's `PATH` environment variable.
+
+## Input data requirements
+
+### The Reference genome
+
+DNAscope will call variants present in the sample relative to a high quality reference genome sequence. Besides the reference genome file, a samtools fasta index file (.fai) needs to be present. Read alignment also requires bwa index files.
+
+We recommend aligning to a reference genome without alternate contigs. If alternate contigs are present in the genome, please also supply a ".alt" file to activate [alt-aware alignment] in bwa.
+
+## Usage
+
+### Alignment and variant calling from FASTQ
+
+A single command is run to align, preprocess, and call SNVs, indels, and structural variants from FASTQ:
+```sh
+sentieon-cli dnascope [-h] \
+  -r REFERENCE \
+  --r1-fastq R1_FASTQ ... \
+  --r2-fastq R2_FASTQ ... \
+  --readgroups READGROUPS ... \
+  -m MODEL_BUNDLE \
+  [-d DBSNP] \
+  [-b BED] \
+  [--interval_padding INTERVAL_PADDING] \
+  [-t NUMBER_THREADS] \
+  [--pcr-free] \
+  [-g] \
+  [--duplicate-marking MARKDUP] \
+  [--assay ASSAY] \
+  [--consensus] \
+  [--dry-run] \
+  [--bam_format] \
+  sample.vcf.gz
+```
+
+With FASTQ input, the DNAscope pipeline requires the following arguments:
+- `-r REFERENCE`: the location of the reference FASTA file. A reference fasta index, ".fai" file, and bwa index files, are also required.
+- `--r1-fastq R1_FASTQ`: the R1 input FASTQ. Can be used multiple times. `--r1-fastq` files without a corresponding `--r2-fastq` are assumed to be single-ended.
+- `--r2-fastq R2_FASTQ`: the R2 input FASTQ. Can be used multiple times.
+- `--readgroups READGROUPS`: readgroup information for each FASTQ. The pipeline will expect the same number of arguments to `--r1-fastq` and `--readgroups`. An example argument is, `--readgroups "@RG\tID:HG002-1\tSM:HG002\tLB:HG002-LB-1\tPL:ILLUMINA"`
+- `-m MODEL_BUNDLE`: the location of the model bundle. Model bundle files can be found in the [sentieon-models] repository.
+- `sample.vcf.gz`: the location of the output VCF file for SNVs and indels. The pipeline requires the output file end with the suffix, ".vcf.gz". The file path without the suffix will be used as the basename for other output files.
+
+The DNAscope pipeline accepts the following optional arguments:
+- `-d DBSNP`: the location of the Single Nucleotide Polymorphism database (dbSNP) used to label known variants in VCF (`.vcf`) or bgzip compressed VCF (`.vcf.gz`) format. Only one file is supported. Supplying this file will annotate variants with their dbSNP refSNP ID numbers. A VCF index file is required.
+- `-b BED`: interval in the reference to restrict variant calling, in BED file format. Supplying this file will limit variant calling to the intervals inside the BED file.
+- `--interval_padding INTERVAL_PADDING`: adds INTERVAL_PADDING bases padding to the edges of the input intervals. The default value is 0.
+- `-t NUMBER_THREADS`: number of computing threads that will be used by the software to run parallel processes. The argument is optional; if omitted, the pipeline will use as many threads as the server has.
+- `--pcr-free`: Use variant calling settings appropriate for a PCR-free library prep.
+- `-g`: output variants in the gVCF format, in addition to the VCF output file. The tool will output a bgzip compressed gVCF file with a corresponding index file.
+- `--duplicate-marking MARKDUP`: setting for duplicate marking. `markdup` will mark duplicate reads. `rmdup` will remove duplicate reads. `none` will skip duplicate marking.
+- `--assay ASSAY`: assay setting for metrics collection `WGS` or `WES`.
+- `--consensus`: generate consensus reads during duplicate marking.
+- `-h`: print the command-line help and exit.
+- `--dry-run`: print the pipeline commands, but do not actually execute them.
+- `--bam_format`: use BAM format instead of CRAM for output aligned files.
+
+### Alignment and variant calling from uBAM or uCRAM
+A single command is run to align, preprocess, and call SNVs, indels, and structural variants from uBAM or uCRAM files:
+```sh
+sentieon-cli dnascope [-h] \
+  -r REFERENCE \
+  -i SAMPLE_INPUT ... \
+  --align \
+  [--input_ref INPUT_REF] \
+  -m MODEL_BUNDLE \
+  [-d DBSNP] \
+  [-b BED] \
+  [--interval_padding INTERVAL_PADDING] \
+  [-t NUMBER_THREADS] \
+  [--pcr-free] \
+  [-g] \
+  [--duplicate-marking MARKDUP] \
+  [--assay ASSAY] \
+  [--consensus] \
+  [--dry-run] \
+  [--bam_format] \
+  sample.vcf.gz
+```
+
+With uBAM or uCRAM input, the DNAscope pipeline requires the following new arguments:
+- `-i SAMPLE_INPUT`: the input input sample file in uBAM or uCRAM format. One or more files can be supplied by passing multiple files after the `-i` argument.
+- `--align`: directs the pipeline to align the input reads.
+
+The DNAscope pipeline accepts the following new optional arguments:
+- `--input_ref INPUT_REF`: a reference fasta used for decoding the input file(s). Required with uCRAM input. Can be different from the fasta used with the `-r` argument.
+
+### Alignment and variant calling from sorted BAM or CRAM
+A single command is run to align, preprocess, and call SNVs, indels, and structural variants from BAM or CRAM files:
+```sh
+sentieon-cli dnascope [-h] \
+  -r REFERENCE \
+  -i SAMPLE_INPUT ... \
+  --collate-align \
+  [--input_ref INPUT_REF] \
+    -m MODEL_BUNDLE \
+  [-d DBSNP] \
+  [-b BED] \
+  [--interval_padding INTERVAL_PADDING] \
+  [-t NUMBER_THREADS] \
+  [--pcr-free] \
+  [-g] \
+  [--duplicate-marking MARKDUP] \
+  [--assay ASSAY] \
+  [--consensus] \
+  [--dry-run] \
+  [--bam_format] \
+  sample.vcf.gz
+```
+
+With BAM or CRAM input, the DNAscope pipeline requires the following new arguments:
+- `--collate-align`: directs the pipeline to collate and then align the input reads.
+
+### Variant calling from sorted BAM or CRAM
+A single command is run to preprocess, and call SNVs, indels, and structural variants from BAM or CRAM files:
+```sh
+sentieon-cli dnascope [-h] \
+  -r REFERENCE \
+  -i SAMPLE_INPUT ... \
+  -m MODEL_BUNDLE \
+  [-d DBSNP] \
+  [-b BED] \
+  [--interval_padding INTERVAL_PADDING] \
+  [-t NUMBER_THREADS] \
+  [--pcr-free] \
+  [-g] \
+  [--duplicate-marking MARKDUP] \
+  [--assay ASSAY] \
+  [--consensus] \
+  [--dry-run] \
+  [--bam_format] \
+  sample.vcf.gz
+```
+
+Not supplying the `--align` and `--collate-align` arguments will direct the pipeline to call variants directly from the input reads.
+
+## Pipeline output
+
+### List of output files
+
+The following files are output when processing WGS FASTQ with default arguments:
+- `sample.vcf.gz`: SNV and indel variant calls across the regions of the genome as defined in the `-b BED` file.
+- `sample_deduped.cram`: aligned, coordinate-sorted and duplicate-marked read data from the input FASTQ files.
+- `sample_svs.vcf.gz`: structural variant calls from DNAscope and SVSolver.
+- `sample_metrics`: a directory containing QC metrics for the analyzed sample.
+  - `sample_metrics/coverage*`: coverage metrics for the processed sample. Only available for WGS samples. Replaced by HS metrics for WES samples.
+  - `sample_metrics/multiqc_report.html`: collected QC metrics aggregated by MultiQC.
+
+[samtools]: https://www.htslib.org/
+[MultiQC]: https://multiqc.info/
+[alt-aware alignment]: https://github.com/lh3/bwa/blob/master/README-alt.md
+[sentieon-models]: https://github.com/Sentieon/sentieon-models

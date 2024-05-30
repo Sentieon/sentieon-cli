@@ -8,7 +8,6 @@ import pathlib
 import re
 import shutil
 import subprocess as sp
-import sys
 import tempfile
 from typing import Callable, List, Optional
 
@@ -16,7 +15,7 @@ import packaging.version
 
 from .logging import get_logger
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 logger = get_logger(__name__)
 
@@ -31,16 +30,19 @@ def tmp():
     return tmp_dir
 
 
-def check_version(cmd: str, version: Optional[packaging.version.Version]):
+def check_version(
+    cmd: str,
+    version: Optional[packaging.version.Version],
+) -> bool:
     """Check the version of an executable"""
     cmd_list: List[str] = cmd.split()
     exec_file = shutil.which(cmd_list[0])
     if not exec_file:
-        print(f"Error: no '{cmd}' found in the PATH")
-        sys.exit(2)
+        logger.error("Error: no '%s' found in the PATH", cmd)
+        return False
 
     if version is None:
-        return
+        return True
 
     cmd_list.append("--version")
     cmd_version_str = sp.check_output(cmd_list).decode("utf-8").strip()
@@ -53,12 +55,16 @@ def check_version(cmd: str, version: Optional[packaging.version.Version]):
         )
     cmd_version = packaging.version.Version(cmd_version_str)
     if cmd_version < version:
-        print(
-            f"Error: the pipeline requires {cmd} version '{version}' or later "
-            f"but {cmd} '{cmd_version}' was found in the PATH"
+        logger.error(
+            "Error: the pipeline requires %s version '%s' or later "
+            "but %s '%s' was found in the PATH",
+            cmd,
+            version,
+            cmd,
+            cmd_version,
         )
-        sys.exit(2)
-    return
+        return False
+    return True
 
 
 def path_arg(
