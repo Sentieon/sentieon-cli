@@ -1,4 +1,4 @@
-[![CI](https://github.com/brentp/sentieon-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/brentp/sentieon-cli/actions/workflows/ci.yml)
+[![CI](https://github.com/Sentieon/sentieon-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/Sentieon/sentieon-cli/actions/workflows/ci.yml)
 
 # Sentieon CLI
 
@@ -42,6 +42,7 @@ The `sentieon-cli` supports the following global arguments:
 - `--debug`: debugging mode for more verbose logging.
 
 ## Supported pipelines
+- [**DNAscope**](docs/dnascope.md) - DNAscope pipeline implementation for germline SNV and indel calling from short read data.
 - [**DNAscope LongRead**](docs/dnascope-longread.md) - DNAscope LongRead pipeline implementations for germline SNV and indel calling from long read data.
 
 ## License

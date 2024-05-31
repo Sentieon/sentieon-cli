@@ -12,7 +12,7 @@ DNAscope LongRead is implemented using the Sentieon software package, which requ
 - [Python] version 3.8 or higher.
 - [bcftools] version 1.10 or higher for SNV and indel calling.
 - [bedtools] for SNV and indel calling.
-- [samtools] version 1.16 or higher for alignment of read in uBAM or uCRAM format or re-alignment of previously aligned reads.
+- [samtools] version 1.16 or higher for alignment of read data in uBAM or uCRAM format or re-alignment of previously aligned reads.
 
 The `sentieon`, `python`, `bcftools`, `bedtools`, and `samtools` executables will be accessed through the user's `PATH` environment variable.
 
