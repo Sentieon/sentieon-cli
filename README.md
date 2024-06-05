@@ -9,10 +9,10 @@ A command-line interface for the Sentieon software
 Create a new python virtual environment for the project, if needed:
 ```
 # Create a new venv, if needed
-python3 -m venv /path/to/new/virtal/environment/sentieon_cli
+python3 -m venv /path/to/new/virtual/environment/sentieon_cli
 
 # Activate the venv
-source /path/to/new/virtal/environment/sentieon_cli/bin/activate
+source /path/to/new/virtual/environment/sentieon_cli/bin/activate
 ```
 
 `sentieon-cli` uses [poetry](https://pypi.org/project/poetry/) for packaging and dependency management. Initially, you will need to install poetry:
