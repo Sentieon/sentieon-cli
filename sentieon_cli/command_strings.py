@@ -285,7 +285,7 @@ def cmd_samtools_fastq_minimap2(
     # Commands to replace the @RG lines in the header
     rg_cmds: List[List[str]] = []
     for rg_line in rg_lines:
-        # Add an SM value, if missing
+        # Add a SM value, if missing
         if "\tSM:" not in rg_line:
             rg_line += f"\tSM:{sample_name}"
         rg_cmds.append(
