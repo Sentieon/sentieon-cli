@@ -9,7 +9,7 @@ logger = get_logger(__name__)
 
 def run(cmd: str):
     """Run a command."""
-    logger.debug("running: %s", cmd)
+    logger.info("running: %s", cmd)
     t0 = time.time()
     sp.run(
         cmd,
@@ -19,4 +19,4 @@ def run(cmd: str):
         stderr=sys.stderr,
         executable="/bin/bash",
     )
-    logger.debug("finished in: %s seconds", f"{time.time() - t0:.1f}")
+    logger.info("finished in: %s seconds", f"{time.time() - t0:.1f}")
