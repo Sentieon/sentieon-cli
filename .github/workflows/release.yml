@@ -1,0 +1,32 @@
+name: Release
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+      - name: Run image
+        uses: abatilo/actions-poetry@v2
+        with:
+          poetry-version: "1.5.1"
+      - name: Test build
+        run: |
+          poetry config virtualenvs.in-project true
+          poetry install
+          . .venv/bin/activate
+          sentieon-cli -h
+      - name: build
+        run: |
+          poetry build -f sdist
+          gh release upload ${{github.event.release.tag_name}} dist/*.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ github.TOKEN }}
