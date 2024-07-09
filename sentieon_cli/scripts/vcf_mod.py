@@ -4,7 +4,7 @@
 Functionality for manipulating DNAscope-LR VCFs
 """
 
-# Copyright (c) 2023 Sentieon Inc. All rights reserved
+# Copyright (c) 2023-2024 Sentieon Inc. All rights reserved
 
 from __future__ import print_function
 import argparse
@@ -551,7 +551,7 @@ def join2(f0, f1, f2, v0, v1, v2, pos, bed):
 
     ps = bed and bed.get(v.chrom, pos, pos) or None
     if ps:
-        v.samples[0]['PS'] = ps[0][0]
+        v.samples[0]['PS'] = ps[0][0]+1
 
     if v1:
         i1 = int(v1.samples[0].get('GT'))
@@ -686,6 +686,11 @@ def merge2(vcfi1, vcfi2, vcfi3, vcfi0, vcfo, bed=None, **kwargs):
                 v.line = None
         else:
             v = v0
+            ps = (bed and v and v.samples[0].get('PS') and
+                  bed.get(v.chrom, pos, pos) or None)
+            if ps:
+                v.samples[0]['PS'] = ps[0][0]+1
+                v.line = None
 
         if v:
             vcfo.emit(v)

@@ -79,6 +79,7 @@ def align_inputs(
 
     res: List[pathlib.Path] = []
     suffix = "bam" if bam_format else "cram"
+    sample_name = output_vcf.name.replace(".vcf.gz", "")
     for i, input_aln in enumerate(sample_input):
         out_aln = pathlib.Path(
             str(output_vcf).replace(".vcf.gz", f"_mm2_sorted_{i}.{suffix}")
@@ -96,6 +97,7 @@ def align_inputs(
                 model_bundle,
                 cores,
                 rg_lines,
+                sample_name,
                 input_ref,
                 fastq_taglist,
                 util_sort_args,
