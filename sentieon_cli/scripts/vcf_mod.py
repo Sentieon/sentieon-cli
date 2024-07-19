@@ -154,7 +154,7 @@ def sharded_run(
     shards = sharder.cut(contigs, step)
     return sharder.run(shards, func, None, *args)
 
-def open_vcfs(input_vcf_fns, output_vcf_fns, update=None, hdr_idx=0):
+def open_vcfs(input_vcf_fns, output_vcf_fns, update=None, remove=None, hdr_idx=0):
     input_vcfs = []
     for vcf_fn in input_vcf_fns:
         try:
@@ -173,7 +173,7 @@ def open_vcfs(input_vcf_fns, output_vcf_fns, update=None, hdr_idx=0):
         try:
             out_vcf = vcflib.VCF(vcf_fn, "w")
             _hdr_idx = i if hdr_idx is None else hdr_idx
-            out_vcf.copy_header(input_vcfs[_hdr_idx], update=update)
+            out_vcf.copy_header(input_vcfs[_hdr_idx], update=update, remove=remove)
             out_vcf.emit_header()
             output_vcfs.append(out_vcf)
         except EnvironmentError as err:
@@ -244,6 +244,10 @@ def merge_main(args):
         (args.output_vcf,),
         update=(
             '##FORMAT=<ID=PS,Number=1,Type=Integer,Description="Phase set identifier">',
+        ),
+        remove=(
+            '##FORMAT=<ID=PID>',
+            '##FORMAT=<ID=PGT>',
         ),
         hdr_idx=3,
     )
@@ -541,8 +545,10 @@ def patch2(vcfi, vcfd, vcfo, **kwargs):
             vcfo.emit(v)
 
 def join2(f0, f1, f2, v0, v1, v2, pos, bed):
-    if v0:
-        v = v0
+    from_v0 = False
+    if v0 and not v0.filter:
+        from_v0 = True
+        v = copy.deepcopy(v0)
         v.qual = 0
         v.samples[0] = {}
         v.filter = []
@@ -554,15 +560,19 @@ def join2(f0, f1, f2, v0, v1, v2, pos, bed):
         v.samples[0]['PS'] = ps[0][0]+1
 
     if v1:
+        v1_ad = v1.samples[0].get("AD")
+        v1_ad = sum(v1_ad) if v1_ad else 0
         i1 = int(v1.samples[0].get('GT'))
         v1 = sub1(f1, v1, i1-1)
         r1, a1, i1 = v1.ref, v1.alt[0], 1
     if v2:
+        v2_ad = v2.samples[0].get("AD")
+        v2_ad = sum(v2_ad) if v2_ad else 0
         i2 = int(v2.samples[0].get('GT'))
         v2 = sub1(f2, v2, i2-1)
         r2, a2, i2 = v2.ref, v2.alt[0], 1
 
-    if v1 and v2:
+    if v1 and not v1.filter and v2 and not v2.filter:
         if r1 == r2 and a1 == a2:
             v.ref, v.alt = r1, [a1]
             v.samples[0]['GT'] = '1|1' if ps else '1/1'
@@ -578,7 +588,7 @@ def join2(f0, f1, f2, v0, v1, v2, pos, bed):
         v.qual = v1.qual + v2.qual
         v.info['AN'] = 2
     else:
-        if v1:
+        if v1 and not v1.filter:
             v.ref, v.alt = r1, [a1]
             v.samples[0]['GT'] = '1|0' if ps else '0/1'
             j1, j2 = 1, 0
@@ -601,32 +611,38 @@ def join2(f0, f1, f2, v0, v1, v2, pos, bed):
             # v1:(0,i1) => v:(0,j1), v2:(0,i2) => v:(0,j2)
             if k == 'RPA':
                 d = [0] * (max(j1,j2)+1)
-                if v1 and v1.info.get(k):
+                if v1 and not v1.filter and v1.info.get(k):
                     s = v1.info.get(k)
                     d[0] = s[0]
                     d[j1] = s[i1]
-                if v2 and v2.info.get(k):
+                if v2 and not v2.filter and v2.info.get(k):
                     s = v2.info.get(k)
                     d[0] = s[0]
                     d[j2] = s[i2]
                 if d[0] != 0:
                     v.info[k] = d
                 continue
-        elif v == v0:
+        elif from_v0:
             if k not in ('QD',):
                 continue
         else:
             if k in ('STR', 'RU'):
                 d = None
-                d = d and d or v1 and v1.info.get(k)
-                d = d and d or v2 and v2.info.get(k)
+                d = d and d or v1 and not v1.filter and v1.info.get(k)
+                d = d and d or v2 and not v2.filter and v2.info.get(k)
                 if d:
                     v.info[k] = d
                 continue
             if k == 'DP':
                 d = 0
-                d += v1 and v1.info.get(k, 0) or 0
-                d += v2 and v2.info.get(k, 0) or 0
+                if v1 and v2:
+                    d += v1.info.get(k, 0) or 0
+                    d += v2.info.get(k, 0) or 0
+                elif v0:
+                    d += v0.info.get(k, 0) or 0
+                else:
+                    d += v1 and v1.info.get(k, 0) or 0
+                    d += v2 and v2.info.get(k, 0) or 0
                 v.info[k] = d
                 continue
         v.info.pop(k, None)
@@ -636,22 +652,36 @@ def join2(f0, f1, f2, v0, v1, v2, pos, bed):
         if t == 'R':
             if k == 'AD':
                 d = [0] * (max(j1,j2)+1)
+                found = [False, False]
                 if v1 and v1.samples[0].get(k):
-                    s = v1.samples[0].get(k)
-                    d[0] += s[0]
-                    d[j1] += s[i1]
+                    if v1.filter:
+                        d[0] += v1_ad
+                    else:
+                        d[j1] += v1_ad
+                    found[0] = True
                 if v2 and v2.samples[0].get(k):
-                    s = v2.samples[0].get(k)
-                    d[0] += s[0]
-                    d[j2] += s[i2]
-                if d[0] != 0:
+                    if v2.filter:
+                        d[0] += v2_ad
+                    else:
+                        d[j2] += v2_ad
+                    found[1] = True
+                if all(found):
+                    v.samples[0][k] = d
+                elif sum(d[1:]) > 0 and v0 and v0.samples[0].get(k):
+                    d[0] += v0.samples[0].get(k)[0]
                     v.samples[0][k] = d
                 continue
         else:
             if k == 'DP':
                 d = 0
-                d += v1 and v1.samples[0].get(k, 0) or 0
-                d += v2 and v2.samples[0].get(k, 0) or 0
+                if v1 and v2:
+                    d += v1.samples[0].get(k, 0) or 0
+                    d += v2.samples[0].get(k, 0) or 0
+                elif v0:
+                    d += v0.samples[0].get(k, 0) or 0
+                else:
+                    d += v1 and v1.samples[0].get(k, 0) or 0
+                    d += v2 and v2.samples[0].get(k, 0) or 0
                 v.samples[0][k] = d
                 continue
 
@@ -664,16 +694,16 @@ def merge2(vcfi1, vcfi2, vcfi3, vcfi0, vcfo, bed=None, **kwargs):
         v1, v2, v3, v0 = grp
 
         if v0 and (v0.filter or v0.samples[0].get('GT') in (None, '0/0')):
-            v0 = None
-        if v0 and any(len(v0.ref) == len(a) for a in v0.alt):
+            v0.filter.append("REF")
+        if v0 and not v0.filter and any(len(v0.ref) == len(a) for a in v0.alt):
             v1 = v2 = v3 = None
 
         if v1 and v1.info.get('DELTA') or v2 and v2.info.get('DELTA'):
             if v1 and (v1.filter or v1.samples[0].get('GT') in (None, '0')):
-                v1 = None
+                v1.filter.append("REF")
             if v2 and (v2.filter or v2.samples[0].get('GT') in (None, '0')):
-                v2 = None
-            if v1 is None and v2 is None:
+                v2.filter.append("REF")
+            if (v1 is None or v1.filter) and (v2 is None or v2.filter):
                 v = None
             else:
                 v = join2(vcfi0, vcfi1, vcfi2, v0, v1, v2, pos, bed)
@@ -685,7 +715,7 @@ def merge2(vcfi1, vcfi2, vcfi3, vcfi0, vcfo, bed=None, **kwargs):
                 v.info.pop('DELTA', None)
                 v.line = None
         else:
-            v = v0
+            v = v0 if v0 and not v0.filter else None
             ps = (bed and v and v.samples[0].get('PS') and
                   bed.get(v.chrom, pos, pos) or None)
             if ps:
@@ -693,6 +723,12 @@ def merge2(vcfi1, vcfi2, vcfi3, vcfi0, vcfo, bed=None, **kwargs):
                 v.line = None
 
         if v:
+            pgt = v.samples[0].get('PGT')
+            pid = v.samples[0].get('PID')
+            if pgt or pid:
+                v.samples[0].pop('PGT', None)
+                v.samples[0].pop('PID', None)
+                v.line = None
             vcfo.emit(v)
 
 
