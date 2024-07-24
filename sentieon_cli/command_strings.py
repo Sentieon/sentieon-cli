@@ -536,3 +536,25 @@ def cmd_multiqc(
         ]
     )
     return shlex.join(cmd)
+
+
+def cmd_mosdepth(
+    sample_input: pathlib.Path,
+    output_directory: pathlib.Path,
+    fasta: Optional[pathlib.Path] = None,
+    threads: int = 1,
+    xargs: str = (
+        "--by 500 --no-per-base --use-median -T 1,3,5,10,15,20,30,40,50"
+    ),
+) -> str:
+    cmd = [
+        "mosdepth",
+        "--fasta",
+        str(fasta),
+        "--threads",
+        str(threads),
+    ]
+    cmd.extend(shlex.split(xargs))
+    cmd.append(str(output_directory))
+    cmd.append(str(sample_input))
+    return shlex.join(cmd)

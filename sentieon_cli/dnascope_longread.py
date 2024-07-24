@@ -53,6 +53,10 @@ FQ_MIN_VERSIONS = {
     "sentieon driver": packaging.version.Version("202308"),
 }
 
+MOSDEPTH_MIN_VERSIONS = {
+    "mosdepth": packaging.version.Version("0.2.6"),
+}
+
 
 def align_inputs(
     run: Callable[[str], None],
@@ -521,6 +525,45 @@ def call_svs(
     return 0
 
 
+def mosdepth(
+    run: Callable[[str], None],
+    output_vcf: pathlib.Path,
+    reference: pathlib.Path,
+    sample_input: List[pathlib.Path],
+    cores: int = mp.cpu_count(),
+    skip_version_check: bool = False,
+    **_kwargs: Any,
+) -> int:
+    """Run mosdepth for QC"""
+
+    if not skip_version_check:
+        if not all(
+            [
+                check_version(cmd, min_version)
+                for (cmd, min_version) in MOSDEPTH_MIN_VERSIONS.items()
+            ]
+        ):
+            logger.warning(
+                "Skipping mosdepth. mosdepth version %s or later not found",
+                MOSDEPTH_MIN_VERSIONS["mosdepth"],
+            )
+            return 1
+
+    mosdepth_dir = pathlib.Path(
+        str(output_vcf).replace(".vcf.gz", "_mosdepth")
+    )
+    for input_file in sample_input:
+        run(
+            cmds.cmd_mosdepth(
+                input_file,
+                mosdepth_dir,
+                fasta=reference,
+                threads=cores,
+            )
+        )
+    return 0
+
+
 @arg(
     "-r",
     "--reference",
@@ -611,6 +654,10 @@ def call_svs(
     help="Skip SV calling",
 )
 @arg(
+    "--skip-mosdepth",
+    help="Skip QC with mosdepth",
+)
+@arg(
     "--align",
     help="Align the input BAM/CRAM/uBAM file to the reference genome",
     action="store_true",
@@ -666,6 +713,7 @@ def dnascope_longread(
     dry_run: bool = False,
     skip_small_variants: bool = False,
     skip_svs: bool = False,
+    skip_mosdepth: bool = False,
     align: bool = False,
     input_ref: Optional[pathlib.Path] = None,
     fastq_taglist: str = "*",  # pylint: disable=W0613
@@ -707,6 +755,9 @@ def dnascope_longread(
     if align:
         sample_input = align_inputs(**locals())
     sample_input.extend(align_fastq(**locals()))
+
+    if not skip_mosdepth:
+        _res = mosdepth(**locals())
 
     if not skip_small_variants:
         res = call_variants(**locals())
