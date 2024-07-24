@@ -25,14 +25,17 @@ from .driver import (
     RepeatModel,
     VariantPhaser,
 )
+from .logging import get_logger
 from .util import (
     __version__,
     check_version,
-    logger,
     path_arg,
     tmp,
     library_preloaded,
 )
+
+logger = get_logger(__name__)
+
 
 TOOL_MIN_VERSIONS = {
     "sentieon driver": packaging.version.Version("202308.01"),
@@ -549,10 +552,10 @@ def mosdepth(
             )
             return 1
 
-    mosdepth_dir = pathlib.Path(
-        str(output_vcf).replace(".vcf.gz", "_mosdepth")
-    )
-    for input_file in sample_input:
+    for i, input_file in enumerate(sample_input):
+        mosdepth_dir = pathlib.Path(
+            str(output_vcf).replace(".vcf.gz", f"_mosdepth_{i}")
+        )
         run(
             cmds.cmd_mosdepth(
                 input_file,
@@ -734,7 +737,7 @@ def dnascope_longread(
     assert model_bundle
     assert str(output_vcf).endswith(".vcf.gz")
 
-    logger.setLevel(kwargs["loglevel"])
+    logger.parent.setLevel(kwargs["loglevel"])
     logger.info("Starting sentieon-cli version: %s", __version__)
 
     if not library_preloaded("libjemalloc.so"):
