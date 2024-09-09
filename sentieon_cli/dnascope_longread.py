@@ -455,6 +455,7 @@ def call_variants(
     if haploid_bed:
         # Haploid variant calling
         haploid_fn = tmp_dir.joinpath("haploid.vcf.gz")
+        haploid_gvcf_fn = tmp_dir.joinpath("haploid.g.vcf.gz")
         haploid_hp_fn = tmp_dir.joinpath("haploid_hp.vcf.gz")
         haploid_out_fn = str(output_vcf).replace(".vcf.gz", ".haploid.vcf.gz")
         driver = Driver(
@@ -478,6 +479,16 @@ def call_variants(
                 pcr_indel_model=repeat_model,
             )
         )
+        if gvcf:
+            driver.add_algo(
+                DNAscope(
+                    haploid_gvcf_fn,
+                    dbsnp=dbsnp,
+                    emit_mode="gvcf",
+                    ploidy=1,
+                    model=model_bundle.joinpath("gvcf_model"),
+                )
+            )
         run(shlex.join(driver.build_cmd()))
 
         run(
@@ -489,6 +500,17 @@ def call_variants(
                 kwargs,
             )
         )
+
+        if gvcf:
+            run(
+                cmds.cmd_pyexec_gvcf_combine(
+                    reference,
+                    str(haploid_gvcf_fn),
+                    str(haploid_out_fn),
+                    cores,
+                    kwargs,
+                )
+            )
     return 0
 
 

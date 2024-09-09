@@ -112,6 +112,7 @@ class DNAscope(BaseAlgo):
         model: Optional[pathlib.Path] = None,
         pcr_indel_model: str = "CONSERVATIVE",
         var_type: str = "SNP,INDEL",
+        ploidy: int = 2,
     ):
         self.output = output
         self.dbsnp = dbsnp
@@ -119,6 +120,7 @@ class DNAscope(BaseAlgo):
         self.model = model
         self.pcr_indel_model = pcr_indel_model
         self.var_type = var_type
+        self.ploidy = ploidy
 
 
 class DNAscopeHP(BaseAlgo):
