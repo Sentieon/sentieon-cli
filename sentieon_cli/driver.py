@@ -108,11 +108,11 @@ class DNAscope(BaseAlgo):
         self,
         output: pathlib.Path,
         dbsnp: Optional[pathlib.Path] = None,
-        emit_mode: str = "variant",
+        emit_mode: Optional[str] = None,
         model: Optional[pathlib.Path] = None,
-        pcr_indel_model: str = "CONSERVATIVE",
-        var_type: str = "SNP,INDEL",
-        ploidy: int = 2,
+        pcr_indel_model: Optional[str] = None,
+        var_type: Optional[str] = None,
+        ploidy: Optional[int] = None,
     ):
         self.output = output
         self.dbsnp = dbsnp
