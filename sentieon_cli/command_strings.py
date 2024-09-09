@@ -200,6 +200,32 @@ def cmd_pyexec_vcf_mod_haploid_patch2(
     return shlex.join(cmd)
 
 
+def bcftools_concat(
+    out_vcf: pathlib.Path,
+    in_vcfs: List[pathlib.Path],
+) -> str:
+    """VCF processing through bcftools concat"""
+    cmds = []
+    cmds.append(
+        [
+            "bcftools",
+            "concat",
+            "-aD",
+        ]
+        + [str(x) for x in in_vcfs]
+    )
+    cmds.append(
+        [
+            "sentieon",
+            "util",
+            "vcfconvert",
+            "-",
+            str(out_vcf),
+        ]
+    )
+    return " | ".join([shlex.join(x) for x in cmds])
+
+
 def get_rg_lines(
     input_aln: pathlib.Path,
     dry_run: bool,

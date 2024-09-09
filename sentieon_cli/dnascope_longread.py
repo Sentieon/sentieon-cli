@@ -428,6 +428,8 @@ def call_variants(
     run(shlex.join(driver.build_cmd()))
 
     # merge calls to create the output
+    diploid_merged_vcf = tmp_dir.joinpath("out_diploid_merged.vcf.gz")
+    merge_out_vcf = diploid_merged_vcf if haploid_bed else output_vcf
     run(
         cmds.cmd_pyexec_vcf_mod_merge(
             str(hap_vcfs[0]),
@@ -435,7 +437,7 @@ def call_variants(
             str(diploid_unphased),
             str(phased_vcf),
             str(phased_bed),
-            str(output_vcf),
+            str(merge_out_vcf),
             cores,
             kwargs,
         )
@@ -446,7 +448,7 @@ def call_variants(
             cmds.cmd_pyexec_gvcf_combine(
                 reference,
                 str(diploid_gvcf_fn),
-                str(output_vcf),
+                str(merge_out_vcf),
                 cores,
                 kwargs,
             )
@@ -457,7 +459,7 @@ def call_variants(
         haploid_fn = tmp_dir.joinpath("haploid.vcf.gz")
         haploid_gvcf_fn = tmp_dir.joinpath("haploid.g.vcf.gz")
         haploid_hp_fn = tmp_dir.joinpath("haploid_hp.vcf.gz")
-        haploid_out_fn = str(output_vcf).replace(".vcf.gz", ".haploid.vcf.gz")
+        haploid_out_fn = tmp_dir.joinpath("haploid_patched.vcf.gz")
         driver = Driver(
             reference=reference,
             thread_count=cores,
@@ -493,15 +495,30 @@ def call_variants(
 
         run(
             cmds.cmd_pyexec_vcf_mod_haploid_patch2(
-                haploid_out_fn,
+                str(haploid_out_fn),
                 str(haploid_fn),
                 str(haploid_hp_fn),
                 cores,
                 kwargs,
             )
         )
+        run(
+            cmds.bcftools_concat(
+                output_vcf,
+                [diploid_merged_vcf, haploid_out_fn],
+            )
+        )
 
         if gvcf:
+            output_gvcf = pathlib.Path(
+                str(output_vcf).replace(".vcf.gz", ".g.vcf.gz")
+            )
+            diploid_gvcf = pathlib.Path(
+                str(diploid_merged_vcf).replace(".vcf.gz", ".g.vcf.gz")
+            )
+            haploid_gvcf = pathlib.Path(
+                str(haploid_out_fn).replace(".vcf.gz", ".g.vcf.gz")
+            )
             run(
                 cmds.cmd_pyexec_gvcf_combine(
                     reference,
@@ -509,6 +526,12 @@ def call_variants(
                     str(haploid_out_fn),
                     cores,
                     kwargs,
+                )
+            )
+            run(
+                cmds.bcftools_concat(
+                    output_gvcf,
+                    [diploid_gvcf, haploid_gvcf],
                 )
             )
     return 0
