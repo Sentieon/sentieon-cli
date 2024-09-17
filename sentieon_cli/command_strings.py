@@ -260,6 +260,7 @@ def cmd_samtools_fastq_minimap2(
     sample_name: str,
     input_ref: Optional[pathlib.Path] = None,
     fastq_taglist: str = "*",
+    minimap2_args: str = "-Y",
     util_sort_args: str = "--cram_write_options version=3.0,compressor=rans",
 ) -> str:
     """Re-align an input BAM/CRAM/uBAM/uCRAM file with minimap2"""
@@ -288,6 +289,7 @@ def cmd_samtools_fastq_minimap2(
         "-t",
         str(cores),
         "-a",
+        minimap2_args,
         "-x",
         f"{model_bundle}/minimap2.model",
         str(reference),
@@ -434,6 +436,7 @@ def cmd_fastq_minimap2(
     model_bundle: pathlib.Path,
     cores: int,
     unzip: str = "gzip",
+    minimap2_args: str = "-Y",
     util_sort_args: str = "--cram_write_options version=3.0,compressor=rans",
 ) -> str:
     """Align an input fastq file with minimap2"""
@@ -449,6 +452,7 @@ def cmd_fastq_minimap2(
         "-t",
         str(cores),
         "-a",
+        minimap2_args,
         "-x",
         f"{model_bundle}/minimap2.model",
         "-R",

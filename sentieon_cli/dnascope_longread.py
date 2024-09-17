@@ -72,6 +72,7 @@ def align_inputs(
     skip_version_check: bool = False,
     bam_format: bool = False,
     fastq_taglist: str = "*",
+    minimap2_args: str = "-Y",
     util_sort_args: str = "--cram_write_options version=3.0,compressor=rans",
     input_ref: Optional[pathlib.Path] = None,
     **_kwargs: Any,
@@ -107,6 +108,7 @@ def align_inputs(
                 sample_name,
                 input_ref,
                 fastq_taglist,
+                minimap2_args,
                 util_sort_args,
             )
         )
@@ -124,6 +126,7 @@ def align_fastq(
     readgroups: Optional[List[str]] = None,
     skip_version_check: bool = False,
     bam_format: bool = False,
+    minimap2_args: str = "-Y",
     util_sort_args: str = "--cram_write_options version=3.0,compressor=rans",
     **_kwargs: Any,
 ) -> List[pathlib.Path]:
@@ -166,6 +169,7 @@ def align_fastq(
                 model_bundle,
                 cores,
                 unzip,
+                minimap2_args,
                 util_sort_args,
             )
         )
@@ -727,6 +731,10 @@ def mosdepth(
     action="store_true",
 )
 @arg(
+    "--minimap2_args",
+    help="Extra arguments for sentieon minimap2",
+)
+@arg(
     "--util_sort_args",
     help="Extra arguments for sentieon util sort",
 )
@@ -766,6 +774,7 @@ def dnascope_longread(
     input_ref: Optional[pathlib.Path] = None,
     fastq_taglist: str = "*",  # pylint: disable=W0613
     bam_format: bool = False,  # pylint: disable=W0613
+    minimap2_args: str = "-Y",  # pylint: disable=W0613
     util_sort_args: str = (
         "--cram_write_options version=3.0,compressor=rans"
     ),  # pylint: disable=W0613
