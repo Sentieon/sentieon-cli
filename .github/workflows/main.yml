@@ -116,7 +116,7 @@ jobs:
             "output hifi.vcf.gz"
           sentieon driver -r "tests/smoke/r ef.fa" -t 1 --algo GVCFtyper \
             -v "output hifi.g.vcf.gz" output_hifi_gvcftyper.vcf.gz
-          if [ ! -f "output hifi.sv.vcf.gz" -o ! -f "output hifi.haploid.vcf.gz" ]; then
+          if [ ! -f "output hifi.sv.vcf.gz" ]; then
             exit 1
           fi
       - name: Smoke test - gVCF
