@@ -52,6 +52,9 @@ jobs:
         run: |
           sudo curl -L -o /usr/local/bin/mosdepth "https://github.com/brentp/mosdepth/releases/download/v0.3.8/mosdepth"
           sudo chmod ugo+x /usr/local/bin/mosdepth
+      - name: Install multiqc
+        run: |
+          pip install multiqc
       - name: Install sentieon
         run: |
           curl -L https://s3.amazonaws.com/sentieon-release/software/sentieon-genomics-$SENTIEON_VERSION.tar.gz | tar -zxf -
