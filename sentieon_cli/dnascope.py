@@ -34,14 +34,17 @@ from .driver import (
     SVSolver,
     WgsMetricsAlgo,
 )
+from .logging import get_logger
 from .util import (
     __version__,
     check_version,
     library_preloaded,
-    logger,
     path_arg,
     tmp,
 )
+
+logger = get_logger(__name__)
+
 
 ALN_MIN_VERSIONS = {
     "sentieon driver": packaging.version.Version("202308"),
@@ -651,7 +654,7 @@ def dnascope(
     assert model_bundle
     assert str(output_vcf).endswith(".vcf.gz")
 
-    logger.setLevel(kwargs["loglevel"])
+    logger.parent.setLevel(kwargs["loglevel"])
     logger.info("Starting sentieon-cli version: %s", __version__)
 
     if not library_preloaded("libjemalloc.so"):

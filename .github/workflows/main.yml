@@ -19,7 +19,7 @@ jobs:
       matrix:
         python-version: ["3.8", "3.12"]
         poetry-version: ["1.5.1"]
-        sentieon-version: ["202308.01", "202308.02"]
+        sentieon-version: ["202308.01", "202308.03"]
         os: [ubuntu-22.04] #, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
@@ -48,6 +48,13 @@ jobs:
         run: |
           sudo curl -L -o /usr/local/bin/bedtools "https://github.com/arq5x/bedtools2/releases/download/v2.31.0/bedtools.static"
           sudo chmod ugo+x /usr/local/bin/bedtools
+      - name: Install mosdepth
+        run: |
+          sudo curl -L -o /usr/local/bin/mosdepth "https://github.com/brentp/mosdepth/releases/download/v0.3.8/mosdepth"
+          sudo chmod ugo+x /usr/local/bin/mosdepth
+      - name: Install multiqc
+        run: |
+          pip install multiqc
       - name: Install sentieon
         run: |
           curl -L https://s3.amazonaws.com/sentieon-release/software/sentieon-genomics-$SENTIEON_VERSION.tar.gz | tar -zxf -
@@ -78,7 +85,7 @@ jobs:
       - name: Smoke test - short-read
         run: |
           . .venv/bin/activate
-          sentieon-cli dnascope -t 1 -r "tests/smoke/r ef.fa" --pcr-free -g \
+          sentieon-cli -v dnascope -t 1 -r "tests/smoke/r ef.fa" --pcr-free -g \
             --duplicate-marking rmdup --consensus --align \
             --input_ref "tests/smoke/r ef.fa" -i "tests/smoke/illumina.cram" \
             -m "DNAscope IlluminaWGS2.0.bundle" "output_sr.vcf.gz"
@@ -90,7 +97,7 @@ jobs:
           . .venv/bin/activate
           samtools fastq --reference "tests/smoke/r ef.fa" -1 sr_r1.fastq.gz \
             -2 sr_r2.fastq.gz "tests/smoke/illumina.cram" > /dev/null
-          sentieon-cli dnascope -t 1 -r "tests/smoke/r ef.fa" --pcr-free \
+          sentieon-cli -v dnascope -t 1 -r "tests/smoke/r ef.fa" --pcr-free \
           --r1-fastq sr_r1.fastq.gz --r2-fastq sr_r2.fastq.gz \
             --readgroups "@RG\tID:HG002-1\tSM:HG002" \
             -m "DNAscope IlluminaWGS2.0.bundle" --assay WES \
@@ -101,7 +108,7 @@ jobs:
       - name: Smoke test - long-read
         run: |
           . .venv/bin/activate
-          sentieon-cli dnascope-longread -t 1 -r "tests/smoke/r ef.fa" \
+          sentieon-cli -v dnascope-longread -t 1 -r "tests/smoke/r ef.fa" \
             -i "tests/smoke/sam ple.cram" -m "DNAscope PacBio2.1.bundle" \
             --repeat-model tests/smoke/sample_repeat.model -g \
             -b "tests/smoke/diploid.bed" \
@@ -109,13 +116,13 @@ jobs:
             "output hifi.vcf.gz"
           sentieon driver -r "tests/smoke/r ef.fa" -t 1 --algo GVCFtyper \
             -v "output hifi.g.vcf.gz" output_hifi_gvcftyper.vcf.gz
-          if [ ! -f "output hifi.sv.vcf.gz" -o ! -f "output hifi.haploid.vcf.gz" ]; then
+          if [ ! -f "output hifi.sv.vcf.gz" ]; then
             exit 1
           fi
       - name: Smoke test - gVCF
         run: |
           . .venv/bin/activate
-          sentieon-cli dnascope-longread --tech ONT -t 1 -r "tests/smoke/r ef.fa" \
+          sentieon-cli -v dnascope-longread --tech ONT -t 1 -r "tests/smoke/r ef.fa" \
             -i "tests/smoke/sam ple.cram" -m "DNAscope PacBio2.1.bundle" \
             --repeat-model tests/smoke/sample_repeat.model -g "output ont.vcf.gz"
           sentieon driver -r "tests/smoke/r ef.fa" -t 1 --algo GVCFtyper \
@@ -126,7 +133,7 @@ jobs:
       - name: Smoke test - realignment
         run: |
           . .venv/bin/activate
-          sentieon-cli dnascope-longread -t 1 -r "tests/smoke/r ef.fa" \
+          sentieon-cli -v dnascope-longread -t 1 -r "tests/smoke/r ef.fa" \
             -i "tests/smoke/sam ple.cram" -m "DNAscope PacBio2.1.bundle" \
             --repeat-model tests/smoke/sample_repeat.model --align \
             --input_ref "tests/smoke/r ef.fa" "output realigned.vcf.gz"
@@ -139,7 +146,7 @@ jobs:
           samtools fastq --reference "tests/smoke/r ef.fa" \
             "tests/smoke/sam ple.cram" | \
             gzip -c > sample.fq.gz
-          sentieon-cli dnascope-longread -t 1 -r "tests/smoke/r ef.fa" \
+          sentieon-cli -v dnascope-longread -t 1 -r "tests/smoke/r ef.fa" \
             --fastq sample.fq.gz --readgroups '@RG\tID:sample-1\tSM:sample' \
             -m "DNAscope PacBio2.1.bundle" \
             --repeat-model tests/smoke/sample_repeat.model "output fq.vcf.gz"

@@ -200,6 +200,32 @@ def cmd_pyexec_vcf_mod_haploid_patch2(
     return shlex.join(cmd)
 
 
+def bcftools_concat(
+    out_vcf: pathlib.Path,
+    in_vcfs: List[pathlib.Path],
+) -> str:
+    """VCF processing through bcftools concat"""
+    cmds = []
+    cmds.append(
+        [
+            "bcftools",
+            "concat",
+            "-aD",
+        ]
+        + [str(x) for x in in_vcfs]
+    )
+    cmds.append(
+        [
+            "sentieon",
+            "util",
+            "vcfconvert",
+            "-",
+            str(out_vcf),
+        ]
+    )
+    return " | ".join([shlex.join(x) for x in cmds])
+
+
 def get_rg_lines(
     input_aln: pathlib.Path,
     dry_run: bool,
@@ -234,6 +260,7 @@ def cmd_samtools_fastq_minimap2(
     sample_name: str,
     input_ref: Optional[pathlib.Path] = None,
     fastq_taglist: str = "*",
+    minimap2_args: str = "-Y",
     util_sort_args: str = "--cram_write_options version=3.0,compressor=rans",
 ) -> str:
     """Re-align an input BAM/CRAM/uBAM/uCRAM file with minimap2"""
@@ -262,6 +289,7 @@ def cmd_samtools_fastq_minimap2(
         "-t",
         str(cores),
         "-a",
+        minimap2_args,
         "-x",
         f"{model_bundle}/minimap2.model",
         str(reference),
@@ -408,6 +436,7 @@ def cmd_fastq_minimap2(
     model_bundle: pathlib.Path,
     cores: int,
     unzip: str = "gzip",
+    minimap2_args: str = "-Y",
     util_sort_args: str = "--cram_write_options version=3.0,compressor=rans",
 ) -> str:
     """Align an input fastq file with minimap2"""
@@ -423,6 +452,7 @@ def cmd_fastq_minimap2(
         "-t",
         str(cores),
         "-a",
+        minimap2_args,
         "-x",
         f"{model_bundle}/minimap2.model",
         "-R",
@@ -535,4 +565,26 @@ def cmd_multiqc(
             str(input_directory),
         ]
     )
+    return shlex.join(cmd)
+
+
+def cmd_mosdepth(
+    sample_input: pathlib.Path,
+    output_directory: pathlib.Path,
+    fasta: Optional[pathlib.Path] = None,
+    threads: int = 1,
+    xargs: str = (
+        "--by 500 --no-per-base --use-median -T 1,3,5,10,15,20,30,40,50"
+    ),
+) -> str:
+    cmd = [
+        "mosdepth",
+        "--fasta",
+        str(fasta),
+        "--threads",
+        str(threads),
+    ]
+    cmd.extend(shlex.split(xargs))
+    cmd.append(str(output_directory))
+    cmd.append(str(sample_input))
     return shlex.join(cmd)

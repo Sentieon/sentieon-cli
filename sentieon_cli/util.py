@@ -45,7 +45,9 @@ def check_version(
         return True
 
     cmd_list.append("--version")
-    cmd_version_str = sp.check_output(cmd_list).decode("utf-8").strip()
+    cmd_version_str = (
+        sp.check_output(cmd_list).decode("utf-8", "ignore").strip()
+    )
     if cmd_list[0] == "sentieon":
         cmd_version_str = cmd_version_str.split("-")[-1]
     else:

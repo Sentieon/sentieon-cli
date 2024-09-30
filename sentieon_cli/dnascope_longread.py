@@ -25,14 +25,17 @@ from .driver import (
     RepeatModel,
     VariantPhaser,
 )
+from .logging import get_logger
 from .util import (
     __version__,
     check_version,
-    logger,
     path_arg,
     tmp,
     library_preloaded,
 )
+
+logger = get_logger(__name__)
+
 
 TOOL_MIN_VERSIONS = {
     "sentieon driver": packaging.version.Version("202308.01"),
@@ -53,6 +56,10 @@ FQ_MIN_VERSIONS = {
     "sentieon driver": packaging.version.Version("202308"),
 }
 
+MOSDEPTH_MIN_VERSIONS = {
+    "mosdepth": packaging.version.Version("0.2.6"),
+}
+
 
 def align_inputs(
     run: Callable[[str], None],
@@ -65,6 +72,7 @@ def align_inputs(
     skip_version_check: bool = False,
     bam_format: bool = False,
     fastq_taglist: str = "*",
+    minimap2_args: str = "-Y",
     util_sort_args: str = "--cram_write_options version=3.0,compressor=rans",
     input_ref: Optional[pathlib.Path] = None,
     **_kwargs: Any,
@@ -100,6 +108,7 @@ def align_inputs(
                 sample_name,
                 input_ref,
                 fastq_taglist,
+                minimap2_args,
                 util_sort_args,
             )
         )
@@ -117,6 +126,7 @@ def align_fastq(
     readgroups: Optional[List[str]] = None,
     skip_version_check: bool = False,
     bam_format: bool = False,
+    minimap2_args: str = "-Y",
     util_sort_args: str = "--cram_write_options version=3.0,compressor=rans",
     **_kwargs: Any,
 ) -> List[pathlib.Path]:
@@ -159,6 +169,7 @@ def align_fastq(
                 model_bundle,
                 cores,
                 unzip,
+                minimap2_args,
                 util_sort_args,
             )
         )
@@ -421,6 +432,8 @@ def call_variants(
     run(shlex.join(driver.build_cmd()))
 
     # merge calls to create the output
+    diploid_merged_vcf = tmp_dir.joinpath("out_diploid_merged.vcf.gz")
+    merge_out_vcf = diploid_merged_vcf if haploid_bed else output_vcf
     run(
         cmds.cmd_pyexec_vcf_mod_merge(
             str(hap_vcfs[0]),
@@ -428,7 +441,7 @@ def call_variants(
             str(diploid_unphased),
             str(phased_vcf),
             str(phased_bed),
-            str(output_vcf),
+            str(merge_out_vcf),
             cores,
             kwargs,
         )
@@ -439,7 +452,7 @@ def call_variants(
             cmds.cmd_pyexec_gvcf_combine(
                 reference,
                 str(diploid_gvcf_fn),
-                str(output_vcf),
+                str(merge_out_vcf),
                 cores,
                 kwargs,
             )
@@ -448,8 +461,9 @@ def call_variants(
     if haploid_bed:
         # Haploid variant calling
         haploid_fn = tmp_dir.joinpath("haploid.vcf.gz")
+        haploid_gvcf_fn = tmp_dir.joinpath("haploid.g.vcf.gz")
         haploid_hp_fn = tmp_dir.joinpath("haploid_hp.vcf.gz")
-        haploid_out_fn = str(output_vcf).replace(".vcf.gz", ".haploid.vcf.gz")
+        haploid_out_fn = tmp_dir.joinpath("haploid_patched.vcf.gz")
         driver = Driver(
             reference=reference,
             thread_count=cores,
@@ -471,17 +485,59 @@ def call_variants(
                 pcr_indel_model=repeat_model,
             )
         )
+        if gvcf:
+            driver.add_algo(
+                DNAscope(
+                    haploid_gvcf_fn,
+                    dbsnp=dbsnp,
+                    emit_mode="gvcf",
+                    ploidy=1,
+                    model=model_bundle.joinpath("gvcf_model"),
+                )
+            )
         run(shlex.join(driver.build_cmd()))
 
         run(
             cmds.cmd_pyexec_vcf_mod_haploid_patch2(
-                haploid_out_fn,
+                str(haploid_out_fn),
                 str(haploid_fn),
                 str(haploid_hp_fn),
                 cores,
                 kwargs,
             )
         )
+        run(
+            cmds.bcftools_concat(
+                output_vcf,
+                [diploid_merged_vcf, haploid_out_fn],
+            )
+        )
+
+        if gvcf:
+            output_gvcf = pathlib.Path(
+                str(output_vcf).replace(".vcf.gz", ".g.vcf.gz")
+            )
+            diploid_gvcf = pathlib.Path(
+                str(diploid_merged_vcf).replace(".vcf.gz", ".g.vcf.gz")
+            )
+            haploid_gvcf = pathlib.Path(
+                str(haploid_out_fn).replace(".vcf.gz", ".g.vcf.gz")
+            )
+            run(
+                cmds.cmd_pyexec_gvcf_combine(
+                    reference,
+                    str(haploid_gvcf_fn),
+                    str(haploid_out_fn),
+                    cores,
+                    kwargs,
+                )
+            )
+            run(
+                cmds.bcftools_concat(
+                    output_gvcf,
+                    [diploid_gvcf, haploid_gvcf],
+                )
+            )
     return 0
 
 
@@ -518,6 +574,45 @@ def call_svs(
         )
     )
     run(shlex.join(driver.build_cmd()))
+    return 0
+
+
+def mosdepth(
+    run: Callable[[str], None],
+    output_vcf: pathlib.Path,
+    reference: pathlib.Path,
+    sample_input: List[pathlib.Path],
+    cores: int = mp.cpu_count(),
+    skip_version_check: bool = False,
+    **_kwargs: Any,
+) -> int:
+    """Run mosdepth for QC"""
+
+    if not skip_version_check:
+        if not all(
+            [
+                check_version(cmd, min_version)
+                for (cmd, min_version) in MOSDEPTH_MIN_VERSIONS.items()
+            ]
+        ):
+            logger.warning(
+                "Skipping mosdepth. mosdepth version %s or later not found",
+                MOSDEPTH_MIN_VERSIONS["mosdepth"],
+            )
+            return 1
+
+    for i, input_file in enumerate(sample_input):
+        mosdepth_dir = pathlib.Path(
+            str(output_vcf).replace(".vcf.gz", f"_mosdepth_{i}")
+        )
+        run(
+            cmds.cmd_mosdepth(
+                input_file,
+                mosdepth_dir,
+                fasta=reference,
+                threads=cores,
+            )
+        )
     return 0
 
 
@@ -611,6 +706,10 @@ def call_svs(
     help="Skip SV calling",
 )
 @arg(
+    "--skip-mosdepth",
+    help="Skip QC with mosdepth",
+)
+@arg(
     "--align",
     help="Align the input BAM/CRAM/uBAM file to the reference genome",
     action="store_true",
@@ -630,6 +729,10 @@ def call_svs(
     "--bam_format",
     help="Use the BAM format instead of CRAM for output aligned files",
     action="store_true",
+)
+@arg(
+    "--minimap2_args",
+    help="Extra arguments for sentieon minimap2",
 )
 @arg(
     "--util_sort_args",
@@ -666,10 +769,12 @@ def dnascope_longread(
     dry_run: bool = False,
     skip_small_variants: bool = False,
     skip_svs: bool = False,
+    skip_mosdepth: bool = False,
     align: bool = False,
     input_ref: Optional[pathlib.Path] = None,
     fastq_taglist: str = "*",  # pylint: disable=W0613
     bam_format: bool = False,  # pylint: disable=W0613
+    minimap2_args: str = "-Y",  # pylint: disable=W0613
     util_sort_args: str = (
         "--cram_write_options version=3.0,compressor=rans"
     ),  # pylint: disable=W0613
@@ -686,7 +791,7 @@ def dnascope_longread(
     assert model_bundle
     assert str(output_vcf).endswith(".vcf.gz")
 
-    logger.setLevel(kwargs["loglevel"])
+    logger.parent.setLevel(kwargs["loglevel"])
     logger.info("Starting sentieon-cli version: %s", __version__)
 
     if not library_preloaded("libjemalloc.so"):
@@ -707,6 +812,9 @@ def dnascope_longread(
     if align:
         sample_input = align_inputs(**locals())
     sample_input.extend(align_fastq(**locals()))
+
+    if not skip_mosdepth:
+        _res = mosdepth(**locals())
 
     if not skip_small_variants:
         res = call_variants(**locals())

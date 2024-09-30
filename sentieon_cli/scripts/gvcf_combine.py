@@ -5,6 +5,8 @@ import argparse
 import vcflib
 import copy
 import time
+import itertools
+import re
 import resource
 import collections
 import io
@@ -59,6 +61,7 @@ class Combiner(vcflib.Shardable, vcflib.ShardResult):
 
     info_vals = {"AC": 0, "MLEAC": 0, "AF": 0, "MLEAF": 0, "RPA": 0}
     sample_vals = {"AD": lambda s: 0 if 'DP' not in s else s['DP'] - sum(s['AD'])}
+    gtpat = re.compile(r'[|/]')
 
     def __init__(self, ref, gvcf_input, vcf_input, gvcf_output):
         self.ref = Reference(ref)
@@ -80,6 +83,9 @@ class Combiner(vcflib.Shardable, vcflib.ShardResult):
         fmt_diff = ['##FORMAT=<ID=%s,' %f for f in vcf2.formats.keys() if f not in vcf1.formats]
         diffs = filter_diff + info_diff + fmt_diff
         return [h for h in vcf2.headers if any([h.startswith(s) for s in diffs])]
+
+    def get_ploidy(self, v):
+        return len(self.gtpat.split(v.samples[0].get("GT", ".")))
 
     def __del__(self):
         self.vcf_in.close()
@@ -135,7 +141,16 @@ class Combiner(vcflib.Shardable, vcflib.ShardResult):
                                 heapq.heappush(q, (vv.pos, vv.end, 0, vv, iters[0]))
                         g.info = {'END': g.end}
                         g.qual = None
-                        g.samples[0] = {'GT': '0/0', 'DP': v2.samples[0].get('DP'), 'GQ': 15, 'PL': [0, 15, 99]}
+                        ploidy = self.get_ploidy(v2)
+                        pl, plv = [], 0
+                        for gt in itertools.combinations_with_replacement(range(2), ploidy):
+                            pl.append(plv)
+                            plv += 20
+                        g.samples[0] = {
+                            'GT': '/'.join(['0' for _ in range(ploidy)]),
+                            'DP': v2.samples[0].get('DP'), 'GQ': 15,
+                            'PL': pl,
+                        }
                         g.line = None
                         heapq.heappush(q, (g.pos, g.end, 0, g, iters[0]))
                     else:
@@ -199,17 +214,18 @@ class Combiner(vcflib.Shardable, vcflib.ShardResult):
                         g.line = None
                     self.vcftmp.emit(g)
                 elif pos >= start:
-                    g.samples[0]['GT'] = '0/0'
+                    ploidy = self.get_ploidy(g)
+                    g.samples[0]['GT'] = '/'.join(['0' for _ in range(ploidy)])
                     g.line = None
                     self.vcftmp.emit(g)
             if v and pos >= start:
                 v.alt.append('<NON_REF>')
                 if "PL" in v.samples[0]:
                     n_alt = len(v.alt)
-                    idx = -1
-                    for i in range(n_alt+1):
-                        idx += n_alt + 1 - i
-                        v.samples[0]['PL'].insert(idx, 100)
+                    ploidy = self.get_ploidy(v)
+                    for idx, gt in enumerate(itertools.combinations_with_replacement(range(n_alt+1), ploidy)):
+                        if n_alt in gt:
+                            v.samples[0]['PL'].insert(idx, 100)
                 for k in self.remove_info_keys:
                     if k in v.info:
                         del v.info[k]

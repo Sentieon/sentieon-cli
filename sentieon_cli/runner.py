@@ -9,7 +9,7 @@ logger = get_logger(__name__)
 
 def run(cmd: str):
     """Run a command."""
-    logger.info("running: %s", cmd)
+    logger.info("running command: %s", cmd)
     t0 = time.time()
     sp.run(
         cmd,
