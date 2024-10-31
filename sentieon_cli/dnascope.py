@@ -359,6 +359,7 @@ def call_variants(
     gvcf: bool = False,
     skip_svs: bool = False,
     skip_version_check: bool = False,
+    dry_run: bool = False,
     **_kwargs: Any,
 ) -> int:
     """Call SNVs, indels, and SVs using DNAscope"""
@@ -429,8 +430,9 @@ def call_variants(
 
     # Remove the tmp_vcf
     tmp_vcf_idx = pathlib.Path(str(tmp_vcf) + ".tbi")
-    tmp_vcf_idx.unlink(missing_ok=True)
-    tmp_vcf.unlink()
+    if not dry_run:
+        tmp_vcf_idx.unlink(missing_ok=True)
+        tmp_vcf.unlink()
 
     # Genotype gVCFs
     if gvcf:
@@ -462,8 +464,9 @@ def call_variants(
         )
         run(shlex.join(driver.build_cmd()))
         out_svs_tmp_idx = pathlib.Path(str(out_svs_tmp) + ".tbi")
-        out_svs_tmp.unlink()
-        out_svs_tmp_idx.unlink(missing_ok=True)
+        if not dry_run:
+            out_svs_tmp.unlink()
+            out_svs_tmp_idx.unlink(missing_ok=True)
 
     return 0
 
