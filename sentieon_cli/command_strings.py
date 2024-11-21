@@ -250,6 +250,25 @@ def get_rg_lines(
     return rg_lines
 
 
+def rehead_wgsmetrics(
+    orig_metrics: pathlib.Path, tmp_metrics: pathlib.Path
+) -> str:
+    """Rehead Sentieon WGS metrics so the file is recognized by MultiQC"""
+    cmd1 = shlex.join(["mv", str(orig_metrics), str(tmp_metrics)])
+    cmd2 = (
+        shlex.join(["echo", "'## METRICS CLASS WgsMetrics'"])
+        + ">"
+        + shlex.quote(str(orig_metrics))
+    )
+    cmd3 = (
+        shlex.join(["tail", "-n", "+2", str(tmp_metrics)])
+        + ">>"
+        + shlex.quote(str(orig_metrics))
+    )
+    cmd4 = shlex.join(["rm", str(tmp_metrics)])
+    return "; ".join((cmd1, cmd2, cmd3, cmd4))
+
+
 def cmd_samtools_fastq_minimap2(
     out_aln: pathlib.Path,
     input_aln: pathlib.Path,
