@@ -22,7 +22,7 @@ logger = get_logger(__name__)
 PRELOAD_SEP = r":| "
 PRELOAD_SEP_PAT = re.compile(PRELOAD_SEP)
 
-NUMA_NODE_PAT = re.compile(r"^NUMA node. CPU\(s\):   (?P<cpus>.*)$")
+NUMA_NODE_PAT = re.compile(r"^NUMA node. CPU\(s\):\s+(?P<cpus>.*)$")
 
 
 def tmp():
