@@ -5,6 +5,7 @@ Job objects
 import subprocess as sp
 import sys
 import time
+from typing import Dict, Optional
 
 from .logging import get_logger
 
@@ -15,12 +16,18 @@ class Job:
     """A job for execution"""
 
     def __init__(
-        self, shell: str, name: str, threads: int = 1, fail_ok: bool = False
+        self,
+        shell: str,
+        name: str,
+        threads: int = 1,
+        fail_ok: bool = False,
+        resources: Optional[Dict[str, int]] = None,
     ):
         self.shell = shell
         self.name = name
         self.threads = threads
         self.fail_ok = fail_ok
+        self.resources = {} if resources is None else resources
 
     def __hash__(self):
         return hash(self.shell)

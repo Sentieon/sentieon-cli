@@ -5,11 +5,12 @@ DNAscope alignment and variant calling
 import argparse
 import itertools
 import multiprocessing as mp
+import os
 import pathlib
 import shlex
 import shutil
 import sys
-from typing import Any, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import packaging.version
 
@@ -42,9 +43,11 @@ from .scheduler import ThreadScheduler
 from .util import (
     __version__,
     check_version,
+    find_numa_nodes,
     library_preloaded,
     path_arg,
     tmp,
+    total_memory,
 )
 
 logger = get_logger(__name__)
@@ -68,6 +71,66 @@ MULTIQC_MIN_VERSION = {
 }
 
 
+def set_bwt_max_mem(
+    bwt_max_mem_arg: Optional[str],
+    total_input_size: Optional[int],
+    n_alignment_jobs: int = 1,
+):
+    """Set the bwt_max_mem environment variable"""
+    if bwt_max_mem_arg:
+        os.environ["bwt_max_mem"] = bwt_max_mem_arg
+        return
+
+    total_input_size = total_input_size if total_input_size else 0
+    total_mem = total_memory()
+    total_mem_gb = total_mem / (1024.0**3)
+    align_mem_gb = (
+        total_mem_gb - 4 - total_input_size / (1024.0**3) * 2.3
+    )  # some memory for other system processes
+    bwa_mem_gb = max(
+        int((align_mem_gb / n_alignment_jobs) - 6), 0
+    )  # some memory for other alignment processes
+    logger.debug("Setting bwt_max_mem to: %sG", bwa_mem_gb)
+    os.environ["bwt_max_mem"] = f"{bwa_mem_gb}G"
+
+
+def check_shm(
+    sample_input: Optional[List[pathlib.Path]],
+    r1_fastq: Optional[List[pathlib.Path]],
+    r2_fastq: Optional[List[pathlib.Path]],
+    n_alignment_jobs: int,
+) -> Optional[int]:
+    """Check if /dev/shm can be used for temporary files"""
+    # Find the size of the largest input
+    total_input_size = 0
+    if sample_input:
+        total_input_size = sum([x.stat().st_size for x in sample_input])
+
+    r1_fastq_l = r1_fastq if r1_fastq else []
+    r2_fastq_l = r2_fastq if r2_fastq else []
+
+    for r1, r2 in itertools.zip_longest(r1_fastq_l, r2_fastq_l):
+        total = sum(
+            [
+                fq.stat().st_size
+                for fq in (r1, r2)
+                if isinstance(fq, pathlib.Path)
+            ]
+        )
+        total_input_size += total
+
+    shm_free = shutil.disk_usage("/dev/shm").free
+    total_mem = total_memory()
+
+    if (
+        shm_free > total_input_size * 2.3
+        and total_mem > total_input_size + 40 * 1024**3 * n_alignment_jobs
+    ):
+        logger.debug("Using /dev/shm for temporary files")
+        return total_input_size
+    return None
+
+
 def align_inputs(
     tmp_dir: pathlib.Path,
     output_vcf: pathlib.Path,
@@ -75,11 +138,13 @@ def align_inputs(
     sample_input: List[pathlib.Path],
     model_bundle: pathlib.Path,
     cores: int = mp.cpu_count(),
+    duplicate_marking: str = "markdup",
     dry_run: bool = False,
     collate_align: bool = False,
     skip_version_check: bool = False,
     bam_format: bool = False,
-    bwa_args: str = "-K 100000000",
+    bwa_args: str = "",
+    bwa_k_arg: str = "100000000",
     util_sort_args: str = "--cram_write_options version=3.0,compressor=rans",
     input_ref: Optional[pathlib.Path] = None,
     **_kwargs: Any,
@@ -92,12 +157,17 @@ def align_inputs(
 
     res: List[pathlib.Path] = []
     suffix = "bam" if bam_format else "cram"
+    if duplicate_marking != "none":
+        suffix = "bam"
+        util_sort_args += " --bam_compression 1 "
     jobs = set()
     align_outputs: List[pathlib.Path] = []
     for i, input_aln in enumerate(sample_input):
         out_aln = pathlib.Path(
             str(output_vcf).replace(".vcf.gz", f"_bwa_sorted_{i}.{suffix}")
         )
+        if duplicate_marking != "none":
+            out_aln = tmp_dir.joinpath(f"bwa_sorted_{i}.{suffix}")
         rg_lines = cmds.get_rg_lines(input_aln, dry_run)
         rg_header = tmp_dir.joinpath(f"input_{i}.hdr")
         with open(rg_header, "w", encoding="utf-8") as rg_fh:
@@ -114,6 +184,7 @@ def align_inputs(
                 input_ref,
                 collate=collate_align,
                 bwa_args=bwa_args,
+                bwa_k=bwa_k_arg,
                 util_sort_args=util_sort_args,
             ),
             f"bam-align-{i}",
@@ -138,16 +209,20 @@ def align_inputs(
 
 
 def align_fastq(
+    tmp_dir: pathlib.Path,
     output_vcf: pathlib.Path,
     reference: pathlib.Path,
     model_bundle: pathlib.Path,
+    numa_nodes: List[str],
     cores: int = mp.cpu_count(),
+    duplicate_marking: str = "markdup",
     r1_fastq: Optional[List[pathlib.Path]] = None,
     r2_fastq: Optional[List[pathlib.Path]] = None,
     readgroups: Optional[List[str]] = None,
     skip_version_check: bool = False,
     bam_format: bool = False,
-    bwa_args: str = "-K 100000000",
+    bwa_args: str = "",
+    bwa_k_arg: str = "100000000",
     util_sort_args: str = "--cram_write_options version=3.0,compressor=rans",
     **_kwargs: Any,
 ) -> Tuple[List[pathlib.Path], Set[Job], Optional[Job]]:
@@ -175,37 +250,53 @@ def align_fastq(
         )
         unzip = "gzip"
 
+    n_alignment_jobs = max(1, len(numa_nodes))
     suffix = "bam" if bam_format else "cram"
+    if duplicate_marking != "none":
+        suffix = "bam"
+        util_sort_args += " --bam_compression 1 "
     r2_fastq = [] if r2_fastq is None else r2_fastq
     align_outputs: List[pathlib.Path] = []
     for i, (r1, r2, rg) in enumerate(
         itertools.zip_longest(r1_fastq, r2_fastq, readgroups)
     ):
-        out_aln = pathlib.Path(
-            str(output_vcf).replace(".vcf.gz", f"_bwa_sorted_fq_{i}.{suffix}")
-        )
-        job = Job(
-            cmds.cmd_fastq_bwa(
-                out_aln,
-                r1,
-                r2,
-                rg,
-                reference,
-                model_bundle,
-                cores,
-                unzip,
-                bwa_args,
-                util_sort_args,
-            ),
-            f"bam-align-{i}",
-            cores,
-        )
-        res.append(out_aln)
-        jobs.add(job)
-        align_outputs.append(out_aln)
-        align_outputs.append(pathlib.Path(str(out_aln) + ".bai"))
-        if not bam_format:
-            align_outputs.append(pathlib.Path(str(out_aln) + ".crai"))
+        for j in range(n_alignment_jobs):
+            out_aln = pathlib.Path(
+                str(output_vcf).replace(
+                    ".vcf.gz", f"_bwa_sorted_fq_{i}_{j}.{suffix}"
+                )
+            )
+            if duplicate_marking != "none":
+                out_aln = tmp_dir.joinpath(f"bwa_sorted_fq_{i}_{j}.{suffix}")
+            numa = numa_nodes[j] if len(numa_nodes) > 1 else None
+            split = f"{j}/{n_alignment_jobs}" if len(numa_nodes) > 1 else None
+            split_cores = max(1, int(cores / n_alignment_jobs))
+            job = Job(
+                cmds.cmd_fastq_bwa(
+                    out_aln,
+                    r1,
+                    r2,
+                    rg,
+                    reference,
+                    model_bundle,
+                    split_cores,
+                    unzip,
+                    bwa_args,
+                    bwa_k_arg,
+                    util_sort_args,
+                    numa,
+                    split,
+                ),
+                f"bam-align-{i}-{j}",
+                split_cores,
+                resources={f"node{j}": 1},
+            )
+            res.append(out_aln)
+            jobs.add(job)
+            align_outputs.append(out_aln)
+            align_outputs.append(pathlib.Path(str(out_aln) + ".bai"))
+            if not bam_format:
+                align_outputs.append(pathlib.Path(str(out_aln) + ".crai"))
 
     # Create an unscheduled job to remove the aligned inputs
     rm_job = Job(
@@ -657,11 +748,32 @@ def call_variants(
     help="Extra arguments for sentieon bwa",
 )
 @arg(
+    "--bwa_k",
+    help="The '-K' argument in bwa",
+)
+@arg(
     "--util_sort_args",
     help="Extra arguments for sentieon util sort",
 )
 @arg(
     "--skip-version-check",
+    help=argparse.SUPPRESS,
+    action="store_true",
+)
+# Manually set `bwt_max_mem`
+@arg(
+    "--bwt-max-mem",
+    help=argparse.SUPPRESS,
+)
+# Do not use /dev/shm, even on high memory machines
+@arg(
+    "--no-ramdisk",
+    help=argparse.SUPPRESS,
+    action="store_true",
+)
+# Do not split alignment into multiple jobs
+@arg(
+    "--no-split-alignment",
     help=argparse.SUPPRESS,
     action="store_true",
 )
@@ -690,11 +802,15 @@ def dnascope(
     collate_align: bool = False,
     input_ref: Optional[pathlib.Path] = None,
     bam_format: bool = False,  # pylint: disable=W0613
-    bwa_args: str = "-K 100000000",  # pylint: disable=W0613
+    bwa_args: str = "",  # pylint: disable=W0613
+    bwa_k: int = 100000000,
     util_sort_args: str = (
         "--cram_write_options version=3.0,compressor=rans"
     ),  # pylint: disable=W0613
     skip_version_check: bool = False,  # pylint: disable=W0613
+    bwt_max_mem: Optional[str] = None,
+    no_ramdisk: bool = False,
+    no_split_alignment: bool = False,
     **kwargs: str,
 ):
     """
@@ -704,7 +820,9 @@ def dnascope(
     assert sample_input or (r1_fastq and readgroups)
     assert model_bundle
     assert str(output_vcf).endswith(".vcf.gz")
+    bwa_k_arg = str(bwa_k)
 
+    assert logger.parent
     logger.parent.setLevel(kwargs["loglevel"])
     logger.info("Starting sentieon-cli version: %s", __version__)
 
@@ -725,6 +843,26 @@ def dnascope(
                 "A BED file is recommended to avoid variant calling across "
                 "decoy and unplaced contigs."
             )
+
+    # split large alignment tasks into smaller tasks on large machines
+    n_alignment_jobs = 1
+    numa_nodes: List[str] = []
+    if not no_split_alignment:
+        numa_nodes = find_numa_nodes()
+        if cores > 32 and numa_nodes:
+            n_alignment_jobs = len(numa_nodes)
+        else:
+            numa_nodes = []
+
+    total_input_size = None
+    if not no_ramdisk:
+        total_input_size = check_shm(
+            sample_input, r1_fastq, r2_fastq, n_alignment_jobs
+        )
+    if total_input_size:
+        os.environ["SENTIEON_TMPDIR"] = "/dev/shm"
+
+    set_bwt_max_mem(bwt_max_mem, total_input_size, n_alignment_jobs)
 
     tmp_dir_str = tmp()
     tmp_dir = pathlib.Path(tmp_dir_str)  # type: ignore  # pylint: disable=W0641  # noqa: E501
@@ -796,9 +934,13 @@ def dnascope(
             dag.add_job(multiqc_job, multiqc_dependencies)
 
     logger.debug("Creating the scheduler")
+    resources: Dict[str, int] = {}
+    for i in range(len(numa_nodes)):
+        resources[f"node{i}"] = 1
     scheduler = ThreadScheduler(
         dag,
         cores,
+        resources,
     )
 
     logger.debug("Creating the executor")

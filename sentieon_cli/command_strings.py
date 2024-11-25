@@ -359,7 +359,8 @@ def cmd_samtools_fastq_bwa(
     rg_header: pathlib.Path,
     input_ref: Optional[pathlib.Path] = None,
     collate: bool = False,
-    bwa_args: str = "-K 100000000",
+    bwa_args: str = "",
+    bwa_k: str = "100000000",
     fastq_taglist: str = "RG",
     util_sort_args: str = "--cram_write_options version=3.0,compressor=rans",
 ) -> str:
@@ -368,8 +369,9 @@ def cmd_samtools_fastq_bwa(
     if input_ref:
         ref_cmd = ["--reference", str(reference)]
 
+    cmd0 = ["perl", "-MFcntl", "-e", "fcntl(STDOUT, 1031, 268435456)"]
     if collate:
-        cmd0 = (
+        cmd1 = (
             [
                 "samtools",
                 "collate",
@@ -384,7 +386,7 @@ def cmd_samtools_fastq_bwa(
                 str(input_aln),
             ]
         )
-        cmd1 = [
+        cmd2 = [
             "samtools",
             "fastq",
             "-@",
@@ -394,8 +396,8 @@ def cmd_samtools_fastq_bwa(
             "-",
         ]
     else:
-        cmd0 = []
-        cmd1 = (
+        cmd1 = []
+        cmd2 = (
             [
                 "samtools",
                 "fastq",
@@ -409,7 +411,7 @@ def cmd_samtools_fastq_bwa(
                 str(input_aln),
             ]
         )
-    cmd2 = (
+    cmd3 = (
         [
             "sentieon",
             "bwa",
@@ -424,9 +426,10 @@ def cmd_samtools_fastq_bwa(
             f"{model_bundle}/bwa.model",
         ]
         + bwa_args.split()
+        + ["-K", bwa_k]
         + [str(reference), "/dev/stdin"]
     )
-    cmd3 = [
+    cmd4 = [
         "sentieon",
         "util",
         "sort",
@@ -441,10 +444,18 @@ def cmd_samtools_fastq_bwa(
         "--sam2bam",
     ] + util_sort_args.split()
 
-    if cmd0:
-        return " | ".join([shlex.join(x) for x in (cmd0, cmd1, cmd2, cmd3)])
+    if cmd1:
+        return (
+            shlex.join(cmd0)
+            + ";"
+            + " | ".join([shlex.join(x) for x in (cmd1, cmd2, cmd3, cmd4)])
+        )
     else:
-        return " | ".join([shlex.join(x) for x in (cmd1, cmd2, cmd3)])
+        return (
+            shlex.join(cmd0)
+            + ";"
+            + " | ".join([shlex.join(x) for x in (cmd2, cmd3, cmd4)])
+        )
 
 
 def cmd_fastq_minimap2(
@@ -505,12 +516,19 @@ def cmd_fastq_bwa(
     model_bundle: pathlib.Path,
     cores: int,
     unzip: str = "gzip",
-    bwa_args: str = "-K 100000000",
+    bwa_args: str = "",
+    bwa_k: str = "100000000",
     util_sort_args: str = "--cram_write_options version=3.0,compressor=rans",
+    numa: Optional[str] = None,
+    split: Optional[str] = None,
 ) -> str:
     """Align an input fastq file with bwa"""
+    pipebuf_cmd = shlex.join(
+        ["perl", "-MFcntl", "-e", "fcntl(STDOUT, 1031, 268435456)"]
+    )
     cmd1 = (
-        [
+        (["taskset", "-c", numa] if numa else [])
+        + [
             "sentieon",
             "bwa",
             "mem",
@@ -522,6 +540,7 @@ def cmd_fastq_bwa(
             f"{model_bundle}/bwa.model",
         ]
         + bwa_args.split()
+        + ["-K", bwa_k]
         + [
             str(reference),
         ]
@@ -538,25 +557,61 @@ def cmd_fastq_bwa(
             "-dc",
             str(r2),
         ]
-    cmd4 = [
-        "sentieon",
-        "util",
-        "sort",
-        "-i",
-        "-",
-        "-t",
-        str(cores),
-        "--reference",
-        str(reference),
-        "-o",
-        str(out_aln),
-        "--sam2bam",
-    ] + util_sort_args.split()
+    cmd4 = (
+        (["taskset", "-c", numa] if numa else [])
+        + [
+            "sentieon",
+            "util",
+            "sort",
+            "-i",
+            "-",
+            "-t",
+            str(cores),
+            "--reference",
+            str(reference),
+            "-o",
+            str(out_aln),
+            "--sam2bam",
+        ]
+        + util_sort_args.split()
+    )
 
     cmds = [shlex.join(x) for x in (cmd1, cmd2, cmd3, cmd4)]
-    cmd_str = cmds[0] + " <(" + cmds[1] + ") "
-    if cmds[2]:
-        cmd_str += " <(" + cmds[2] + ") "
+    cmd_str = ""
+    if split:
+        extract_cmd = shlex.join(
+            ["sentieon", "fqidx", "extract", "-F", str(split), "-K", bwa_k]
+        )
+        cmd_str = (
+            pipebuf_cmd
+            + "; "
+            + cmds[0]
+            + " <("
+            + pipebuf_cmd
+            + "; "
+            + extract_cmd
+            + " <("
+            + pipebuf_cmd
+            + "; "
+            + cmds[1]
+            + ") "
+        )
+        if cmds[2]:
+            cmd_str += " <(" + pipebuf_cmd + "; " + cmds[2] + ") "
+        cmd_str += ") "
+    else:
+        cmd_str = (
+            pipebuf_cmd
+            + "; "
+            + cmds[0]
+            + " <("
+            + pipebuf_cmd
+            + "; "
+            + cmds[1]
+            + ") "
+        )
+        if cmds[2]:
+            cmd_str += " <(" + pipebuf_cmd + "; " + cmds[2] + ") "
     cmd_str += " | " + cmds[3]
     return cmd_str
 
