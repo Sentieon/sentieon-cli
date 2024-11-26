@@ -7,6 +7,7 @@ sys.path.insert(
 
 import sentieon_cli.util  # NOQA
 
+
 def test_split_numa_nodes():
     """Test the NUMA split func"""
     res = sentieon_cli.util.split_numa_nodes(["0-97"])
@@ -17,4 +18,13 @@ def test_split_numa_nodes():
     res = sentieon_cli.util.split_numa_nodes(["0-15,32-47", "16-31,48-63"])
     assert res == ["0-15", "32-47", "16-31", "48-63"]
     res = sentieon_cli.util.split_numa_nodes(res)
-    assert res == ["0-7", "8-15", "32-39", "40-47", "16-23", "24-31", "48-55", "56-63"]
+    assert res == [
+        "0-7",
+        "8-15",
+        "32-39",
+        "40-47",
+        "16-23",
+        "24-31",
+        "48-55",
+        "56-63",
+    ]
