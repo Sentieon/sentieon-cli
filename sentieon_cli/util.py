@@ -142,3 +142,20 @@ def find_numa_nodes() -> List[str]:
             numa_nodes.append(cpus)
     logger.debug("Identified NUMA nods: %s", numa_nodes)
     return numa_nodes
+
+
+def split_numa_nodes(numa_nodes: List[str]) -> List[str]:
+    """Split numa nodes in half"""
+    new_numa_nodes = []
+    for numa_node in numa_nodes:
+        if "," in numa_node:
+            ranges = numa_node.split(",")
+            mid = len(ranges) // 2
+            new_numa_nodes.append(",".join(ranges[:mid]))
+            new_numa_nodes.append(",".join(ranges[mid:]))
+        else:
+            start, end = map(int, numa_node.split("-"))
+            mid = (start + end) // 2
+            new_numa_nodes.append(f"{start}-{mid}")
+            new_numa_nodes.append(f"{mid + 1}-{end}")
+    return new_numa_nodes

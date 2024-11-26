@@ -46,6 +46,7 @@ from .util import (
     find_numa_nodes,
     library_preloaded,
     path_arg,
+    split_numa_nodes,
     tmp,
     total_memory,
 )
@@ -849,6 +850,8 @@ def dnascope(
     numa_nodes: List[str] = []
     if not no_split_alignment:
         numa_nodes = find_numa_nodes()
+        if len(numa_nodes) > 0 and cores / len(numa_nodes) > 48:
+            numa_nodes = split_numa_nodes(numa_nodes)
         if cores > 32 and numa_nodes:
             n_alignment_jobs = len(numa_nodes)
         else:
