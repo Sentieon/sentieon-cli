@@ -120,7 +120,10 @@ def check_shm(
         )
         total_input_size += total
 
-    shm_free = shutil.disk_usage("/dev/shm").free
+    try:
+        shm_free = shutil.disk_usage("/dev/shm").free
+    except Exception:
+        return None
     total_mem = total_memory()
 
     if (
