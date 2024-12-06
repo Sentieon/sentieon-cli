@@ -140,7 +140,7 @@ def find_numa_nodes() -> List[str]:
         if m:
             cpus = m.groupdict()["cpus"]
             numa_nodes.append(cpus)
-    logger.debug("Identified NUMA nods: %s", numa_nodes)
+    logger.debug("Identified NUMA nodes: %s", numa_nodes)
     return numa_nodes
 
 

@@ -550,7 +550,6 @@ def call_variants(
     driver = Driver(
         reference=reference,
         thread_count=cores,
-        interval=bed,
     )
     driver.add_algo(
         DNAModelApply(
