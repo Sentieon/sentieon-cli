@@ -35,7 +35,7 @@ class DAG:
                 )
 
         if isinstance(dependencies, set) and len(dependencies) > 0:
-            self.waiting_jobs[job] = dependencies
+            self.waiting_jobs[job] = dependencies.copy()
             for dependency in dependencies:
                 downstream = self.planned_jobs.setdefault(dependency, [])
                 downstream.append(job)

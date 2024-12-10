@@ -926,10 +926,12 @@ def dnascope_longread(
     realign_jobs: Set[Job] = set()
     if align:
         sample_input, realign_jobs = align_inputs(**locals())
-        map(dag.add_job, realign_jobs)
+        for job in realign_jobs:
+            dag.add_job(job)
     aligned_fastq, align_jobs = align_fastq(**locals())
     sample_input.extend(aligned_fastq)
-    map(dag.add_job, align_jobs)
+    for job in align_jobs:
+        dag.add_job(job)
 
     if not skip_mosdepth:
         mosdpeth_jobs = mosdepth(**locals())
