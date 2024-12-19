@@ -13,8 +13,9 @@ DNAscope LongRead is implemented using the Sentieon software package, which requ
 - [bcftools] version 1.10 or higher for SNV and indel calling.
 - [bedtools] for SNV and indel calling.
 - [samtools] version 1.16 or higher for alignment of read data in uBAM or uCRAM format or re-alignment of previously aligned reads.
+- [mosdepth] version 0.2.6 or higher for coverage metrics of long-read data.
 
-The `sentieon`, `python`, `bcftools`, `bedtools`, and `samtools` executables will be accessed through the user's `PATH` environment variable.
+The `sentieon`, `python`, `bcftools`, `bedtools`, `samtools`, and `mosdepth` executables will be accessed through the user's `PATH` environment variable.
 
 ## Input data requirements
 
@@ -141,6 +142,7 @@ The Python scripts in the `sentieon_cli/scripts` folder perform low-level manipu
 [Python]: https://www.python.org/
 [bcftools]: http://samtools.github.io/bcftools/bcftools.html
 [bedtools]: https://bedtools.readthedocs.io/en/latest/
+[mosdepth]: https://github.com/brentp/mosdepth
 [samtools]: https://www.htslib.org/
 [sentieon-models]: https://github.com/Sentieon/sentieon-models
 
