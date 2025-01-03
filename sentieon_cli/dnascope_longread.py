@@ -23,6 +23,7 @@ from .driver import (
     DNAscopeHP,
     DNAModelApply,
     LongReadSV,
+    ReadWriter,
     RepeatModel,
     VariantPhaser,
 )
@@ -62,6 +63,18 @@ FQ_MIN_VERSIONS = {
 
 MOSDEPTH_MIN_VERSIONS = {
     "mosdepth": packaging.version.Version("0.2.6"),
+}
+
+MERGE_MIN_VERSIONS = {
+    "sentieon driver": None,
+}
+
+PBSV_MIN_VERSIONS = {
+    "pbsv": packaging.version.Version("2.0.0"),
+}
+
+HIFICNV_MIN_VERSIONS = {
+    "hificnv": packaging.version.Version("1.0.0"),
 }
 
 
@@ -731,6 +744,105 @@ def mosdepth(
     return mosdpeth_jobs
 
 
+def merge_input_files(
+    tmp_dir: pathlib.Path,
+    reference: pathlib.Path,
+    sample_input: List[pathlib.Path],
+    cores: int = mp.cpu_count(),
+    skip_version_check: bool = False,
+    **kwargs: Any,
+) -> Tuple[pathlib.Path, Job]:
+    """
+    Merge the aligned reads into a single BAM
+    """
+    if not skip_version_check:
+        for cmd, min_version in MERGE_MIN_VERSIONS.items():
+            if not check_version(cmd, min_version):
+                sys.exit(2)
+
+    # Merge the sample_input into a single BAM
+    merged_bam = tmp_dir.joinpath("pbsv_merged.bam")
+    driver = Driver(
+        reference=reference,
+        thread_count=cores,
+        input=sample_input,
+    )
+    driver.add_algo(ReadWriter(merged_bam))
+    merge_job = Job(
+        shlex.join(driver.build_cmd()),
+        "pbsv-merge-bam",
+        0,
+    )
+    return (merged_bam, merge_job)
+
+
+def pbsv(
+    output_vcf: pathlib.Path,
+    reference: pathlib.Path,
+    merged_bam: pathlib.Path,
+    cores: int = mp.cpu_count(),
+    skip_version_check: bool = False,
+    **kwargs: Any,
+) -> Tuple[Job, Job]:
+    """
+    Call SVs with pbsv
+    """
+    if not skip_version_check:
+        for cmd, min_version in PBSV_MIN_VERSIONS.items():
+            if not check_version(cmd, min_version):
+                sys.exit(2)
+
+    # pbsv discover
+    pbsv_discover_fn = str(output_vcf).replace(
+        ".vcf.gz",
+        ".pbsv_discover.svsig.gz",
+    )
+    pbsv_discover = Job(
+        f"pbsv discover --hifi {merged_bam} {pbsv_discover_fn}",
+        "pbsv-discover",
+        0,
+    )
+
+    # pbsv call
+    pbsv_call_fn = str(output_vcf).replace(".vcf.gz", ".pbsv.vcf")
+    pbsv_call = Job(
+        f"pbsv call -j {cores} {reference} {pbsv_discover_fn} {pbsv_call_fn}",
+        "pbsv-call",
+        cores,
+    )
+    return (pbsv_discover, pbsv_call)
+
+
+def hificnv(
+    tmp_dir: pathlib.Path,
+    output_vcf: pathlib.Path,
+    cnv_excluded_regions: Optional[pathlib.Path],
+    reference: pathlib.Path,
+    merged_bam: pathlib.Path,
+    sample_input: List[pathlib.Path],
+    cores: int = mp.cpu_count(),
+    skip_version_check: bool = False,
+    **kwargs: Any,
+) -> Job:
+    """
+    Call CNVs with HiFiCNV
+    """
+    if not skip_version_check:
+        for cmd, min_version in HIFICNV_MIN_VERSIONS.items():
+            if not check_version(cmd, min_version):
+                sys.exit(2)
+
+    hifi_cnv_fn = str(output_vcf).replace(".vcf.gz", ".hificnv")
+    cmd = (
+        f"hificnv --bam {merged_bam} --ref {reference} --threads {cores} "
+        f"--output-prefix {hifi_cnv_fn}"
+    )
+    if cnv_excluded_regions:
+        cmd += f" --exclude {cnv_excluded_regions}"
+    hificnv_job = Job(cmd, "hificnv", cores)
+    return hificnv_job
+
+
 @arg(
     "-r",
     "--reference",
@@ -792,6 +904,11 @@ def mosdepth(
     type=path_arg(exists=True, is_file=True),
 )
 @arg(
+    "--cnv_excluded_regions",
+    help="Regions to exclude from CNV calling.",
+    type=path_arg(exists=True, is_file=True),
+)
+@arg(
     "-t",
     "--cores",
     help="Number of threads/processes to use. %(default)s",
@@ -823,6 +940,10 @@ def mosdepth(
 @arg(
     "--skip-mosdepth",
     help="Skip QC with mosdepth",
+)
+@arg(
+    "--skip-cnv",
+    help="Skip CNV calling",
 )
 @arg(
     "--align",
@@ -868,6 +989,11 @@ def mosdepth(
     help=argparse.SUPPRESS,
     action="store_true",
 )
+@arg(
+    "--use-pbsv",
+    help=argparse.SUPPRESS,
+    action="store_true",
+)
 def dnascope_longread(
     output_vcf: pathlib.Path,
     reference: Optional[pathlib.Path] = None,
@@ -878,6 +1004,7 @@ def dnascope_longread(
     dbsnp: Optional[pathlib.Path] = None,  # pylint: disable=W0613
     bed: Optional[pathlib.Path] = None,  # pylint: disable=W0613
     haploid_bed: Optional[pathlib.Path] = None,  # pylint: disable=W0613
+    cnv_excluded_regions: Optional[pathlib.Path] = None,
     cores: int = mp.cpu_count(),  # pylint: disable=W0613
     gvcf: bool = False,  # pylint: disable=W0613
     tech: str = "HiFi",  # pylint: disable=W0613
@@ -885,6 +1012,7 @@ def dnascope_longread(
     skip_small_variants: bool = False,
     skip_svs: bool = False,
     skip_mosdepth: bool = False,
+    skip_cnv: bool = False,
     align: bool = False,
     input_ref: Optional[pathlib.Path] = None,
     fastq_taglist: str = "*",  # pylint: disable=W0613
@@ -896,6 +1024,7 @@ def dnascope_longread(
     repeat_model: Optional[pathlib.Path] = None,  # pylint: disable=W0613
     skip_version_check: bool = False,  # pylint: disable=W0613
     retain_tmpdir: bool = False,
+    use_pbsv: bool = False,
     **kwargs: str,
 ):
     """
@@ -914,6 +1043,12 @@ def dnascope_longread(
         logger.warning(
             "jemalloc is recommended, but is not preloaded. See "
             "https://support.sentieon.com/appnotes/jemalloc/"
+        )
+
+    if not cnv_excluded_regions and not skip_cnv:
+        logger.warning(
+            "Excluded regions are recommended for CNV calling. Please supply "
+            "them with the `--cnv_excluded_regions` argument"
         )
 
     tmp_dir_str = tmp()
@@ -937,6 +1072,19 @@ def dnascope_longread(
         mosdpeth_jobs = mosdepth(**locals())
         for job in mosdpeth_jobs:
             dag.add_job(job, realign_jobs.union(align_jobs))
+
+    if use_pbsv or not skip_cnv:
+        merged_bam, merge_job = merge_input_files(**locals())
+        dag.add_job(merge_job, realign_jobs.union(align_jobs))
+
+        if use_pbsv:
+            pbsv_discover, pbsv_call = pbsv(**locals())
+            dag.add_job(pbsv_discover, {merge_job})
+            dag.add_job(pbsv_call, {pbsv_discover})
+
+        if not skip_cnv:
+            hificnv_job = hificnv(**locals())
+            dag.add_job(hificnv_job, {merge_job})
 
     if not skip_small_variants:
         (

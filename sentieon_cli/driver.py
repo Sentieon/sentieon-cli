@@ -235,6 +235,24 @@ class SVSolver(BaseAlgo):
         self.vcf = vcf
 
 
+class ReadWriter(BaseAlgo):
+    """algo ReadWriter"""
+
+    name = "ReadWriter"
+
+    def __init__(
+        self,
+        output: pathlib.Path,
+        bam_compression: Optional[int] = None,
+        cram_write_options: Optional[str] = None,
+        output_flag_filter: Optional[str] = None,
+    ):
+        self.output = output
+        bam_compression = bam_compression
+        cram_write_options = cram_write_options
+        output_flag_filter = output_flag_filter
+
+
 class InsertSizeMetricAlgo(BaseAlgo):
     """algo InsertSizeMetricAlgo"""
 
