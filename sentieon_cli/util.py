@@ -55,7 +55,7 @@ def check_version(
     elif cmd_list[0] == "pbsv":
         cmd_version_str = cmd_version_str.split(" ")[1]
     elif cmd_list[0] == "hificnv":
-        cmd_version_str = cmd_version_str.split(" ")[1].split('-')[0]
+        cmd_version_str = cmd_version_str.split(" ")[1].split("-")[0]
     else:
         # handle, e.g. bcftools which outputs multiple lines.
         cmd_version_str = (
