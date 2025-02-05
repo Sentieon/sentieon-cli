@@ -116,7 +116,8 @@ def grouper(*vcfs):
                 e = (v.pos+1 + len(v.info['RU'])*v.info['RPA'][0]
                     if v.info.get('STR') else v.end)
                 heapq.heappush(q, (v.pos, e, k, v, i))
-        yield (pos, grp, ovl)
+        if getattr(vcfs[0], "start", None) is None or pos >= vcfs[0].start:
+            yield (pos, grp, ovl)
         for k,v in ovl:
             if v and v.pos > pos:
                 e = (v.pos+1 + len(v.info['RU'])*v.info['RPA'][0]
