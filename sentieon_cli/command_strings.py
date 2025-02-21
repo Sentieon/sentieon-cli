@@ -538,6 +538,7 @@ def cmd_fastq_bwa(
         ]
         + bwa_args.split()
         + ["-K", bwa_k]
+        + (["-p"] if (r2 and split) else [])
         + [
             str(reference),
         ]
