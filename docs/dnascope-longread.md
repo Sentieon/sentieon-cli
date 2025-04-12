@@ -119,9 +119,6 @@ The following files are output when processing FASTQ data or uBAM, uCRAM, BAM, o
 - `sample_mm2_sorted_fq_*.cram`: aligned and coordinate-sorted reads from the input FASTQ files.
 - `sample_mm2_sorted_*.cram`: aligned and coordinate-sorted reads from the input uBAM, uCRAM, BAM, or CRAM files.
 
-With the `--haploid_bed HAPLOID_BED` argument, the pipeline will create the following additional output files:
-- `sample.haploid.vcf.gz`: SNV and indel variant calls across the haploid regions of the genome (as defined in the `--haploid_bed HAPLOID_BED` file).
-
 ## Other considerations
 
 ### Diploid and haploid variant calling
