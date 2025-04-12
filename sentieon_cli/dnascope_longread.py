@@ -365,7 +365,9 @@ def call_variants(
             thread_count=cores,
             input=sample_input,
             interval=phased_bed,
-            read_filter=f"PhasedReadFilter,phased_vcf={phased_ext},phase_select=tag",  # noqa: E501
+            read_filter=[
+                f"PhasedReadFilter,phased_vcf={phased_ext},phase_select=tag"
+            ],  # noqa: E501
         )
         driver.add_algo(
             RepeatModel(
@@ -395,10 +397,10 @@ def call_variants(
             thread_count=cores,
             input=sample_input,
             interval=phased_bed,
-            read_filter=(
+            read_filter=[
                 f"PhasedReadFilter,phased_vcf={phased_ext}"
                 f",phase_select={phase}"
-            ),
+            ],
         )
 
         if tech.upper() == "HIFI":
@@ -852,7 +854,7 @@ def hificnv(
 )
 @arg(
     "-i",
-    "--sample-input",
+    "--sample_input",
     nargs="*",
     help="sample BAM or CRAM file",
     type=path_arg(exists=True, is_file=True),
@@ -870,13 +872,13 @@ def hificnv(
 )
 @arg(
     "-m",
-    "--model-bundle",
+    "--model_bundle",
     help="The model bundle file",
     required=True,
     type=path_arg(exists=True, is_file=True),
 )
 @arg(
-    "output-vcf",
+    "output_vcf",
     help="Output VCF File. The file name must end in .vcf.gz",
     type=path_arg(),
 )
@@ -896,7 +898,7 @@ def hificnv(
     type=path_arg(exists=True, is_file=True),
 )
 @arg(
-    "--haploid-bed",
+    "--haploid_bed",
     help=(
         "A BED file of haploid regions. Supplying this file will perform "
         "haploid variant calling across these regions."
@@ -926,19 +928,19 @@ def hificnv(
     choices=["HiFi", "ONT"],
 )
 @arg(
-    "--dry-run",
+    "--dry_run",
     help="Print the commands without running them.",
 )
 @arg(
-    "--skip-small-variants",
+    "--skip_small_variants",
     help="Skip small variant (SNV/indel) calling",
 )
 @arg(
-    "--skip-svs",
+    "--skip_svs",
     help="Skip SV calling",
 )
 @arg(
-    "--skip-mosdepth",
+    "--skip_mosdepth",
     help="Skip QC with mosdepth",
 )
 @arg(
@@ -975,17 +977,17 @@ def hificnv(
     help="Extra arguments for sentieon util sort",
 )
 @arg(
-    "--repeat-model",
+    "--repeat_model",
     type=path_arg(exists=True, is_file=True),
     help=argparse.SUPPRESS,
 )
 @arg(
-    "--skip-version-check",
+    "--skip_version_check",
     help=argparse.SUPPRESS,
     action="store_true",
 )
 @arg(
-    "--retain-tmpdir",
+    "--retain_tmpdir",
     help=argparse.SUPPRESS,
     action="store_true",
 )

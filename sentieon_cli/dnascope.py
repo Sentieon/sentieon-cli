@@ -21,6 +21,8 @@ from .dag import DAG
 from .driver import (
     AlignmentStat,
     BaseDistributionByCycle,
+    CNVscope,
+    CNVModelApply,
     CoverageMetrics,
     Dedup,
     DNAModelApply,
@@ -46,7 +48,7 @@ from .util import (
     find_numa_nodes,
     library_preloaded,
     path_arg,
-    split_numa_nodes,
+    spit_alignment,
     tmp,
     total_memory,
 )
@@ -70,6 +72,73 @@ VARIANTS_MIN_VERSIONS = {
 MULTIQC_MIN_VERSION = {
     "multiqc": packaging.version.Version("1.18"),
 }
+
+CNV_MIN_VERSIONS = {
+    "sentieon driver": packaging.version.Version("202308.03"),
+}
+
+
+def set_bwt_max_mem(
+    bwt_max_mem_arg: Optional[str],
+    total_input_size: Optional[int],
+    n_alignment_jobs: int = 1,
+):
+    """Set the bwt_max_mem environment variable"""
+    if bwt_max_mem_arg:
+        os.environ["bwt_max_mem"] = bwt_max_mem_arg
+        return
+
+    total_input_size = total_input_size if total_input_size else 0
+    total_mem = total_memory()
+    total_mem_gb = total_mem / (1024.0**3)
+    align_mem_gb = (
+        total_mem_gb - 4 - total_input_size / (1024.0**3) * 2.3
+    )  # some memory for other system processes
+    bwa_mem_gb = max(
+        int((align_mem_gb / n_alignment_jobs) - 6), 0
+    )  # some memory for other alignment processes
+    logger.debug("Setting bwt_max_mem to: %sG", bwa_mem_gb)
+    os.environ["bwt_max_mem"] = f"{bwa_mem_gb}G"
+
+
+def check_shm(
+    sample_input: Optional[List[pathlib.Path]],
+    r1_fastq: Optional[List[pathlib.Path]],
+    r2_fastq: Optional[List[pathlib.Path]],
+    n_alignment_jobs: int,
+) -> Optional[int]:
+    """Check if /dev/shm can be used for temporary files"""
+    # Find the size of the largest input
+    total_input_size = 0
+    if sample_input:
+        total_input_size = sum([x.stat().st_size for x in sample_input])
+
+    r1_fastq_l = r1_fastq if r1_fastq else []
+    r2_fastq_l = r2_fastq if r2_fastq else []
+
+    for r1, r2 in itertools.zip_longest(r1_fastq_l, r2_fastq_l):
+        total = sum(
+            [
+                fq.stat().st_size
+                for fq in (r1, r2)
+                if isinstance(fq, pathlib.Path)
+            ]
+        )
+        total_input_size += total
+
+    try:
+        shm_free = shutil.disk_usage("/dev/shm").free
+    except Exception:
+        return None
+    total_mem = total_memory()
+
+    if (
+        shm_free > total_input_size * 2.3
+        and total_mem > total_input_size + 40 * 1024**3 * n_alignment_jobs
+    ):
+        logger.debug("Using /dev/shm for temporary files")
+        return total_input_size
+    return None
 
 
 def set_bwt_max_mem(
@@ -233,7 +302,7 @@ def align_fastq(
     """Align fastq files to the reference genome using bwa"""
     res: List[pathlib.Path] = []
     jobs: Set[Job] = set()
-    if r1_fastq is None and readgroups is None:
+    if not r1_fastq and not readgroups:
         return (res, jobs, None)
     if (not r1_fastq or not readgroups) or (len(r1_fastq) != len(readgroups)):
         logger.error(
@@ -613,6 +682,61 @@ def call_variants(
     )
 
 
+def call_cnvs(
+    tmp_dir: pathlib.Path,
+    output_vcf: pathlib.Path,
+    reference: pathlib.Path,
+    sample_input: List[pathlib.Path],
+    model_bundle: pathlib.Path,
+    bed: Optional[pathlib.Path] = None,
+    cores: int = mp.cpu_count(),
+    skip_version_check: bool = False,
+    **_kwargs: Any,
+) -> Tuple[Job, Job]:
+    """
+    Call CNVs using CNVscope
+    """
+    if not skip_version_check:
+        for cmd, min_version in CNV_MIN_VERSIONS.items():
+            if not check_version(cmd, min_version):
+                sys.exit(2)
+
+    cnvscope_vcf = tmp_dir.joinpath("cnvscope.vcf.gz")
+    cnv_vcf = pathlib.Path(str(output_vcf).replace(".vcf.gz", ".cnv.vcf.gz"))
+    driver = Driver(
+        reference=reference,
+        thread_count=cores,
+        input=sample_input,
+        interval=bed,
+    )
+    driver.add_algo(
+        CNVscope(
+            cnvscope_vcf,
+            model_bundle.joinpath("cnv.model"),
+        )
+    )
+    cnvscope_job = Job(shlex.join(driver.build_cmd()), "CNVscope", cores)
+
+    driver = Driver(
+        reference=reference,
+        thread_count=cores,
+    )
+    driver.add_algo(
+        CNVModelApply(
+            cnv_vcf,
+            model_bundle.joinpath("cnv.model"),
+            vcf=cnvscope_vcf,
+        )
+    )
+    cnvmodelapply_job = Job(
+        shlex.join(driver.build_cmd()),
+        "CNVModelApply",
+        cores,
+    )
+
+    return (cnvscope_job, cnvmodelapply_job)
+
+
 @arg(
     "-r",
     "--reference",
@@ -622,19 +746,19 @@ def call_variants(
 )
 @arg(
     "-i",
-    "--sample-input",
+    "--sample_input",
     nargs="*",
     help="sample BAM or CRAM file",
     type=path_arg(exists=True, is_file=True),
 )
 @arg(
-    "--r1-fastq",
+    "--r1_fastq",
     nargs="*",
     help="Sample R1 fastq files",
     type=path_arg(exists=True, is_file=True),
 )
 @arg(
-    "--r2-fastq",
+    "--r2_fastq",
     nargs="*",
     help="Sample R2 fastq files",
     type=path_arg(exists=True, is_file=True),
@@ -646,7 +770,7 @@ def call_variants(
 )
 @arg(
     "-m",
-    "--model-bundle",
+    "--model_bundle",
     help="The model bundle file",
     required=True,
     type=path_arg(exists=True, is_file=True),
@@ -681,7 +805,7 @@ def call_variants(
     help="Number of threads/processes to use. %(default)s",
 )
 @arg(
-    "--pcr-free",
+    "--pcr_free",
     help="Use arguments for PCR-free data processing",
     action="store_true",
 )
@@ -693,7 +817,7 @@ def call_variants(
     action="store_true",
 )
 @arg(
-    "--duplicate-marking",
+    "--duplicate_marking",
     help="Options for duplicate marking.",
     choices=["markdup", "rmdup", "none"],
 )
@@ -708,19 +832,19 @@ def call_variants(
     action="store_true",
 )
 @arg(
-    "--dry-run",
+    "--dry_run",
     help="Print the commands without running them.",
 )
 @arg(
-    "--skip-small-variants",
+    "--skip_small_variants",
     help="Skip small variant (SNV/indel) calling",
 )
 @arg(
-    "--skip-svs",
+    "--skip_svs",
     help="Skip SV calling",
 )
 @arg(
-    "--skip-multiqc",
+    "--skip_multiqc",
     help="Skip multiQC report generation",
 )
 @arg(
@@ -730,7 +854,7 @@ def call_variants(
     action="store_true",
 )
 @arg(
-    "--collate-align",
+    "--collate_align",
     help="Collate and align the reads in the input BAM/CRAM file to the "
     "reference genome. Suitable for coordinate-sorted BAM/CRAM input.",
     action="store_true",
@@ -759,7 +883,24 @@ def call_variants(
     help="Extra arguments for sentieon util sort",
 )
 @arg(
-    "--skip-version-check",
+    "--skip_version_check",
+    help=argparse.SUPPRESS,
+    action="store_true",
+)
+# Manually set `bwt_max_mem`
+@arg(
+    "--bwt_max_mem",
+    help=argparse.SUPPRESS,
+)
+# Do not use /dev/shm, even on high memory machines
+@arg(
+    "--no_ramdisk",
+    help=argparse.SUPPRESS,
+    action="store_true",
+)
+# Do not split alignment into multiple jobs
+@arg(
+    "--no_split_alignment",
     help=argparse.SUPPRESS,
     action="store_true",
 )
@@ -847,17 +988,11 @@ def dnascope(
                 "decoy and unplaced contigs."
             )
 
-    # split large alignment tasks into smaller tasks on large machines
     n_alignment_jobs = 1
     numa_nodes: List[str] = []
     if not no_split_alignment:
-        numa_nodes = find_numa_nodes()
-        if len(numa_nodes) > 0 and cores / len(numa_nodes) > 48:
-            numa_nodes = split_numa_nodes(numa_nodes)
-        if cores > 32 and numa_nodes:
-            n_alignment_jobs = len(numa_nodes)
-        else:
-            numa_nodes = []
+        numa_nodes = spit_alignment(cores)
+    n_alignment_jobs = max(1, len(numa_nodes))
 
     total_input_size = None
     if not no_ramdisk:

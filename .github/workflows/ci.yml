@@ -47,7 +47,7 @@ jobs:
       - name: Run mypy
         run: poetry run mypy . 
       - name: Run flake8
-        run: poetry run flake8 . --extend-ignore E231,E221, --exclude .github/scripts/license_message.py,sentieon_cli/scripts/gvcf_combine.py,sentieon_cli/scripts/vcf_mod.py # false+ from python 3.12
+        run: poetry run flake8 . --extend-ignore E231,E221, --exclude .github/scripts/license_message.py,sentieon_cli/scripts/gvcf_combine.py,sentieon_cli/scripts/vcf_mod.py,sentieon_cli/scripts/hybrid_anno.py,sentieon_cli/scripts/hybrid_select.py # false+ from python 3.12
       - name: Run the automated tests
         run: poetry run pytest -v
       - name: Run doct tests

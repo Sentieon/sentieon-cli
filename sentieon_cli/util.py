@@ -6,16 +6,17 @@ import argparse
 import os
 import pathlib
 import re
+import shlex
 import shutil
 import subprocess as sp
 import tempfile
-from typing import Callable, List, Optional
+from typing import Callable, Dict, List, Optional
 
 import packaging.version
 
 from .logging import get_logger
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 logger = get_logger(__name__)
 
@@ -23,6 +24,7 @@ PRELOAD_SEP = r":| "
 PRELOAD_SEP_PAT = re.compile(PRELOAD_SEP)
 
 NUMA_NODE_PAT = re.compile(r"^NUMA node. CPU\(s\):\s+(?P<cpus>.*)$")
+READ_LENGTH_PAT = re.compile(r"SN\taverage length:\t(?P<length>\d*)$")
 
 
 def tmp():
@@ -163,3 +165,62 @@ def split_numa_nodes(numa_nodes: List[str]) -> List[str]:
             new_numa_nodes.append(f"{start}-{mid}")
             new_numa_nodes.append(f"{mid + 1}-{end}")
     return new_numa_nodes
+
+
+def spit_alignment(cores: int) -> List[str]:
+    """split large alignment tasks into smaller parts on large machines"""
+    numa_nodes = find_numa_nodes()
+    while len(numa_nodes) > 0 and cores / len(numa_nodes) >= 48:
+        numa_nodes = split_numa_nodes(numa_nodes)
+    if cores > 32 and numa_nodes:
+        return numa_nodes
+    else:
+        return []
+
+
+def parse_rg_line(rg_line: str) -> Dict[str, str]:
+    """Parse an @RG line"""
+    tags = rg_line.split("\t")[1:]
+    return {tag.split(":", 1)[0]: tag.split(":", 1)[1] for tag in tags}
+
+
+def get_read_length_aln(
+    aln: pathlib.Path,
+    reference: pathlib.Path,
+    n_reads: int = 100000,
+) -> int:
+    """Get the average read length for an alignment file"""
+    cmds = []
+    cmds.append(
+        [
+            "samtools",
+            "view",
+            "-h",
+            "--reference",
+            shlex.quote(str(reference)),
+            shlex.quote(str(aln)),
+        ]
+    )
+    cmds.append(
+        [
+            "head",
+            "-n",
+            str(n_reads),
+        ]
+    )
+    cmds.append(["samtools", "stats", "-"])
+    all_cmds = [shlex.join(x) for x in cmds]
+    cmd = " | ".join(all_cmds)
+    res = sp.run(
+        cmd,
+        shell=True,
+        capture_output=True,
+        text=True,
+        executable="/bin/bash",
+    )
+
+    for line in res.stdout.split("\n"):
+        m = READ_LENGTH_PAT.match(line)
+        if m:
+            return int(m.groupdict()["length"])
+    return 151

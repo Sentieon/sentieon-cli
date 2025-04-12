@@ -9,6 +9,8 @@ import shlex
 import subprocess as sp
 import typing
 from typing import Any, Optional, List, Dict
+
+from .driver import BaseDriver
 from .logging import get_logger
 
 logger = get_logger(__name__)
@@ -35,7 +37,72 @@ def cmd_bedtools_subtract(
         "-b",
         str(phased_bed),
     ]
-    return shlex.join(cmd) + ">" + shlex.quote(str(unphased_bed))
+    return shlex.join(cmd) + " > " + shlex.quote(str(unphased_bed))
+
+
+def cmd_bedtools_merge(
+    in_bed: pathlib.Path,
+    out_bed: pathlib.Path,
+    distance: int = 0,
+) -> str:
+    """Bedtools merge"""
+    cmd = [
+        "bedtools",
+        "merge",
+        "-d",
+        str(distance),
+        "-i",
+        str(in_bed),
+    ]
+    return shlex.join(cmd) + " > " + shlex.quote(str(out_bed))
+
+
+def cmd_bedtools_slop(
+    in_bed: pathlib.Path,
+    out_bed: pathlib.Path,
+    ref_fai: pathlib.Path,
+    slop_size: int = 0,
+) -> str:
+    """Bedtools slop"""
+    cmd = [
+        "bedtools",
+        "slop",
+        "-b",
+        str(slop_size),
+        "-g",
+        str(ref_fai),
+        "-i",
+        str(in_bed),
+    ]
+    return shlex.join(cmd) + " > " + shlex.quote(str(out_bed))
+
+
+def cmd_bedtools_cat_sort_merge(
+    out_bed: pathlib.Path,
+    in_bed: List[pathlib.Path],
+    ref_fai: pathlib.Path,
+) -> str:
+    """Concat, sort and merge multiple BEDs"""
+    cmds = []
+    cmds.append(["cat"] + [shlex.quote(str(x)) for x in in_bed])
+    cmds.append(
+        [
+            "bedtools",
+            "sort",
+            "-faidx",
+            str(ref_fai),
+            "-i",
+            "-",
+        ]
+    )
+    cmds.append(
+        [
+            "bedtools",
+            "merge",
+        ]
+    )
+    all_cmds = [shlex.join(x) for x in cmds]
+    return " | ".join(all_cmds) + " > " + shlex.quote(str(out_bed))
 
 
 def name(path: typing.Union[str, io.TextIOWrapper, pathlib.Path]) -> str:
@@ -197,6 +264,191 @@ def cmd_pyexec_vcf_mod_haploid_patch2(
     return shlex.join(cmd)
 
 
+def cmd_pyexec_hybrid_select(
+    out_bed: pathlib.Path,
+    vcf: pathlib.Path,
+    ref_fai: pathlib.Path,
+    hybrid_select: pathlib.Path,
+    threads: int,
+    slop_size: int = 1000,
+) -> str:
+    cmds = []
+    cmds.append(
+        [
+            "sentieon",
+            "pyexec",
+            str(hybrid_select),
+            "-v",
+            str(vcf),
+            "-t",
+            str(threads),
+            "-",
+        ]
+    )
+    cmds.append(
+        [
+            "bcftools",
+            "view",
+            "-f",
+            "PASS,.",
+            "-",
+        ]
+    )
+    cmds.append(
+        [
+            "bcftools",
+            "query",
+            "-f",
+            "%CHROM\\t%POS0\\t%END\\n",
+            "-",
+        ]
+    )
+    cmds.append(
+        [
+            "bedtools",
+            "slop",
+            "-b",
+            str(slop_size),
+            "-g",
+            str(ref_fai),
+            "-i",
+            "-",
+        ]
+    )
+    return " | ".join([shlex.join(x) for x in cmds]) + " > " + str(out_bed)
+
+
+def cmd_pyexec_hybrid_anno(
+    out_vcf: pathlib.Path,
+    vcf: pathlib.Path,
+    bed: pathlib.Path,
+    hybrid_anno: pathlib.Path,
+    threads: int,
+) -> str:
+    cmd = [
+        "sentieon",
+        "pyexec",
+        str(hybrid_anno),
+        "-v",
+        str(vcf),
+        "-b",
+        str(bed),
+        "-t",
+        str(threads),
+        str(out_vcf),
+    ]
+    return shlex.join(cmd)
+
+
+def hybrid_stage1(
+    out_aln: pathlib.Path,
+    reference: pathlib.Path,
+    cores: int,
+    readgroup: str,
+    nocoor_driver: Optional[BaseDriver],
+    ins_driver: BaseDriver,
+    stage1_driver: BaseDriver,
+    bwa_args: str = "-M -h 200 -y 200 -K 10000000",
+) -> str:
+    unset_cmd = ["unset", "bwt_max_mem"]
+    fq_cmds = []
+    fq_cmds.append(shlex.join(stage1_driver.build_cmd()))
+    if nocoor_driver:
+        fq_cmds.append(shlex.join(nocoor_driver.build_cmd()))
+    fq_cmds.append(shlex.join(ins_driver.build_cmd()))
+
+    aln_cmds = []
+    aln_cmds.append(
+        [
+            "sentieon",
+            "bwa",
+            "mem",
+            "-R",
+            readgroup,
+            "-t",
+            str(cores),
+        ]
+        + bwa_args.split()
+        + [
+            str(reference),
+            "-",
+        ]
+    )
+    aln_cmds.append(
+        [
+            "sentieon",
+            "util",
+            "sort",
+            "-i",
+            "-",
+            "-t",
+            str(cores),
+            "-o",
+            str(out_aln),
+            "--sam2bam",
+        ]
+    )
+
+    return (
+        shlex.join(unset_cmd)
+        + "; ("
+        + "; ".join(fq_cmds)
+        + ") | "
+        + " | ".join(shlex.join(x) for x in aln_cmds)
+    )
+
+
+def hybrid_stage3(
+    out_bam: pathlib.Path,
+    driver: BaseDriver,
+    cores: int,
+) -> str:
+    cmds = []
+    cmds.append(driver.build_cmd())
+    cmds.append(
+        [
+            "sentieon",
+            "util",
+            "sort",
+            "-i",
+            "-",
+            "-t",
+            str(cores),
+            "-o",
+            str(out_bam),
+        ]
+    )
+    return " | ".join([shlex.join(x) for x in cmds])
+
+
+def bcftools_subset(
+    out_vcf: pathlib.Path,
+    mix_vcf: pathlib.Path,
+    regions_bed: pathlib.Path,
+) -> str:
+    """Subset a vcf with bcftools"""
+    cmds = []
+    cmds.append(
+        [
+            "bcftools",
+            "view",
+            "-T",
+            "^" + str(regions_bed),
+            str(mix_vcf),
+        ]
+    )
+    cmds.append(
+        [
+            "sentieon",
+            "util",
+            "vcfconvert",
+            "-",
+            str(out_vcf),
+        ]
+    )
+    return " | ".join([shlex.join(x) for x in cmds])
+
+
 def bcftools_concat(
     out_vcf: pathlib.Path,
     in_vcfs: List[pathlib.Path],
@@ -210,6 +462,48 @@ def bcftools_concat(
             "-aD",
         ]
         + [str(x) for x in in_vcfs]
+    )
+    cmds.append(
+        [
+            "sentieon",
+            "util",
+            "vcfconvert",
+            "-",
+            str(out_vcf),
+        ]
+    )
+    return " | ".join([shlex.join(x) for x in cmds])
+
+
+def filter_norm(
+    out_vcf: pathlib.Path,
+    in_vcf: pathlib.Path,
+    reference: pathlib.Path,
+    exclude_homref: bool = True,
+) -> str:
+    """Trim and normalize"""
+    cmds = []
+    cmd = [
+        "bcftools",
+        "view",
+        "-a",
+    ]
+    if exclude_homref:
+        cmd.extend(
+            [
+                "-e",
+                'GT="0/0"',
+            ]
+        )
+    cmd.append(str(in_vcf))
+    cmds.append(cmd)
+    cmds.append(
+        [
+            "bcftools",
+            "norm",
+            "-f",
+            str(reference),
+        ]
     )
     cmds.append(
         [

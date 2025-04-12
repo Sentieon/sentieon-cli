@@ -375,8 +375,144 @@ class WgsMetricsAlgo(BaseAlgo):
         self.include_unpaired = include_unpaired
 
 
-class Driver:
-    """Representing the Sentieon driver"""
+class HybridStage1(BaseAlgo):
+    """algo HybridStage1"""
+
+    name = "HybridStage1"
+
+    def __init__(
+        self,
+        output: Union[pathlib.Path, str],
+        model: Optional[pathlib.Path] = None,
+        fa_file: Optional[pathlib.Path] = None,
+        bed_file: Optional[pathlib.Path] = None,
+        cut_indel: Optional[int] = None,
+        hap_bam: Optional[pathlib.Path] = None,
+        hap_bed: Optional[pathlib.Path] = None,
+        cut_len: Optional[int] = None,
+        split_size: Optional[int] = None,
+        split_overlap: Optional[int] = None,
+        hap_vcf: Optional[pathlib.Path] = None,
+        kmer_missing_rate: Optional[float] = None,
+        mk_avg_bq: Optional[int] = None,
+        prune_factor: Optional[int] = None,
+        mk_max_init_hapcnt: Optional[int] = None,
+        ploidy: Optional[int] = None,
+    ):
+        self.output = output
+        self.model = model
+        self.fa_file = fa_file
+        self.bed_file = bed_file
+        self.cut_indel = cut_indel
+        self.hap_bam = hap_bam
+        self.hap_bed = hap_bed
+        self.cut_len = cut_len
+        self.split_size = split_size
+        self.split_overlap = split_overlap
+        self.hap_vcf = hap_vcf
+        self.kmer_missing_rate = kmer_missing_rate
+        self.mk_avg_bq = mk_avg_bq
+        self.prune_factor = prune_factor
+        self.mk_max_init_hapcnt = mk_max_init_hapcnt
+        self.ploidy = ploidy
+
+
+class HybridStage2(BaseAlgo):
+    """algo HybridStage2"""
+
+    name = "HybridStage2"
+
+    def __init__(
+        self,
+        all_bed: pathlib.Path,
+        out_bed: Optional[pathlib.Path] = None,
+        model: Optional[pathlib.Path] = None,
+        mode: Optional[str] = None,
+        debug: Optional[str] = None,
+        hap_bed: Optional[pathlib.Path] = None,
+        unmap_bam: Optional[pathlib.Path] = None,
+        alt_bam: Optional[pathlib.Path] = None,
+        min_kmer_size: Optional[int] = None,
+        prune_factor: Optional[int] = None,
+        target_extension: Optional[int] = None,
+    ):
+        self.out_bed = out_bed
+        self.model = model
+        self.mode = mode
+        self.debug = debug
+        self.all_bed = all_bed
+        self.hap_bed = hap_bed
+        self.unmap_bam = unmap_bam
+        self.alt_bam = alt_bam
+        self.min_kmer_size = min_kmer_size
+        self.prune_factor = prune_factor
+        self.target_extension = target_extension
+
+
+class HybridStage3(BaseAlgo):
+    """algo HybridStage3"""
+
+    name = "HybridStage3"
+
+    def __init__(
+        self,
+        output: Union[pathlib.Path, str],
+        model: Optional[pathlib.Path] = None,
+        region_ext: Optional[int] = 1000,
+    ):
+        self.output = output
+        self.model = model
+        region_ext = region_ext
+
+
+class ReadWriter(BaseAlgo):
+    """algo ReadWriter"""
+
+    name = "ReadWriter"
+
+    def __init__(
+        self,
+        output: pathlib.Path,
+        cram_write_options: Optional[str] = None,
+        bam_compression: int = 6,
+    ):
+        self.output = output
+        self.cram_write_options = cram_write_options
+        self.bam_compression = bam_compression
+
+
+class CNVscope(BaseAlgo):
+    """algo CNVscope"""
+
+    name = "CNVscope"
+
+    def __init__(
+        self,
+        output: Union[pathlib.Path, str],
+        model: pathlib.Path,
+    ):
+        self.output = output
+        self.model = model
+
+
+class CNVModelApply(BaseAlgo):
+    """algo CNVModelApply"""
+
+    name = "CNVModelApply"
+
+    def __init__(
+        self,
+        output: Union[pathlib.Path, str],
+        model: pathlib.Path,
+        vcf: pathlib.Path,
+    ):
+        self.output = output
+        self.model = model
+        self.vcf = vcf
+
+
+class BaseDriver:
+    """A base class for the Sentieon driver"""
 
     def __init__(
         self,
@@ -384,10 +520,11 @@ class Driver:
         thread_count: Optional[int] = None,
         interval: Optional[Union[pathlib.Path, str]] = None,
         interval_padding: int = 0,
-        read_filter: Optional[str] = None,
+        read_filter: Optional[List[str]] = None,
         input: Optional[List[pathlib.Path]] = None,
         algo: Optional[List[BaseAlgo]] = None,
     ):
+        self._name = "Unset"
         self.reference = reference
         self.input = input
         self.thread_count = thread_count
@@ -402,10 +539,12 @@ class Driver:
 
     def build_cmd(self) -> List[str]:
         """Build a command line for the driver"""
-        cmd: List[str] = ["sentieon", "driver"]
+        cmd: List[str] = ["sentieon", self._name]
 
         for k, v in self.__dict__.items():
             if k == "algo":
+                continue
+            elif k.startswith("_"):
                 continue
             elif v is None:
                 continue
@@ -424,3 +563,11 @@ class Driver:
             cmd.extend(algo.build_cmd())
 
         return cmd
+
+
+class Driver(BaseDriver):
+    """Representing the Sentieon driver"""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._name = "driver"
