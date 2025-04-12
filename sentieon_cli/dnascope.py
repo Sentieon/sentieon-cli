@@ -45,7 +45,6 @@ from .scheduler import ThreadScheduler
 from .util import (
     __version__,
     check_version,
-    find_numa_nodes,
     library_preloaded,
     path_arg,
     spit_alignment,
@@ -76,69 +75,6 @@ MULTIQC_MIN_VERSION = {
 CNV_MIN_VERSIONS = {
     "sentieon driver": packaging.version.Version("202308.03"),
 }
-
-
-def set_bwt_max_mem(
-    bwt_max_mem_arg: Optional[str],
-    total_input_size: Optional[int],
-    n_alignment_jobs: int = 1,
-):
-    """Set the bwt_max_mem environment variable"""
-    if bwt_max_mem_arg:
-        os.environ["bwt_max_mem"] = bwt_max_mem_arg
-        return
-
-    total_input_size = total_input_size if total_input_size else 0
-    total_mem = total_memory()
-    total_mem_gb = total_mem / (1024.0**3)
-    align_mem_gb = (
-        total_mem_gb - 4 - total_input_size / (1024.0**3) * 2.3
-    )  # some memory for other system processes
-    bwa_mem_gb = max(
-        int((align_mem_gb / n_alignment_jobs) - 6), 0
-    )  # some memory for other alignment processes
-    logger.debug("Setting bwt_max_mem to: %sG", bwa_mem_gb)
-    os.environ["bwt_max_mem"] = f"{bwa_mem_gb}G"
-
-
-def check_shm(
-    sample_input: Optional[List[pathlib.Path]],
-    r1_fastq: Optional[List[pathlib.Path]],
-    r2_fastq: Optional[List[pathlib.Path]],
-    n_alignment_jobs: int,
-) -> Optional[int]:
-    """Check if /dev/shm can be used for temporary files"""
-    # Find the size of the largest input
-    total_input_size = 0
-    if sample_input:
-        total_input_size = sum([x.stat().st_size for x in sample_input])
-
-    r1_fastq_l = r1_fastq if r1_fastq else []
-    r2_fastq_l = r2_fastq if r2_fastq else []
-
-    for r1, r2 in itertools.zip_longest(r1_fastq_l, r2_fastq_l):
-        total = sum(
-            [
-                fq.stat().st_size
-                for fq in (r1, r2)
-                if isinstance(fq, pathlib.Path)
-            ]
-        )
-        total_input_size += total
-
-    try:
-        shm_free = shutil.disk_usage("/dev/shm").free
-    except Exception:
-        return None
-    total_mem = total_memory()
-
-    if (
-        shm_free > total_input_size * 2.3
-        and total_mem > total_input_size + 40 * 1024**3 * n_alignment_jobs
-    ):
-        logger.debug("Using /dev/shm for temporary files")
-        return total_input_size
-    return None
 
 
 def set_bwt_max_mem(

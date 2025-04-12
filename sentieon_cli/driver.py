@@ -465,22 +465,6 @@ class HybridStage3(BaseAlgo):
         region_ext = region_ext
 
 
-class ReadWriter(BaseAlgo):
-    """algo ReadWriter"""
-
-    name = "ReadWriter"
-
-    def __init__(
-        self,
-        output: pathlib.Path,
-        cram_write_options: Optional[str] = None,
-        bam_compression: int = 6,
-    ):
-        self.output = output
-        self.cram_write_options = cram_write_options
-        self.bam_compression = bam_compression
-
-
 class CNVscope(BaseAlgo):
     """algo CNVscope"""
 
