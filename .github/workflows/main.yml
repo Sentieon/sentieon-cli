@@ -19,7 +19,7 @@ jobs:
       matrix:
         python-version: ["3.8", "3.12"]
         poetry-version: ["1.5.1"]
-        sentieon-version: ["202308.01", "202308.03"]
+        sentieon-version: ["202308.01", "202503"]
         os: [ubuntu-22.04] #, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
@@ -113,6 +113,7 @@ jobs:
             --repeat-model tests/smoke/sample_repeat.model -g \
             -b "tests/smoke/diploid.bed" \
             --haploid-bed "tests/smoke/haploid.bed" \
+            --skip-cnv \
             "output hifi.vcf.gz"
           sentieon driver -r "tests/smoke/r ef.fa" -t 1 --algo GVCFtyper \
             -v "output hifi.g.vcf.gz" output_hifi_gvcftyper.vcf.gz
@@ -124,7 +125,8 @@ jobs:
           . .venv/bin/activate
           sentieon-cli -v dnascope-longread --tech ONT -t 1 -r "tests/smoke/r ef.fa" \
             -i "tests/smoke/sam ple.cram" -m "DNAscope PacBio2.1.bundle" \
-            --repeat-model tests/smoke/sample_repeat.model -g "output ont.vcf.gz"
+            --repeat-model tests/smoke/sample_repeat.model --skip-cnv -g \
+            "output ont.vcf.gz"
           sentieon driver -r "tests/smoke/r ef.fa" -t 1 --algo GVCFtyper \
             -v "output ont.g.vcf.gz" output_hifi_gvcftyper.vcf.gz
           if [ ! -f "output ont.sv.vcf.gz" ]; then
@@ -136,7 +138,7 @@ jobs:
           sentieon-cli -v dnascope-longread -t 1 -r "tests/smoke/r ef.fa" \
             -i "tests/smoke/sam ple.cram" -m "DNAscope PacBio2.1.bundle" \
             --repeat-model tests/smoke/sample_repeat.model --align \
-            --input_ref "tests/smoke/r ef.fa" "output realigned.vcf.gz"
+            --input_ref "tests/smoke/r ef.fa" --skip-cnv "output realigned.vcf.gz"
           if [ ! -f "output realigned.vcf.gz" -o ! -f "output realigned_mm2_sorted_0.cram" ]; then
             exit 1
           fi
@@ -149,7 +151,8 @@ jobs:
           sentieon-cli -v dnascope-longread -t 1 -r "tests/smoke/r ef.fa" \
             --fastq sample.fq.gz --readgroups '@RG\tID:sample-1\tSM:sample' \
             -m "DNAscope PacBio2.1.bundle" \
-            --repeat-model tests/smoke/sample_repeat.model "output fq.vcf.gz"
+            --repeat-model tests/smoke/sample_repeat.model --skip-cnv \
+            "output fq.vcf.gz"
           if [ ! -f "output fq.vcf.gz" -o ! -f "output fq_mm2_sorted_fq_0.cram" -o ! -f "output fq.sv.vcf.gz" ]; then
             exit 1
           fi
