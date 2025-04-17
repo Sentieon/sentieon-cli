@@ -1,11 +1,9 @@
-import argh
-
-from . import dnascope, dnascope_longread
+from . import argh_parser, dnascope, dnascope_hybrid, dnascope_longread
 
 
 def main():
     """main entry point for this project"""
-    parser = argh.ArghParser()
+    parser = argh_parser.CustomArghParser()
     parser.add_argument(
         "-v",
         "--verbose",
@@ -28,6 +26,7 @@ def main():
         [
             dnascope.dnascope,
             dnascope_longread.dnascope_longread,
+            dnascope_hybrid.dnascope_hybrid,
         ]
     )
     parser.dispatch()

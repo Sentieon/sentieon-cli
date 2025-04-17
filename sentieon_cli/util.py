@@ -6,21 +6,25 @@ import argparse
 import os
 import pathlib
 import re
+import shlex
 import shutil
 import subprocess as sp
 import tempfile
-from typing import Callable, List, Optional
+from typing import Callable, Dict, List, Optional
 
 import packaging.version
 
 from .logging import get_logger
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 logger = get_logger(__name__)
 
 PRELOAD_SEP = r":| "
 PRELOAD_SEP_PAT = re.compile(PRELOAD_SEP)
+
+NUMA_NODE_PAT = re.compile(r"^NUMA node. CPU\(s\):\s+(?P<cpus>.*)$")
+READ_LENGTH_PAT = re.compile(r"SN\taverage length:\t(?P<length>\d*)$")
 
 
 def tmp():
@@ -50,6 +54,10 @@ def check_version(
     )
     if cmd_list[0] == "sentieon":
         cmd_version_str = cmd_version_str.split("-")[-1]
+    elif cmd_list[0] == "pbsv":
+        cmd_version_str = cmd_version_str.split(" ")[1]
+    elif cmd_list[0] == "hificnv":
+        cmd_version_str = cmd_version_str.split(" ")[1].split("-")[0]
     else:
         # handle, e.g. bcftools which outputs multiple lines.
         cmd_version_str = (
@@ -106,3 +114,113 @@ def library_preloaded(library_name: str) -> bool:
         if library_name in lib_base:
             return True
     return False
+
+
+def total_memory() -> int:
+    """The total memory accounting for cgroup limits"""
+    total_mem = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+
+    # Attempt to find cgroup limits
+    cgroup_mem_limit = 10000 * 1024**3
+    cgroup_files = [
+        "/sys/fs/cgroup/memory.max",
+        "/sys/fs/cgroup/memory/memory.limit_in_bytes",
+    ]
+    for cgroup_file_s in cgroup_files:
+        cgroup_file = pathlib.Path(cgroup_file_s)
+        if cgroup_file.is_file():
+            try:
+                cgroup_mem_limit = int(open(cgroup_file).read().rstrip())
+            except Exception:
+                pass
+    total_mem = min(total_mem, cgroup_mem_limit)
+    return total_mem
+
+
+def find_numa_nodes() -> List[str]:
+    """Find NUMA nodes on the system, if available"""
+    res = sp.run("lscpu", capture_output=True, text=True)
+    numa_nodes = []
+    for line in res.stdout.split("\n"):
+        m = NUMA_NODE_PAT.match(line)
+        if m:
+            cpus = m.groupdict()["cpus"]
+            numa_nodes.append(cpus)
+    logger.debug("Identified NUMA nodes: %s", numa_nodes)
+    return numa_nodes
+
+
+def split_numa_nodes(numa_nodes: List[str]) -> List[str]:
+    """Split numa nodes in half"""
+    new_numa_nodes = []
+    for numa_node in numa_nodes:
+        if "," in numa_node:
+            ranges = numa_node.split(",")
+            mid = len(ranges) // 2
+            new_numa_nodes.append(",".join(ranges[:mid]))
+            new_numa_nodes.append(",".join(ranges[mid:]))
+        else:
+            start, end = map(int, numa_node.split("-"))
+            mid = (start + end) // 2
+            new_numa_nodes.append(f"{start}-{mid}")
+            new_numa_nodes.append(f"{mid + 1}-{end}")
+    return new_numa_nodes
+
+
+def spit_alignment(cores: int) -> List[str]:
+    """split large alignment tasks into smaller parts on large machines"""
+    numa_nodes = find_numa_nodes()
+    while len(numa_nodes) > 0 and cores / len(numa_nodes) >= 48:
+        numa_nodes = split_numa_nodes(numa_nodes)
+    if cores > 32 and numa_nodes:
+        return numa_nodes
+    else:
+        return []
+
+
+def parse_rg_line(rg_line: str) -> Dict[str, str]:
+    """Parse an @RG line"""
+    tags = rg_line.split("\t")[1:]
+    return {tag.split(":", 1)[0]: tag.split(":", 1)[1] for tag in tags}
+
+
+def get_read_length_aln(
+    aln: pathlib.Path,
+    reference: pathlib.Path,
+    n_reads: int = 100000,
+) -> int:
+    """Get the average read length for an alignment file"""
+    cmds = []
+    cmds.append(
+        [
+            "samtools",
+            "view",
+            "-h",
+            "--reference",
+            shlex.quote(str(reference)),
+            shlex.quote(str(aln)),
+        ]
+    )
+    cmds.append(
+        [
+            "head",
+            "-n",
+            str(n_reads),
+        ]
+    )
+    cmds.append(["samtools", "stats", "-"])
+    all_cmds = [shlex.join(x) for x in cmds]
+    cmd = " | ".join(all_cmds)
+    res = sp.run(
+        cmd,
+        shell=True,
+        capture_output=True,
+        text=True,
+        executable="/bin/bash",
+    )
+
+    for line in res.stdout.split("\n"):
+        m = READ_LENGTH_PAT.match(line)
+        if m:
+            return int(m.groupdict()["length"])
+    return 151
