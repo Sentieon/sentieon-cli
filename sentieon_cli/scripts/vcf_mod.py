@@ -706,7 +706,7 @@ def join2(f0, f1, f2, v0, v1, v2, pos, bed):
                 pl = [min(d1[i]+d2[j],d1[j]+d2[i]) for i,j in gt]
                 if v0 and v0.samples[0].get(k):
                     s = v0.samples[0].get(k)
-                    d0 = [infty if i < 0 or j < 0 else s[j*(j+1)/2+i]
+                    d0 = [infty if i < 0 or j < 0 else s[j*(j+1)//2+i]
                         for i,j in (sorted((m0[i],m0[j])) for i,j in gt)]
                     pl = [e if e < infty else f for e,f in zip(pl,d0)]
                 mx = sorted(e for e in pl if e < infty)

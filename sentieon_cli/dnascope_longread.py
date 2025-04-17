@@ -1009,7 +1009,7 @@ def dnascope_longread(
     cnv_excluded_regions: Optional[pathlib.Path] = None,
     cores: int = mp.cpu_count(),  # pylint: disable=W0613
     gvcf: bool = False,  # pylint: disable=W0613
-    tech: str = "HiFi",  # pylint: disable=W0613
+    tech: str = "HiFi",
     dry_run: bool = False,
     skip_small_variants: bool = False,
     skip_svs: bool = False,
@@ -1040,6 +1040,9 @@ def dnascope_longread(
     assert logger.parent
     logger.parent.setLevel(kwargs["loglevel"])
     logger.info("Starting sentieon-cli version: %s", __version__)
+
+    if tech.upper() == "ONT":
+        skip_cnv = True
 
     if not library_preloaded("libjemalloc.so"):
         logger.warning(
