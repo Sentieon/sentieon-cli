@@ -842,18 +842,18 @@ def call_cnvs(
 )
 # Manually set `bwt_max_mem`
 @arg(
-    "--bwt-max-mem",
+    "--bwt_max_mem",
     help=argparse.SUPPRESS,
 )
 # Do not use /dev/shm, even on high memory machines
 @arg(
-    "--no-ramdisk",
+    "--no_ramdisk",
     help=argparse.SUPPRESS,
     action="store_true",
 )
 # Do not split alignment into multiple jobs
 @arg(
-    "--no-split-alignment",
+    "--no_split_alignment",
     help=argparse.SUPPRESS,
     action="store_true",
 )
