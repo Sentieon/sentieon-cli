@@ -24,7 +24,7 @@ The DNAscope Hybrid pipeline is implemented using the Sentieon software package,
 - [bcftools] version 1.10 or higher.
 - [bedtools]
 - [MultiQC] version 1.18 or higher for metrics report generation.
-- [samtools] version 1.16 or higher for alignment of reads in uBAM or uCRAM format or re-alignment of previously aligned reads.
+- [samtools] version 1.16 or higher.
 - [mosdepth] version 0.2.6 or higher for coverage metrics collection from long-read data.
 
 The `sentieon`, `python`, `bcftools`, `bedtools`, `samtools`, `multiqc`, and `mosdepth` executables will be accessed through the user's `PATH` environment variable.
