@@ -776,6 +776,8 @@ def dnascope_hybrid(
         pass
     if not longread_tech:
         longread_tech = longread_tech_cli
+    if not shortread_tech:
+        shortread_tech = "Illumina"
 
     # Confirm that all readgroups have the same RGSM
     hybrid_rg_sm = ""
