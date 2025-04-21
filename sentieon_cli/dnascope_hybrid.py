@@ -6,6 +6,7 @@ import argparse
 from contextlib import contextmanager
 import multiprocessing as mp
 import os
+import json
 import pathlib
 import shlex
 import shutil
@@ -17,6 +18,7 @@ import packaging.version
 from argh import arg, CommandError
 from importlib_resources import files
 
+from .archive import ar_load
 from . import command_strings as cmds
 from .dag import DAG
 from .driver import (
@@ -87,6 +89,7 @@ def call_variants(
     cores: int = mp.cpu_count(),
     gvcf: bool = False,
     longread_tech: str = "HiFi",
+    shortread_tech: str = "Illumina",
     dry_run: bool = False,
     skip_version_check: bool = False,
     use_nocoor: bool = False,
@@ -125,6 +128,7 @@ def call_variants(
             if not check_version(cmd, min_version):
                 sys.exit(2)
 
+    # readgroup handling for long-reads
     tr_read_filter: List[str] = []
     replace_rg_args: List[List[str]] = []
     for aln in lr_aln:
@@ -159,6 +163,22 @@ def call_variants(
             "ploidy": 4,
         }
 
+    # readgroup handling for short-reads
+    ultima_read_filter: List[str] = []
+    if shortread_tech.upper() == "ULTIMA":
+        for aln in sr_aln:
+            aln_rgs = cmds.get_rg_lines(aln, dry_run)
+            for rg_line in aln_rgs:
+                id = parse_rg_line(rg_line).get("ID")
+                if not id:
+                    logger.error(
+                        "Input file '%s' has a readgroup without an ID tag:%s",
+                        aln,
+                        rg_line,
+                    )
+                    sys.exit(2)
+                ultima_read_filter.append(f"UltimaReadFilter,rgid={id}")
+
     # First pass - combined variant calling
     vcf_suffix = ".g.vcf.gz" if gvcf else ".vcf.gz"
     combined_vcf = tmp_dir.joinpath("initial" + vcf_suffix)
@@ -169,7 +189,7 @@ def call_variants(
         replace_rg=replace_rg_args,
         input=lr_aln + sr_aln,
         interval=bed,
-        read_filter=tr_read_filter,
+        read_filter=tr_read_filter + ultima_read_filter,
     )
     driver.add_algo(
         DNAscope(
@@ -402,7 +422,7 @@ def call_variants(
         replace_rg=replace_rg_args,
         input=lr_aln + [stage3_bam],
         interval=stage2_reg_bed,
-        read_filter=tr_read_filter,
+        read_filter=tr_read_filter + ultima_read_filter,
     )
     driver.add_algo(
         DNAscope(
@@ -738,6 +758,23 @@ def dnascope_hybrid(
         numa_nodes = spit_alignment(cores)
     n_alignment_jobs = max(1, len(numa_nodes))
     set_bwt_max_mem(bwt_max_mem, None, n_alignment_jobs)
+
+    # Parse the bundle_info.json file
+    longread_tech_cli = longread_tech
+    bundle_info_bytes = ar_load(str(model_bundle) + "/bundle_info.json")
+    if isinstance(bundle_info_bytes, list):
+        bundle_info_bytes = b"{}"
+
+    bundle_info = json.loads(bundle_info_bytes.decode())
+    longread_tech = bundle_info.get("longReadPlatform")
+    shortread_tech = bundle_info.get("shortReadPlatform")
+    if not longread_tech or not shortread_tech:
+        logger.warning(
+            "The model bundle file does not have the expected attributes. "
+            "Are you using the latest version?"
+        )
+    if not longread_tech:
+        longread_tech = longread_tech_cli
 
     # Confirm that all readgroups have the same RGSM
     hybrid_rg_sm = ""
