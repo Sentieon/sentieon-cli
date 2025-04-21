@@ -769,10 +769,11 @@ def dnascope_hybrid(
     longread_tech = bundle_info.get("longReadPlatform")
     shortread_tech = bundle_info.get("shortReadPlatform")
     if not longread_tech or not shortread_tech:
-        logger.warning(
-            "The model bundle file does not have the expected attributes. "
-            "Are you using the latest version?"
-        )
+        # logger.warning(
+        #     "The model bundle file does not have the expected attributes. "
+        #     "Are you using the latest version?"
+        # )
+        pass
     if not longread_tech:
         longread_tech = longread_tech_cli
 
