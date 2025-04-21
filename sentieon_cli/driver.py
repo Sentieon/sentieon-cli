@@ -2,8 +2,13 @@
 Classes for interacting with the Sentieon driver
 """
 
+import itertools
 import pathlib
 from typing import Optional, List, Union
+
+from .logging import get_logger
+
+logger = get_logger(__name__)
 
 
 class BaseAlgo:
@@ -505,12 +510,26 @@ class BaseDriver:
         interval: Optional[Union[pathlib.Path, str]] = None,
         interval_padding: int = 0,
         read_filter: Optional[List[str]] = None,
+        replace_rg: Optional[List[List[str]]] = None,
         input: Optional[List[pathlib.Path]] = None,
         algo: Optional[List[BaseAlgo]] = None,
     ):
+        if (
+            isinstance(replace_rg, list)
+            and isinstance(input, list)
+            and len(replace_rg) > len(input)
+        ):
+            logger.error(
+                "More readgroups '%s' than input files '%s' in --replace_rg",
+                replace_rg,
+                input,
+            )
+            raise RuntimeError("Error in command")
+
         self._name = "Unset"
         self.reference = reference
-        self.input = input
+        self.replace_rg = replace_rg or []
+        self.input = input or []
         self.thread_count = thread_count
         self.interval = interval
         self.interval_padding = interval_padding
@@ -525,10 +544,24 @@ class BaseDriver:
         """Build a command line for the driver"""
         cmd: List[str] = ["sentieon", self._name]
 
+        if self.input:
+            for replace_rg, this_input in itertools.zip_longest(  # type: ignore  # noqa: E501
+                self.replace_rg, self.input, fillvalue=[]
+            ):
+                for rg_arg in replace_rg:
+                    cmd.append("--replace_rg")
+                    cmd.append(rg_arg)
+                cmd.append("--input")
+                cmd.append(str(this_input))
+
         for k, v in self.__dict__.items():
             if k == "algo":
                 continue
             elif k.startswith("_"):
+                continue
+            elif k == "input":
+                continue
+            elif k == "replace_rg":
                 continue
             elif v is None:
                 continue

@@ -944,7 +944,7 @@ def hificnv(
     help="Skip QC with mosdepth",
 )
 @arg(
-    "--skip-cnv",
+    "--skip_cnv",
     help="Skip CNV calling",
 )
 @arg(
@@ -992,7 +992,7 @@ def hificnv(
     action="store_true",
 )
 @arg(
-    "--use-pbsv",
+    "--use_pbsv",
     help=argparse.SUPPRESS,
     action="store_true",
 )

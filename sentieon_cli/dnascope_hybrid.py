@@ -6,6 +6,7 @@ import argparse
 from contextlib import contextmanager
 import multiprocessing as mp
 import os
+import json
 import pathlib
 import shlex
 import shutil
@@ -17,6 +18,7 @@ import packaging.version
 from argh import arg, CommandError
 from importlib_resources import files
 
+from .archive import ar_load
 from . import command_strings as cmds
 from .dag import DAG
 from .driver import (
@@ -87,6 +89,7 @@ def call_variants(
     cores: int = mp.cpu_count(),
     gvcf: bool = False,
     longread_tech: str = "HiFi",
+    shortread_tech: str = "Illumina",
     dry_run: bool = False,
     skip_version_check: bool = False,
     use_nocoor: bool = False,
@@ -125,25 +128,32 @@ def call_variants(
             if not check_version(cmd, min_version):
                 sys.exit(2)
 
+    # readgroup handling for long-reads
     tr_read_filter: List[str] = []
+    replace_rg_args: List[List[str]] = []
+    for aln in lr_aln:
+        aln_rgs = cmds.get_rg_lines(aln, dry_run)
+        replace_rg_args.append([])
+        for rg_line in aln_rgs:
+            id = parse_rg_line(rg_line).get("ID")
+            if not id:
+                logger.error(
+                    "Input file '%s' has a readgroup without an ID tag: %s",
+                    aln,
+                    rg_line,
+                )
+                sys.exit(2)
+            replace_rg_args[-1].append(
+                f"{id}={rg_line}\tLR:1".replace("\t", "\\t")
+            )
+            if longread_tech.upper() == "ONT":
+                tr_read_filter.append(
+                    f"TrimRepeat,max_repeat_unit=2,min_repeat_span=6,rgid={id}"
+                )
     stage1_args: Dict[str, Any] = {
         "split_size": 500,
     }
     if longread_tech.upper() == "ONT":
-        for aln in lr_aln:
-            aln_rgs = cmds.get_rg_lines(aln, dry_run)
-            for rg_line in aln_rgs:
-                id = parse_rg_line(rg_line).get("ID")
-                if not id:
-                    logger.error(
-                        "Input file '%s' has a readgroup with an ID tag: %s",
-                        aln,
-                        rg_line,
-                    )
-                    sys.exit(2)
-                tr_read_filter.append(
-                    f"TrimRepeat,max_repeat_unit=2,min_repeat_span=6,rgid={id}"
-                )
         stage1_args = {
             "split_size": 300,
             "kmer_missing_rate": 0.001,
@@ -153,6 +163,22 @@ def call_variants(
             "ploidy": 4,
         }
 
+    # readgroup handling for short-reads
+    ultima_read_filter: List[str] = []
+    if shortread_tech.upper() == "ULTIMA":
+        for aln in sr_aln:
+            aln_rgs = cmds.get_rg_lines(aln, dry_run)
+            for rg_line in aln_rgs:
+                id = parse_rg_line(rg_line).get("ID")
+                if not id:
+                    logger.error(
+                        "Input file '%s' has a readgroup without an ID tag:%s",
+                        aln,
+                        rg_line,
+                    )
+                    sys.exit(2)
+                ultima_read_filter.append(f"UltimaReadFilter,rgid={id}")
+
     # First pass - combined variant calling
     vcf_suffix = ".g.vcf.gz" if gvcf else ".vcf.gz"
     combined_vcf = tmp_dir.joinpath("initial" + vcf_suffix)
@@ -160,9 +186,10 @@ def call_variants(
     driver: BaseDriver = Driver(
         reference=reference,
         thread_count=cores,
-        input=sr_aln + lr_aln,
+        replace_rg=replace_rg_args,
+        input=lr_aln + sr_aln,
         interval=bed,
-        read_filter=tr_read_filter,
+        read_filter=tr_read_filter + ultima_read_filter,
     )
     driver.add_algo(
         DNAscope(
@@ -196,7 +223,8 @@ def call_variants(
     driver = Driver(
         reference=reference,
         thread_count=cores,
-        input=sr_aln + lr_aln,
+        replace_rg=replace_rg_args,
+        input=lr_aln + sr_aln,
     )
     driver.add_algo(
         HybridStage2(
@@ -242,6 +270,7 @@ def call_variants(
         nocoor_driver = Driver(
             reference=reference,
             thread_count=cores,
+            replace_rg=replace_rg_args,
             input=lr_aln,
             interval="NO_COOR",
         )
@@ -259,6 +288,7 @@ def call_variants(
     ins_driver = Driver(
         reference=reference,
         thread_count=cores,
+        replace_rg=replace_rg_args,
         input=lr_aln,
     )
     ins_driver.add_algo(
@@ -277,6 +307,7 @@ def call_variants(
     stage1_driver = Driver(
         reference=reference,
         thread_count=cores,
+        replace_rg=replace_rg_args,
         input=lr_aln,
         interval=diff_bed,
     )
@@ -360,7 +391,8 @@ def call_variants(
     driver = Driver(
         reference=reference,
         thread_count=cores,
-        input=[stage2_unmap_bam, stage2_alt_bam] + lr_aln + sr_aln,
+        replace_rg=replace_rg_args,
+        input=lr_aln + [stage2_unmap_bam, stage2_alt_bam] + sr_aln,
         interval=stage2_reg_bed,
     )
     driver.add_algo(
@@ -387,9 +419,10 @@ def call_variants(
     driver = Driver(
         reference=reference,
         thread_count=cores,
-        input=[stage3_bam] + lr_aln,
+        replace_rg=replace_rg_args,
+        input=lr_aln + [stage3_bam],
         interval=stage2_reg_bed,
-        read_filter=tr_read_filter,
+        read_filter=tr_read_filter + ultima_read_filter,
     )
     driver.add_algo(
         DNAscope(
@@ -726,41 +759,58 @@ def dnascope_hybrid(
     n_alignment_jobs = max(1, len(numa_nodes))
     set_bwt_max_mem(bwt_max_mem, None, n_alignment_jobs)
 
-    # Check readgroups if samtools is available
+    # Parse the bundle_info.json file
+    longread_tech_cli = longread_tech
+    bundle_info_bytes = ar_load(str(model_bundle) + "/bundle_info.json")
+    if isinstance(bundle_info_bytes, list):
+        bundle_info_bytes = b"{}"
+
+    bundle_info = json.loads(bundle_info_bytes.decode())
+    longread_tech = bundle_info.get("longReadPlatform")
+    shortread_tech = bundle_info.get("shortReadPlatform")
+    if not longread_tech or not shortread_tech:
+        # logger.warning(
+        #     "The model bundle file does not have the expected attributes. "
+        #     "Are you using the latest version?"
+        # )
+        pass
+    if not longread_tech:
+        longread_tech = longread_tech_cli
+    if not shortread_tech:
+        shortread_tech = "Illumina"
+
+    # Confirm that all readgroups have the same RGSM
     hybrid_rg_sm = ""
     rg_sm_tag = None
-    if shutil.which("samtools"):
-        for aln_files in sr_aln, lr_aln:
-            for aln in aln_files:
-                rg_lines = cmds.get_rg_lines(aln, dry_run)
-                for rg_line in rg_lines:
-                    sm = parse_rg_line(rg_line).get("SM")
-                    if not sm:
-                        logger.error(
-                            "Input file '%s' has a readgroup line without a SM"
-                            " tag: %s",
-                            aln,
-                            rg_line,
-                        )
-                        sys.exit(2)
-                    if rg_sm_tag is None:
-                        rg_sm_tag = sm
-                        hybrid_rg_sm = sm
-                        continue
-                    if dry_run:
-                        continue
-                    elif rg_sm_tag != sm:
-                        logger.error(
-                            "Input file '%s' has a different RG-SM tag from"
-                            " previously seen alignment files.\nfound='%s'"
-                            " expected='%s'",
-                            aln,
-                            sm,
-                            rg_sm_tag,
-                        )
-                        sys.exit(2)
-    else:
-        logger.warning("Skipping readgroup check for aligned files")
+    for aln_files in sr_aln, lr_aln:
+        for aln in aln_files:
+            rg_lines = cmds.get_rg_lines(aln, dry_run)
+            for rg_line in rg_lines:
+                sm = parse_rg_line(rg_line).get("SM")
+                if not sm:
+                    logger.error(
+                        "Input file '%s' has a readgroup line without a SM"
+                        " tag: %s",
+                        aln,
+                        rg_line,
+                    )
+                    sys.exit(2)
+                if rg_sm_tag is None:
+                    rg_sm_tag = sm
+                    hybrid_rg_sm = sm
+                    continue
+                if dry_run:
+                    continue
+                elif rg_sm_tag != sm:
+                    logger.error(
+                        "Input file '%s' has a different RG-SM tag from"
+                        " previously seen alignment files.\nfound='%s'"
+                        " expected='%s'",
+                        aln,
+                        sm,
+                        rg_sm_tag,
+                    )
+                    sys.exit(2)
 
     for rg in sr_readgroups:
         sm = parse_rg_line(rg.replace(r"\t", "\t")).get("SM")
