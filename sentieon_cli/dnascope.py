@@ -333,7 +333,11 @@ def dedup_and_metrics(
     skip_metrics: bool = False,
     **_kwargs: Any,
 ) -> Tuple[
-    List[pathlib.Path], Optional[Job], Optional[Job], Optional[Job], Optional[Job]
+    List[pathlib.Path],
+    Optional[Job],
+    Optional[Job],
+    Optional[Job],
+    Optional[Job],
 ]:
     """Perform dedup and metrics collection"""
     suffix = "bam" if bam_format else "cram"
@@ -384,9 +388,8 @@ def dedup_and_metrics(
         )
 
     # Prefer to run InsertSizeMetricAlgo after duplicate marking
-    if (
-        not skip_metrics
-        and ((assay == "WES" and not bed) or duplicate_marking == "none")
+    if not skip_metrics and (
+        (assay == "WES" and not bed) or duplicate_marking == "none"
     ):
         driver.add_algo(InsertSizeMetricAlgo(is_metrics))
 
@@ -424,6 +427,9 @@ def dedup_and_metrics(
         )
     )
     dedup_job = Job(shlex.join(driver.build_cmd()), "dedup", cores)
+
+    if skip_metrics:
+        return ([deduped], lc_job, dedup_job, None, None)
 
     # Run HsMetricAlgo after duplicate marking to account for duplicate reads
     metrics_job = None

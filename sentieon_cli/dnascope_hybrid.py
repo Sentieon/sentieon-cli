@@ -784,17 +784,18 @@ def dnascope_hybrid(
         longread_tech = longread_tech_cli
     if not shortread_tech:
         shortread_tech = "Illumina"
-    req_version = packaging.version.Version(bundle_info.get("minScriptVersion", __version__))
+    req_version = packaging.version.Version(
+        bundle_info.get("minScriptVersion", __version__)
+    )
     if req_version < packaging.version.Version(__version__):
         logger.error(
-            "The model bundle requires version %s or later of the sentieon-cli.",
+            "The model bundle requires version %s or later of the "
+            "sentieon-cli.",
             req_version,
         )
         sys.exit(2)
     if bundle_info.get("pipeline", "") != "DNAscope Hybrid":
-        logger.error(
-            "The model bundle is for a different pipeline."
-        )
+        logger.error("The model bundle is for a different pipeline.")
         sys.exit(2)
 
     # Confirm that all readgroups have the same RGSM
