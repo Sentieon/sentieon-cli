@@ -620,6 +620,10 @@ def call_variants(
     help="Skip SV calling",
 )
 @arg(
+    "--skip_metrics",
+    help="Skip all metrics collection and multiQC",
+)
+@arg(
     "--skip_mosdepth",
     help="Skip QC with mosdepth",
 )
@@ -713,6 +717,7 @@ def dnascope_hybrid(
     dry_run: bool = False,
     skip_svs: bool = False,
     skip_mosdepth: bool = False,
+    skip_metrics: bool = False,
     skip_multiqc: bool = False,
     skip_cnv: bool = False,
     lr_align_input: bool = False,
@@ -743,10 +748,11 @@ def dnascope_hybrid(
     sr_r2_fastq = sr_r2_fastq if sr_r2_fastq else []
     sr_readgroups = sr_readgroups if sr_readgroups else []
     sr_aln = sr_aln if sr_aln else []
-
     lr_aln = lr_aln if lr_aln else []
     assert lr_aln
     bwa_k_arg = str(bwa_k)
+    skip_multiqc = True if skip_metrics else skip_multiqc
+    skip_mosdepth = True if skip_metrics else skip_mosdepth
 
     assert logger.parent
     logger.parent.setLevel(kwargs["loglevel"])
@@ -883,15 +889,16 @@ def dnascope_hybrid(
         **locals(),
     )
     sr_aln = deduped
-    dag.add_job(lc_job, align_fastq_jobs)
-    if dedup_job:
-        dag.add_job(dedup_job, {lc_job})
-        if metrics_job:
-            dag.add_job(metrics_job, {dedup_job})
-            if rehead_job:
-                dag.add_job(rehead_job, {metrics_job})
-        if fq_rm_job:
-            dag.add_job(fq_rm_job, {dedup_job})
+    if lc_job:
+        dag.add_job(lc_job, align_fastq_jobs)
+        if dedup_job:
+            dag.add_job(dedup_job, {lc_job})
+            if metrics_job and not skip_metrics:
+                dag.add_job(metrics_job, {dedup_job})
+                if rehead_job:
+                    dag.add_job(rehead_job, {metrics_job})
+            if fq_rm_job:
+                dag.add_job(fq_rm_job, {dedup_job})
 
     # Long-read alignment
     realign_jobs: Set[Job] = set()
@@ -913,7 +920,8 @@ def dnascope_hybrid(
     if not skip_multiqc:
         multiqc_job = multiqc(**locals())
         multiqc_dependencies: Set[Job] = set()
-        multiqc_dependencies.add(lc_job)
+        if lc_job:
+            multiqc_dependencies.add(lc_job)
         if metrics_job:
             multiqc_dependencies.add(metrics_job)
         if rehead_job:

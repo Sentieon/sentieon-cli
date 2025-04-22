@@ -330,9 +330,10 @@ def dedup_and_metrics(
     dry_run: bool = False,
     bam_format: bool = False,
     cram_write_options: str = "version=3.0,compressor=rans",
+    skip_metrics: bool = False,
     **_kwargs: Any,
 ) -> Tuple[
-    List[pathlib.Path], Job, Optional[Job], Optional[Job], Optional[Job]
+    List[pathlib.Path], Optional[Job], Optional[Job], Optional[Job], Optional[Job]
 ]:
     """Perform dedup and metrics collection"""
     suffix = "bam" if bam_format else "cram"
@@ -368,6 +369,7 @@ def dedup_and_metrics(
     gc_metrics = metrics_dir.joinpath(metric_base + ".gc_bias.txt")
     gc_summary = metrics_dir.joinpath(metric_base + ".gc_bias_summary.txt")
 
+    lc_job = None
     driver = Driver(
         reference=reference,
         thread_count=cores,
@@ -382,17 +384,22 @@ def dedup_and_metrics(
         )
 
     # Prefer to run InsertSizeMetricAlgo after duplicate marking
-    if (assay == "WES" and not bed) or duplicate_marking == "none":
+    if (
+        not skip_metrics
+        and ((assay == "WES" and not bed) or duplicate_marking == "none")
+    ):
         driver.add_algo(InsertSizeMetricAlgo(is_metrics))
 
-    driver.add_algo(MeanQualityByCycle(mqbc_metrics))
-    driver.add_algo(BaseDistributionByCycle(bdbc_metrics))
-    driver.add_algo(QualDistribution(qualdist_metrics))
-    driver.add_algo(AlignmentStat(as_metrics))
-    if assay == "WGS":
-        driver.add_algo(GCBias(gc_metrics, summary=gc_summary))
+    if not skip_metrics:
+        driver.add_algo(MeanQualityByCycle(mqbc_metrics))
+        driver.add_algo(BaseDistributionByCycle(bdbc_metrics))
+        driver.add_algo(QualDistribution(qualdist_metrics))
+        driver.add_algo(AlignmentStat(as_metrics))
+        if assay == "WGS":
+            driver.add_algo(GCBias(gc_metrics, summary=gc_summary))
 
-    lc_job = Job(shlex.join(driver.build_cmd()), "locuscollector", cores)
+    if not (duplicate_marking == "none" and skip_metrics):
+        lc_job = Job(shlex.join(driver.build_cmd()), "locuscollector", cores)
 
     if duplicate_marking == "none":
         return (sample_input, lc_job, None, None, None)
@@ -780,6 +787,10 @@ def call_cnvs(
     help="Skip SV calling",
 )
 @arg(
+    "--skip_metrics",
+    help="Skip all metrics collection and multiQC",
+)
+@arg(
     "--skip_multiqc",
     help="Skip multiQC report generation",
 )
@@ -877,6 +888,7 @@ def dnascope(
     dry_run: bool = False,
     skip_small_variants: bool = False,
     skip_svs: bool = False,
+    skip_metrics: bool = False,
     skip_multiqc: bool = False,
     align: bool = False,
     collate_align: bool = False,
@@ -901,6 +913,7 @@ def dnascope(
     assert model_bundle
     assert str(output_vcf).endswith(".vcf.gz")
     bwa_k_arg = str(bwa_k)
+    skip_multiqc = True if skip_metrics else skip_multiqc
 
     assert logger.parent
     logger.parent.setLevel(kwargs["loglevel"])
@@ -961,17 +974,18 @@ def dnascope(
     deduped, lc_job, dedup_job, metrics_job, rehead_job = dedup_and_metrics(
         **locals()
     )  # pylint: disable=W0641
-    dag.add_job(lc_job, align_jobs.union(align_fastq_jobs))
-    if dedup_job:
-        dag.add_job(dedup_job, {lc_job})
-        if metrics_job:
-            dag.add_job(metrics_job, {dedup_job})
-            if rehead_job:
-                dag.add_job(rehead_job, {metrics_job})
-        if bam_rm_job:
-            dag.add_job(bam_rm_job, {dedup_job})
-        if fq_rm_job:
-            dag.add_job(fq_rm_job, {dedup_job})
+    if lc_job:
+        dag.add_job(lc_job, align_jobs.union(align_fastq_jobs))
+        if dedup_job:
+            dag.add_job(dedup_job, {lc_job})
+            if metrics_job:
+                dag.add_job(metrics_job, {dedup_job})
+                if rehead_job:
+                    dag.add_job(rehead_job, {metrics_job})
+            if bam_rm_job:
+                dag.add_job(bam_rm_job, {dedup_job})
+            if fq_rm_job:
+                dag.add_job(fq_rm_job, {dedup_job})
 
     if not skip_small_variants:
         (
@@ -1000,7 +1014,8 @@ def dnascope(
     if not skip_multiqc:
         multiqc_job = multiqc(**locals())
         multiqc_dependencies: Set[Job] = set()
-        multiqc_dependencies.add(lc_job)
+        if lc_job:
+            multiqc_dependencies.add(lc_job)
         if metrics_job:
             multiqc_dependencies.add(metrics_job)
         if rehead_job:
