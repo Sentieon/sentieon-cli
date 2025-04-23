@@ -1,8 +1,5 @@
 name: CI-main
 on:
-  push:
-    branches:
-      - main
   pull_request:
 
 env:
@@ -17,9 +14,9 @@ jobs:
       fail-fast: true
       max-parallel: 1
       matrix:
-        python-version: ["3.8", "3.12"]
+        python-version: ["3.8", "3.13"]
         poetry-version: ["1.5.1"]
-        sentieon-version: ["202308.01", "202503"]
+        sentieon-version: ["202503"]
         os: [ubuntu-22.04] #, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
@@ -70,6 +67,10 @@ jobs:
         run: |
           curl -L "https://s3.amazonaws.com/sentieon-release/other/DNAscopeIlluminaWGS2.0.bundle" \
             > "DNAscope IlluminaWGS2.0.bundle"
+      - name: Download hybrid model
+        run: |
+          curl -L "https://s3.amazonaws.com/sentieon-release/other/HybridIlluminaPacBio1.0.bundle" \
+            > "Hybrid IlluminaPacBio1.0.bundle"
       - name: set SENTIEON_AUTH_DATA
         run: |
           SENTIEON_AUTH_DATA=$(python3 .github/scripts/license_message.py encrypt --key "$ENCRYPTION_KEY" --message "$LICENSE_MESSAGE")
@@ -156,4 +157,12 @@ jobs:
           if [ ! -f "output fq.vcf.gz" -o ! -f "output fq_mm2_sorted_fq_0.cram" -o ! -f "output fq.sv.vcf.gz" ]; then
             exit 1
           fi
-      
+      - name: Smoke test - hybrid
+        run: |
+          . .venv/bin/activate
+          sentieon-cli -v dnascope-hybrid -t 1 -r "tests/smoke/r ef.fa" \
+            --sr_r1_fastq sr_r1.fastq.gz --sr_r2_fastq sr_r2.fastq.gz \
+            --sr_readgroups "@RG\tID:HG002-1\tSM:HG002" \
+            --lr_aln "tests/smoke/sam ple.cram" \
+            -m "Hybrid IlluminaPacBio1.0.bundle" \
+            "output hybrid.vcf.gz"
