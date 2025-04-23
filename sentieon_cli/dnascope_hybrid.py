@@ -216,7 +216,7 @@ def call_variants(
             threads=cores,
         ),
         "hybrid-select",
-        1,
+        0,
     )
 
     mapq0_bed = tmp_dir.joinpath("hybrid_mapq0.bed")
