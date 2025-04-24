@@ -11,7 +11,7 @@ import pathlib
 import shlex
 import shutil
 import sys
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, List, Optional, Set, Tuple, Union
 
 import packaging.version
 
@@ -735,7 +735,7 @@ def dnascope_hybrid(
     req_version = packaging.version.Version(
         bundle_info.get("minScriptVersion", __version__)
     )
-    if req_version < packaging.version.Version(__version__):
+    if req_version > packaging.version.Version(__version__):
         logger.error(
             "The model bundle requires version %s or later of the "
             "sentieon-cli.",
