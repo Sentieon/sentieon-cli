@@ -2,7 +2,7 @@
 #https://stackoverflow.com/questions/75408641/whats-difference-between-tool-poetry-and-project-in-pyproject-toml
 [tool.poetry]
 name = "sentieon_cli"
-version = "1.2.1"
+version = "1.2.2"
 description = "entry point for sentieon command-line tools"
 authors = ["Don Freed <don.freed@sentieon.com>", "Brent <bpederse@gmail.com>"]
 readme = "README.md"
