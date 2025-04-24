@@ -45,7 +45,6 @@ from .scheduler import ThreadScheduler
 from .util import (
     __version__,
     check_version,
-    get_read_length_aln,
     library_preloaded,
     parse_rg_line,
     path_arg,
@@ -82,7 +81,6 @@ def call_variants(
     sr_aln: List[pathlib.Path],
     lr_aln: List[pathlib.Path],
     model_bundle: pathlib.Path,
-    sr_read_length: int,
     hybrid_rg_sm: str = "",
     dbsnp: Optional[pathlib.Path] = None,
     bed: Optional[pathlib.Path] = None,
@@ -92,7 +90,6 @@ def call_variants(
     shortread_tech: str = "Illumina",
     dry_run: bool = False,
     skip_version_check: bool = False,
-    use_nocoor: bool = False,
     stage3_ext: int = 1000,
     **_kwargs: Any,
 ) -> Tuple[
@@ -150,18 +147,6 @@ def call_variants(
                 tr_read_filter.append(
                     f"TrimRepeat,max_repeat_unit=2,min_repeat_span=6,rgid={id}"
                 )
-    stage1_args: Dict[str, Any] = {
-        "split_size": 500,
-    }
-    if longread_tech.upper() == "ONT":
-        stage1_args = {
-            "split_size": 300,
-            "kmer_missing_rate": 0.001,
-            "mk_avg_bq": 23,
-            "prune_factor": 2,
-            "mk_max_init_hapcnt": 200,
-            "ploidy": 4,
-        }
 
     # readgroup handling for short-reads
     ultima_read_filter: List[str] = []
@@ -263,26 +248,6 @@ def call_variants(
     rm_cmd = ["rm", str(selected_bed), str(mapq0_slop_bed)]
     rm_job1 = Job(shlex.join(rm_cmd), "rm-tmp1", 0, True)
 
-    nocoor_driver: Optional[BaseDriver] = None
-    stage1_nocoor_fa = tmp_dir.joinpath("stage1_nocoor.fa")
-    stage1_nocoor_bed = tmp_dir.joinpath("stage1_nocoor.bed")
-    if use_nocoor:
-        nocoor_driver = Driver(
-            reference=reference,
-            thread_count=cores,
-            replace_rg=replace_rg_args,
-            input=lr_aln,
-            interval="NO_COOR",
-        )
-        nocoor_driver.add_algo(
-            HybridStage1(
-                "-",
-                model=model_bundle.joinpath("HybridStage1.model"),
-                fa_file=stage1_nocoor_fa,
-                bed_file=stage1_nocoor_bed,
-            )
-        )
-
     stage1_ins_fa = tmp_dir.joinpath("stage1_ins.fa")
     stage1_ins_bed = tmp_dir.joinpath("stage1_ins.bed")
     ins_driver = Driver(
@@ -294,10 +259,9 @@ def call_variants(
     ins_driver.add_algo(
         HybridStage1(
             "-",
-            model=model_bundle.joinpath("HybridStage1.model"),
+            model=model_bundle.joinpath("HybirdStage1_ins.model"),
             fa_file=stage1_ins_fa,
             bed_file=stage1_ins_bed,
-            cut_indel=1,
         )
     )
 
@@ -317,10 +281,7 @@ def call_variants(
             model=model_bundle.joinpath("HybridStage1.model"),
             hap_bam=stage1_hap_bam,
             hap_bed=stage1_hap_bed,
-            cut_len=sr_read_length,
-            split_overlap=sr_read_length,
             hap_vcf=stage1_hap_vcf,
-            **stage1_args,
         )
     )
 
@@ -331,7 +292,6 @@ def call_variants(
             reference=reference,
             cores=cores,
             readgroup=f"@RG\\tID:hybrid-18893\\tSM:{hybrid_rg_sm}",
-            nocoor_driver=nocoor_driver,
             ins_driver=ins_driver,
             stage1_driver=stage1_driver,
         ),
@@ -340,8 +300,6 @@ def call_variants(
     )
     rm_cmd = [
         "rm",
-        str(stage1_nocoor_fa),
-        str(stage1_nocoor_bed),
         str(stage1_ins_fa),
         str(stage1_ins_bed),
         str(stage1_hap_vcf),
@@ -364,10 +322,6 @@ def call_variants(
             unmap_bam=stage2_unmap_bam,
             alt_bam=stage2_alt_bam,
             all_bed=stage2_bed,
-            min_kmer_size=80,
-            prune_factor=5,
-            target_extension=30,
-            mode="0",
         )
     )
     second_stage_job = Job(
@@ -694,11 +648,6 @@ def call_variants(
     help=argparse.SUPPRESS,
     action="store_true",
 )
-@arg(
-    "--use_nocoor",
-    help=argparse.SUPPRESS,
-    action="store_true",
-)
 def dnascope_hybrid(
     output_vcf: pathlib.Path,
     sr_r1_fastq: Optional[List[pathlib.Path]] = None,
@@ -734,7 +683,6 @@ def dnascope_hybrid(
     retain_tmpdir: bool = False,
     bwt_max_mem: Optional[str] = None,
     no_split_alignment: bool = False,
-    use_nocoor: bool = False,
     **kwargs: str,
 ):
     """
@@ -867,7 +815,7 @@ def dnascope_hybrid(
     tmp_dir_str = tmp()
     tmp_dir = pathlib.Path(tmp_dir_str)
 
-    logger.info("Building the fist DAG")
+    logger.info("Building the DAG")
     dag = DAG()
 
     # Short-read alignment
@@ -936,47 +884,15 @@ def dnascope_hybrid(
         longreadsv_job = call_svs(**locals())
         dag.add_job(longreadsv_job, realign_jobs)
 
+    sr_preprocessing_jobs: Set[Job] = set()
+    sr_preprocessing_jobs.update(align_fastq_jobs)
+    if dedup_job:
+        sr_preprocessing_jobs.add(dedup_job)
     if not skip_cnv:
-        sr_preprocessing_jobs: Set[Job] = set()
-        sr_preprocessing_jobs.update(align_fastq_jobs)
-        if dedup_job:
-            sr_preprocessing_jobs.add(dedup_job)
         sample_input = sr_aln
         cnvscope_job, cnvmodelapply_job = call_cnvs(**locals())
         dag.add_job(cnvscope_job, sr_preprocessing_jobs)
         dag.add_job(cnvmodelapply_job, {cnvscope_job})
-
-    # Perform inital processing first
-    #  - necessary to ensure we can get read length from aligned short-reads
-    logger.debug("Creating the first scheduler")
-    scheduler = ThreadScheduler(
-        dag,
-        cores,
-    )
-
-    logger.debug("Creating the first executor")
-    Executor = DryRunExecutor if dry_run else LocalExecutor
-    executor = Executor(scheduler)
-
-    logger.info("Starting first execution")
-    executor.execute()
-
-    if executor.jobs_with_errors:
-        raise CommandError("Preprocessing failed")
-    if len(dag.waiting_jobs) > 0 or len(dag.ready_jobs) > 0:
-        raise CommandError(
-            "The DAG has some unexecuted jobs\n"
-            f"Waiting jobs: {dag.waiting_jobs}\n"
-            f"Ready jobs: {dag.ready_jobs}\n"
-        )
-
-    # Find the read length of short reads
-    sr_read_length = 151
-    if not dry_run:
-        sr_read_length = get_read_length_aln(sr_aln[0], reference)
-
-    logger.info("Building the second DAG")
-    dag = DAG()
 
     (
         call_job,
@@ -1000,9 +916,9 @@ def dnascope_hybrid(
         apply_job,
         norm_job,
     ) = call_variants(**locals())
-    dag.add_job(call_job)
+    dag.add_job(call_job, realign_jobs | sr_preprocessing_jobs)
     dag.add_job(select_job, {call_job})
-    dag.add_job(mapq0_job)
+    dag.add_job(mapq0_job, realign_jobs | sr_preprocessing_jobs)
     dag.add_job(mapq0_slop_job, {mapq0_job})
     dag.add_job(cat_merge_job, {mapq0_slop_job, select_job})
     dag.add_job(stage1_job, {cat_merge_job})
@@ -1024,17 +940,17 @@ def dnascope_hybrid(
         dag.add_job(rm_job4, {third_stage_job})
         dag.add_job(rm_job5, {concat_job})
 
-    logger.debug("Creating the second scheduler")
+    logger.debug("Creating the scheduler")
     scheduler = ThreadScheduler(
         dag,
         cores,
     )
 
-    logger.debug("Creating the second executor")
+    logger.debug("Creating the executor")
     Executor = DryRunExecutor if dry_run else LocalExecutor
     executor = Executor(scheduler)
 
-    logger.info("Starting second execution")
+    logger.info("Starting execution")
     executor.execute()
 
     if not retain_tmpdir:
