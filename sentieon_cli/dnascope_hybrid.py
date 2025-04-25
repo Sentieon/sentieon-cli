@@ -90,10 +90,8 @@ def call_variants(
     shortread_tech: str = "Illumina",
     dry_run: bool = False,
     skip_version_check: bool = False,
-    stage3_ext: int = 1000,
     **_kwargs: Any,
 ) -> Tuple[
-    Job,
     Job,
     Job,
     Job,
@@ -307,7 +305,6 @@ def call_variants(
     rm_job2 = Job(shlex.join(rm_cmd), "rm-tmp2", 0, True)
 
     stage2_bed = tmp_dir.joinpath("hybrid_stage2.bed")
-    stage2_reg_bed = tmp_dir.joinpath("hybrid_stage2_reg.bed")
     stage2_unmap_bam = tmp_dir.joinpath("hybrid_stage2_unmap.bam")
     stage2_alt_bam = tmp_dir.joinpath("hybrid_stage2_alt.bam")
     driver = Driver(
@@ -329,16 +326,8 @@ def call_variants(
         "second-stage",
         cores,
     )
-    merge_job = Job(
-        cmds.cmd_bedtools_merge(
-            stage2_bed,
-            stage2_reg_bed,
-            distance=2 * stage3_ext,
-        ),
-        "merge-bed",
-        0,
-    )
-    rm_cmd = ["rm", str(stage1_bam), str(stage1_hap_bam), str(stage2_bed)]
+
+    rm_cmd = ["rm", str(stage1_bam), str(stage1_hap_bam)]
     rm_job3 = Job(shlex.join(rm_cmd), "rm-tmp3", 0, True)
 
     stage3_bam = tmp_dir.joinpath("hybrid_stage3.bam")
@@ -347,13 +336,12 @@ def call_variants(
         thread_count=cores,
         replace_rg=replace_rg_args,
         input=lr_aln + [stage2_unmap_bam, stage2_alt_bam] + sr_aln,
-        interval=stage2_reg_bed,
+        interval=stage2_bed,
     )
     driver.add_algo(
         HybridStage3(
             "-",
             model=model_bundle.joinpath("HybridStage3.model"),
-            region_ext=stage3_ext,
         )
     )
     third_stage_job = Job(
@@ -375,7 +363,7 @@ def call_variants(
         thread_count=cores,
         replace_rg=replace_rg_args,
         input=lr_aln + [stage3_bam],
-        interval=stage2_reg_bed,
+        interval=stage2_bed,
         read_filter=tr_read_filter + ultima_read_filter,
     )
     driver.add_algo(
@@ -396,7 +384,7 @@ def call_variants(
         cmds.bcftools_subset(
             subset_vcf,
             combined_vcf,
-            stage2_reg_bed,
+            stage2_bed,
         ),
         "subset-calls",
         0,
@@ -466,7 +454,6 @@ def call_variants(
         stage1_job,
         rm_job2,
         second_stage_job,
-        merge_job,
         rm_job3,
         third_stage_job,
         rm_job4,
@@ -904,7 +891,6 @@ def dnascope_hybrid(
         stage1_job,
         rm_job2,
         second_stage_job,
-        merge_job,
         rm_job3,
         third_stage_job,
         rm_job4,
@@ -923,10 +909,9 @@ def dnascope_hybrid(
     dag.add_job(cat_merge_job, {mapq0_slop_job, select_job})
     dag.add_job(stage1_job, {cat_merge_job})
     dag.add_job(second_stage_job, {stage1_job})
-    dag.add_job(merge_job, {second_stage_job})
-    dag.add_job(third_stage_job, {merge_job})
+    dag.add_job(third_stage_job, {second_stage_job})
     dag.add_job(call2_job, {third_stage_job})
-    dag.add_job(subset_job, {merge_job})
+    dag.add_job(subset_job, {second_stage_job})
     dag.add_job(concat_job, {subset_job, call2_job})
     dag.add_job(anno_job, {concat_job})
     dag.add_job(apply_job, {anno_job})
@@ -936,7 +921,7 @@ def dnascope_hybrid(
     if not retain_tmpdir:
         dag.add_job(rm_job1, {cat_merge_job})
         dag.add_job(rm_job2, {stage1_job})
-        dag.add_job(rm_job3, {merge_job})
+        dag.add_job(rm_job3, {second_stage_job})
         dag.add_job(rm_job4, {third_stage_job})
         dag.add_job(rm_job5, {concat_job})
 
