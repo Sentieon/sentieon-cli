@@ -45,7 +45,8 @@ class ThreadScheduler:
                             self.resources[resource] -= used
                     scheduled_jobs.add(ready_job)
 
-            ready_jobs -= scheduled_jobs
+            for job in scheduled_jobs:
+                del ready_jobs[job]
 
             finished_job = yield scheduled_jobs
             if isinstance(finished_job, Job):

@@ -22,7 +22,7 @@ class DAG:
         # map dependencies to waiting jobs
         # planned_jobs = {dependency: [downstream_jobs]}
         self.planned_jobs: Dict[Job, List[Job]] = {}
-        self.ready_jobs: Set[Job] = set()
+        self.ready_jobs: Dict[Job, None] = {}
         self.finished_jobs: List[Job] = []
 
     def add_job(self, job: Job, dependencies: Optional[Set[Job]] = None):
@@ -40,11 +40,11 @@ class DAG:
                 downstream = self.planned_jobs.setdefault(dependency, [])
                 downstream.append(job)
         else:
-            self.ready_jobs.add(job)
+            self.ready_jobs[job] = None
 
     def update_dag(
         self,
-    ) -> Generator[Set[Job], Optional[Job], None]:
+    ) -> Generator[Dict[Job, None], Optional[Job], None]:
         """Update the DAG with a finished job"""
         finished_job = yield self.ready_jobs.copy()
 
@@ -55,7 +55,7 @@ class DAG:
             logger.debug("Finished jobs: %s", self.finished_jobs)
             logger.debug("Newly finished: %s", finished_job)
 
-            new_ready_jobs: set[Job] = set()
+            new_ready_jobs: Dict[Job, None] = {}
             if isinstance(finished_job, Job):
                 if finished_job not in self.ready_jobs:
                     raise DagExecutionError(
@@ -63,13 +63,13 @@ class DAG:
                         "execution"
                     )
 
-                self.ready_jobs.remove(finished_job)
+                del self.ready_jobs[finished_job]
                 self.finished_jobs.append(finished_job)
                 for dependency in self.planned_jobs.get(finished_job, []):
                     upstream = self.waiting_jobs[dependency]
                     upstream.remove(finished_job)
                     if len(upstream) < 1:
-                        self.ready_jobs.add(dependency)
-                        new_ready_jobs.add(dependency)
+                        self.ready_jobs[dependency] = None
+                        new_ready_jobs[dependency] = None
                         del self.waiting_jobs[dependency]
             finished_job = yield new_ready_jobs
