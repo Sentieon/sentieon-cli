@@ -257,7 +257,7 @@ def call_variants(
     ins_driver.add_algo(
         HybridStage1(
             "-",
-            model=model_bundle.joinpath("HybirdStage1_ins.model"),
+            model=model_bundle.joinpath("HybridStage1_ins.model"),
             fa_file=stage1_ins_fa,
             bed_file=stage1_ins_bed,
         )
