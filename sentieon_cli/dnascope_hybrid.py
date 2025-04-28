@@ -729,7 +729,7 @@ def dnascope_hybrid(
             req_version,
         )
         sys.exit(2)
-    if bundle_info.get("pipeline", "") != "DNAscope Hybrid":
+    if bundle_info.get("pipeline", "DNAscope Hybrid") != "DNAscope Hybrid":
         logger.error("The model bundle is for a different pipeline.")
         sys.exit(2)
 
