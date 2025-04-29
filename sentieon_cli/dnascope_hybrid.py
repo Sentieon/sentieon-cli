@@ -81,6 +81,7 @@ def call_variants(
     sr_aln: List[pathlib.Path],
     lr_aln: List[pathlib.Path],
     model_bundle: pathlib.Path,
+    hybrid_set_rg: bool,
     hybrid_rg_sm: str = "",
     dbsnp: Optional[pathlib.Path] = None,
     bed: Optional[pathlib.Path] = None,
@@ -90,6 +91,8 @@ def call_variants(
     shortread_tech: str = "Illumina",
     dry_run: bool = False,
     skip_version_check: bool = False,
+    sr_read_filter: Optional[str] = None,
+    lr_read_filter: Optional[str] = None,
     **_kwargs: Any,
 ) -> Tuple[
     Job,
@@ -125,12 +128,15 @@ def call_variants(
 
     # readgroup handling for long-reads
     tr_read_filter: List[str] = []
-    replace_rg_args: List[List[str]] = []
+    lr_rg_read_filter: List[str] = []
+    replace_rg_args: Tuple[List[List[str]], List[List[str]]] = ([], [])
     for aln in lr_aln:
         aln_rgs = cmds.get_rg_lines(aln, dry_run)
-        replace_rg_args.append([])
+        replace_rg_args[0].append([])
         for rg_line in aln_rgs:
-            id = parse_rg_line(rg_line).get("ID")
+            rg_line_d = parse_rg_line(rg_line)
+            id = rg_line_d.get("ID")
+            new_sm = hybrid_rg_sm if hybrid_set_rg else rg_line_d.get("SM")
             if not id:
                 logger.error(
                     "Input file '%s' has a readgroup without an ID tag: %s",
@@ -138,28 +144,37 @@ def call_variants(
                     rg_line,
                 )
                 sys.exit(2)
-            replace_rg_args[-1].append(
-                f"{id}={rg_line}\tLR:1".replace("\t", "\\t")
-            )
+            replace_rg_args[0][-1].append(f"{id}=ID:{id}\\tSM{new_sm}\\tLR:1")
+            if lr_read_filter:
+                lr_rg_read_filter.append(f"{lr_read_filter},rgid={id}")
             if longread_tech.upper() == "ONT":
                 tr_read_filter.append(
                     f"TrimRepeat,max_repeat_unit=2,min_repeat_span=6,rgid={id}"
                 )
 
     # readgroup handling for short-reads
+    sr_rg_read_filter: List[str] = []
     ultima_read_filter: List[str] = []
-    if shortread_tech.upper() == "ULTIMA":
-        for aln in sr_aln:
-            aln_rgs = cmds.get_rg_lines(aln, dry_run)
-            for rg_line in aln_rgs:
-                id = parse_rg_line(rg_line).get("ID")
-                if not id:
-                    logger.error(
-                        "Input file '%s' has a readgroup without an ID tag:%s",
-                        aln,
-                        rg_line,
-                    )
-                    sys.exit(2)
+    for aln in sr_aln:
+        aln_rgs = cmds.get_rg_lines(aln, dry_run)
+        if hybrid_set_rg:
+            replace_rg_args[1].append([])
+        for rg_line in aln_rgs:
+            rg_line_d = parse_rg_line(rg_line)
+            id = rg_line_d.get("ID")
+            new_sm = hybrid_rg_sm if hybrid_set_rg else rg_line_d.get("SM")
+            if not id:
+                logger.error(
+                    "Input file '%s' has a readgroup without an ID tag:%s",
+                    aln,
+                    rg_line,
+                )
+                sys.exit(2)
+            if hybrid_set_rg:
+                replace_rg_args[1][-1].append(f"{id}=ID:{id}\\tSM{new_sm}")
+            if sr_read_filter:
+                sr_rg_read_filter.append(f"{sr_read_filter},rgid={id}")
+            if shortread_tech.upper() == "ULTIMA":
                 ultima_read_filter.append(f"UltimaReadFilter,rgid={id}")
 
     # First pass - combined variant calling
@@ -169,10 +184,13 @@ def call_variants(
     driver: BaseDriver = Driver(
         reference=reference,
         thread_count=cores,
-        replace_rg=replace_rg_args,
+        replace_rg=replace_rg_args[0] + replace_rg_args[1],
         input=lr_aln + sr_aln,
         interval=bed,
-        read_filter=tr_read_filter + ultima_read_filter,
+        read_filter=tr_read_filter
+        + ultima_read_filter
+        + lr_rg_read_filter
+        + sr_rg_read_filter,
     )
     driver.add_algo(
         DNAscope(
@@ -206,8 +224,9 @@ def call_variants(
     driver = Driver(
         reference=reference,
         thread_count=cores,
-        replace_rg=replace_rg_args,
+        replace_rg=replace_rg_args[0] + replace_rg_args[1],
         input=lr_aln + sr_aln,
+        read_filter=lr_rg_read_filter + sr_rg_read_filter,
     )
     driver.add_algo(
         HybridStage2(
@@ -251,8 +270,9 @@ def call_variants(
     ins_driver = Driver(
         reference=reference,
         thread_count=cores,
-        replace_rg=replace_rg_args,
+        replace_rg=replace_rg_args[0],
         input=lr_aln,
+        read_filter=lr_rg_read_filter,
     )
     ins_driver.add_algo(
         HybridStage1(
@@ -269,9 +289,10 @@ def call_variants(
     stage1_driver = Driver(
         reference=reference,
         thread_count=cores,
-        replace_rg=replace_rg_args,
+        replace_rg=replace_rg_args[0],
         input=lr_aln,
         interval=diff_bed,
+        read_filter=lr_rg_read_filter,
     )
     stage1_driver.add_algo(
         HybridStage1(
@@ -334,9 +355,10 @@ def call_variants(
     driver = Driver(
         reference=reference,
         thread_count=cores,
-        replace_rg=replace_rg_args,
-        input=lr_aln + [stage2_unmap_bam, stage2_alt_bam] + sr_aln,
+        replace_rg=replace_rg_args[0] + replace_rg_args[1],
+        input=lr_aln + sr_aln + [stage2_unmap_bam, stage2_alt_bam],
         interval=stage2_bed,
+        read_filter=lr_rg_read_filter + sr_rg_read_filter,
     )
     driver.add_algo(
         HybridStage3(
@@ -361,10 +383,10 @@ def call_variants(
     driver = Driver(
         reference=reference,
         thread_count=cores,
-        replace_rg=replace_rg_args,
+        replace_rg=replace_rg_args[0],
         input=lr_aln + [stage3_bam],
         interval=stage2_bed,
-        read_filter=tr_read_filter + ultima_read_filter,
+        read_filter=tr_read_filter + ultima_read_filter + lr_rg_read_filter,
     )
     driver.add_algo(
         DNAscope(
@@ -589,30 +611,39 @@ def call_variants(
     type=path_arg(exists=True, is_file=True),
 )
 @arg(
-    "--lr_fastq_taglist",
-    help="A comma-separated list of tags to retain. Defaults to '%(default)s'"
-    " and the 'RG' tag is required",
-)
-@arg(
     "--bam_format",
     help="Use the BAM format instead of CRAM for output aligned files",
     action="store_true",
 )
 @arg(
+    "--rgsm",
+    help="Overwrite the SM tag of the input readgroups for compatibility",
+)
+@arg(
+    "--lr_fastq_taglist",
+    # help="A comma-separated list of tags to retain. Defaults to "
+    # "'%(default)s' and the 'RG' tag is required",
+    help=argparse.SUPPRESS,
+)
+@arg(
     "--bwa_args",
-    help="Extra arguments for sentieon bwa",
+    # help="Extra arguments for sentieon bwa",
+    help=argparse.SUPPRESS,
 )
 @arg(
     "--bwa_k",
-    help="The '-K' argument in bwa",
+    # help="The '-K' argument in bwa",
+    help=argparse.SUPPRESS,
 )
 @arg(
     "--minimap2_args",
-    help="Extra arguments for sentieon minimap2",
+    # help="Extra arguments for sentieon minimap2",
+    help=argparse.SUPPRESS,
 )
 @arg(
     "--util_sort_args",
-    help="Extra arguments for sentieon util sort",
+    # help="Extra arguments for sentieon util sort",
+    help=argparse.SUPPRESS,
 )
 @arg(
     "--skip_version_check",
@@ -634,6 +665,15 @@ def call_variants(
     "--no_split_alignment",
     help=argparse.SUPPRESS,
     action="store_true",
+)
+# Extra readgroup arguments
+@arg(
+    "--sr_read_filter",
+    help=argparse.SUPPRESS,
+)
+@arg(
+    "--lr_read_filter",
+    help=argparse.SUPPRESS,
 )
 def dnascope_hybrid(
     output_vcf: pathlib.Path,
@@ -658,8 +698,9 @@ def dnascope_hybrid(
     skip_cnv: bool = False,
     lr_align_input: bool = False,
     lr_input_ref: Optional[pathlib.Path] = None,
-    lr_fastq_taglist: str = "*",  # pylint: disable=W0613
     bam_format: bool = False,  # pylint: disable=W0613
+    rgsm: Optional[str] = None,
+    lr_fastq_taglist: str = "*",  # pylint: disable=W0613
     bwa_args: str = "",  # pylint: disable=W0613
     bwa_k: int = 100000000,
     minimap2_args: str = "-Y",  # pylint: disable=W0613
@@ -670,6 +711,8 @@ def dnascope_hybrid(
     retain_tmpdir: bool = False,
     bwt_max_mem: Optional[str] = None,
     no_split_alignment: bool = False,
+    sr_read_filter: Optional[str] = None,  # pylint: disable=W0613
+    lr_read_filter: Optional[str] = None,  # pylint: disable=W0613
     **kwargs: str,
 ):
     """
@@ -755,11 +798,12 @@ def dnascope_hybrid(
                     continue
                 if dry_run:
                     continue
-                elif rg_sm_tag != sm:
+                elif rg_sm_tag != sm and not rgsm:
                     logger.error(
                         "Input file '%s' has a different RG-SM tag from"
                         " previously seen alignment files.\nfound='%s'"
-                        " expected='%s'",
+                        " expected='%s'. Please set the `--rgsm` argument to"
+                        " fix",
                         aln,
                         sm,
                         rg_sm_tag,
@@ -777,15 +821,19 @@ def dnascope_hybrid(
             continue
         if dry_run:
             continue
-        elif rg_sm_tag != sm:
+        elif rg_sm_tag != sm and not rgsm:
             logger.error(
                 "Input readgroup, '%s' has a different RG-SM tag from"
-                " previously seen tags.\nfound='%s'\nexpected='%s'",
+                " previously seen tags.\nfound='%s'\nexpected='%s'. Please"
+                " set the `--rgsm` argument to fix.",
                 rg,
                 sm,
                 rg_sm_tag,
             )
             sys.exit(2)
+    hybrid_set_rg = True if rgsm else False
+    if rgsm:
+        hybrid_rg_sm = rgsm
 
     if not library_preloaded("libjemalloc.so"):
         logger.warning(

@@ -389,8 +389,8 @@ def hybrid_stage1(
     return (
         shlex.join(unset_cmd)
         + "; ("
-        + "; ".join(fq_cmds)
-        + ") | "
+        + " || echo -n 'error'; ".join(fq_cmds)
+        + " || echo -n 'error') | "
         + " | ".join(shlex.join(x) for x in aln_cmds)
     )
 
