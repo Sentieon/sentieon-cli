@@ -144,7 +144,7 @@ def call_variants(
                     rg_line,
                 )
                 sys.exit(2)
-            replace_rg_args[0][-1].append(f"{id}=ID:{id}\\tSM{new_sm}\\tLR:1")
+            replace_rg_args[0][-1].append(f"{id}=ID:{id}\\tSM:{new_sm}\\tLR:1")
             if lr_read_filter:
                 lr_rg_read_filter.append(f"{lr_read_filter},rgid={id}")
             if longread_tech.upper() == "ONT":
@@ -171,7 +171,7 @@ def call_variants(
                 )
                 sys.exit(2)
             if hybrid_set_rg:
-                replace_rg_args[1][-1].append(f"{id}=ID:{id}\\tSM{new_sm}")
+                replace_rg_args[1][-1].append(f"{id}=ID:{id}\\tSM:{new_sm}")
             if sr_read_filter:
                 sr_rg_read_filter.append(f"{sr_read_filter},rgid={id}")
             if shortread_tech.upper() == "ULTIMA":
