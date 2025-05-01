@@ -893,8 +893,8 @@ def hificnv(
 @arg(
     "-b",
     "--bed",
-    help="Region BED file. Supplying this file will limit variant calling \
-    to the intervals inside the BED file.",
+    help="Region BED file. Supplying this file will restrict diploid variant \
+    calling to the intervals inside the BED file.",
     type=path_arg(exists=True, is_file=True),
 )
 @arg(
