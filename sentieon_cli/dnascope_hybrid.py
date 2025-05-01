@@ -230,7 +230,7 @@ def call_variants(
     )
     driver.add_algo(
         HybridStage2(
-            mode="4",
+            model=model_bundle.joinpath("HybridStage2_region.model"),
             all_bed=mapq0_bed,
         )
     )
@@ -313,6 +313,7 @@ def call_variants(
             readgroup=f"@RG\\tID:hybrid-18893\\tSM:{hybrid_rg_sm}",
             ins_driver=ins_driver,
             stage1_driver=stage1_driver,
+            bwa_model=model_bundle.joinpath("HybridStage1_bwa.model"),
         ),
         "first-stage",
         cores,

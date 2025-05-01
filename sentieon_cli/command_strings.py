@@ -347,7 +347,7 @@ def hybrid_stage1(
     readgroup: str,
     ins_driver: BaseDriver,
     stage1_driver: BaseDriver,
-    bwa_args: str = "-M -h 200 -y 200 -K 10000000",
+    bwa_model: pathlib.Path,
 ) -> str:
     unset_cmd = ["unset", "bwt_max_mem"]
     fq_cmds = []
@@ -364,9 +364,8 @@ def hybrid_stage1(
             readgroup,
             "-t",
             str(cores),
-        ]
-        + bwa_args.split()
-        + [
+            "-x",
+            str(bwa_model),
             str(reference),
             "-",
         ]
