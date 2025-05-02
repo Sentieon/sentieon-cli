@@ -56,7 +56,7 @@ logger = get_logger(__name__)
 
 
 CALLING_MIN_VERSIONS = {
-    "sentieon driver": packaging.version.Version("202503"),
+    "sentieon driver": packaging.version.Version("202503.01"),
     "bedtools": None,
     "bcftools": packaging.version.Version("1.10"),
     "samtools": packaging.version.Version("1.16"),

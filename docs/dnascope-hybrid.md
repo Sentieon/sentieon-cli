@@ -19,7 +19,7 @@ The DNAscope Hybrid pipeline is implemented using the Sentieon software package,
 
 ## Prerequisites
 
-- Sentieon software package version 202503 or higher.
+- Sentieon software package version 202503.01 or higher.
 - [Python] version 3.8 or higher.
 - [bcftools] version 1.10 or higher.
 - [bedtools]
