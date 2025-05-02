@@ -345,16 +345,13 @@ def hybrid_stage1(
     reference: pathlib.Path,
     cores: int,
     readgroup: str,
-    nocoor_driver: Optional[BaseDriver],
     ins_driver: BaseDriver,
     stage1_driver: BaseDriver,
-    bwa_args: str = "-M -h 200 -y 200 -K 10000000",
+    bwa_model: pathlib.Path,
 ) -> str:
     unset_cmd = ["unset", "bwt_max_mem"]
     fq_cmds = []
     fq_cmds.append(shlex.join(stage1_driver.build_cmd()))
-    if nocoor_driver:
-        fq_cmds.append(shlex.join(nocoor_driver.build_cmd()))
     fq_cmds.append(shlex.join(ins_driver.build_cmd()))
 
     aln_cmds = []
@@ -367,9 +364,8 @@ def hybrid_stage1(
             readgroup,
             "-t",
             str(cores),
-        ]
-        + bwa_args.split()
-        + [
+            "-x",
+            str(bwa_model),
             str(reference),
             "-",
         ]
@@ -392,8 +388,8 @@ def hybrid_stage1(
     return (
         shlex.join(unset_cmd)
         + "; ("
-        + "; ".join(fq_cmds)
-        + ") | "
+        + " || echo -n 'error'; ".join(fq_cmds)
+        + " || echo -n 'error') | "
         + " | ".join(shlex.join(x) for x in aln_cmds)
     )
 

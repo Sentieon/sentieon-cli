@@ -19,7 +19,7 @@ The DNAscope Hybrid pipeline is implemented using the Sentieon software package,
 
 ## Prerequisites
 
-- Sentieon software package version 202503 or higher.
+- Sentieon software package version 202503.01 or higher.
 - [Python] version 3.8 or higher.
 - [bcftools] version 1.10 or higher.
 - [bedtools]
@@ -51,7 +51,6 @@ sentieon-cli dnascope-hybrid \
   [-d DBSNP] \
   [-b DIPLOID_BED] \
   [-t NUMBER_THREADS] \
-  [--longread_tech TECH] \
   sample.vcf.gz
 ```
 
@@ -66,7 +65,6 @@ The DNAscope Hybrid pipeline accepts the following optional arguments:
 - `-d DBSNP`: the location of the Single Nucleotide Polymorphism database (dbSNP) used to label known variants in VCF (`.vcf`) or bgzip compressed VCF (`.vcf.gz`) format. Only one file is supported. Supplying this file will annotate variants with their dbSNP refSNP ID numbers. A VCF index file is required.
 - `-b DIPLOID_BED`: interval in the reference to restrict diploid variant calling, in BED file format. Supplying this file will limit diploid variant calling to the intervals inside the BED file.
 - `-t NUMBER_THREADS`: number of computing threads that will be used by the software to run parallel processes. The argument is optional; if omitted, the pipeline will use as many threads as the server has.
-- `--longread_tech TECH`: the technology used to generate the long-read sequence data. The default is HIFI. With long-read nanopore sequence data, please set `--longread_tech ONT`.
 - `-h`: print the command-line help and exit.
 - `--dry_run`: print the pipeline commands, but do not actually execute them.
 
@@ -85,7 +83,6 @@ sentieon-cli dnascope-hybrid \
   [-d DBSNP] \
   [-b DIPLOID_BED] \
   [-t NUMBER_THREADS] \
-  [--longread_tech TECH] \
   sample.vcf.gz
 ```
 
@@ -112,6 +109,12 @@ The following files are output by the DNAscope Hybrid pipeline:
 - `sample_deduped.cram`: aligned, coordinate-sorted and duplicate-marked short-read data from the input FASTQ files.
 - `sample_mm2_sorted_*.cram`: aligned and coordinate-sorted long-reads from the input uBAM, uCRAM, BAM, or CRAM files.
 - `sample_metrics`: a directory containing QC metrics for the analyzed sample.
+
+## Troubleshooting
+
+### The pipeline complains, "Input ... has a different RG-SM tag"
+
+This error will occur if the pipeline detects that the input files have (or will have) different readgroup `SM` tags. To fix this error, please use the `--rgsm` argument to adjust the `SM` tags of the input files during variant calling. Note that with this argument, all reads in the input files will be used during variant calling. 
 
 
 [Python]: https://www.python.org/

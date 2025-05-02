@@ -1,8 +1,5 @@
 name: CI-main
 on:
-  push:
-    branches:
-      - main
   pull_request:
 
 env:
@@ -17,9 +14,9 @@ jobs:
       fail-fast: true
       max-parallel: 1
       matrix:
-        python-version: ["3.8", "3.12"]
+        python-version: ["3.8", "3.13"]
         poetry-version: ["1.5.1"]
-        sentieon-version: ["202308.01", "202503"]
+        sentieon-version: ["202503"]
         os: [ubuntu-22.04] #, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
@@ -156,4 +153,3 @@ jobs:
           if [ ! -f "output fq.vcf.gz" -o ! -f "output fq_mm2_sorted_fq_0.cram" -o ! -f "output fq.sv.vcf.gz" ]; then
             exit 1
           fi
-      

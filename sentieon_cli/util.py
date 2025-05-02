@@ -16,7 +16,7 @@ import packaging.version
 
 from .logging import get_logger
 
-__version__ = "1.2.1"
+__version__ = "1.2.2"
 
 logger = get_logger(__name__)
 

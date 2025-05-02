@@ -763,7 +763,7 @@ def merge_input_files(
                 sys.exit(2)
 
     # Merge the sample_input into a single BAM
-    merged_bam = tmp_dir.joinpath("pbsv_merged.bam")
+    merged_bam = tmp_dir.joinpath("longread_merged.bam")
     driver = Driver(
         reference=reference,
         thread_count=cores,
@@ -772,7 +772,7 @@ def merge_input_files(
     driver.add_algo(ReadWriter(merged_bam))
     merge_job = Job(
         shlex.join(driver.build_cmd()),
-        "pbsv-merge-bam",
+        "merge-bam",
         0,
     )
     return (merged_bam, merge_job)
@@ -893,8 +893,8 @@ def hificnv(
 @arg(
     "-b",
     "--bed",
-    help="Region BED file. Supplying this file will limit variant calling \
-    to the intervals inside the BED file.",
+    help="Region BED file. Supplying this file will restrict diploid variant \
+    calling to the intervals inside the BED file.",
     type=path_arg(exists=True, is_file=True),
 )
 @arg(

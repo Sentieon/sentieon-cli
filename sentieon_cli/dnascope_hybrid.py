@@ -11,7 +11,7 @@ import pathlib
 import shlex
 import shutil
 import sys
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, List, Optional, Set, Tuple, Union
 
 import packaging.version
 
@@ -45,7 +45,6 @@ from .scheduler import ThreadScheduler
 from .util import (
     __version__,
     check_version,
-    get_read_length_aln,
     library_preloaded,
     parse_rg_line,
     path_arg,
@@ -57,7 +56,7 @@ logger = get_logger(__name__)
 
 
 CALLING_MIN_VERSIONS = {
-    "sentieon driver": packaging.version.Version("202503"),
+    "sentieon driver": packaging.version.Version("202503.01"),
     "bedtools": None,
     "bcftools": packaging.version.Version("1.10"),
     "samtools": packaging.version.Version("1.16"),
@@ -82,7 +81,7 @@ def call_variants(
     sr_aln: List[pathlib.Path],
     lr_aln: List[pathlib.Path],
     model_bundle: pathlib.Path,
-    sr_read_length: int,
+    hybrid_set_rg: bool,
     hybrid_rg_sm: str = "",
     dbsnp: Optional[pathlib.Path] = None,
     bed: Optional[pathlib.Path] = None,
@@ -92,11 +91,10 @@ def call_variants(
     shortread_tech: str = "Illumina",
     dry_run: bool = False,
     skip_version_check: bool = False,
-    use_nocoor: bool = False,
-    stage3_ext: int = 1000,
+    sr_read_filter: Optional[str] = None,
+    lr_read_filter: Optional[str] = None,
     **_kwargs: Any,
 ) -> Tuple[
-    Job,
     Job,
     Job,
     Job,
@@ -130,12 +128,15 @@ def call_variants(
 
     # readgroup handling for long-reads
     tr_read_filter: List[str] = []
-    replace_rg_args: List[List[str]] = []
+    lr_rg_read_filter: List[str] = []
+    replace_rg_args: Tuple[List[List[str]], List[List[str]]] = ([], [])
     for aln in lr_aln:
         aln_rgs = cmds.get_rg_lines(aln, dry_run)
-        replace_rg_args.append([])
+        replace_rg_args[0].append([])
         for rg_line in aln_rgs:
-            id = parse_rg_line(rg_line).get("ID")
+            rg_line_d = parse_rg_line(rg_line)
+            id = rg_line_d.get("ID")
+            new_sm = hybrid_rg_sm if hybrid_set_rg else rg_line_d.get("SM")
             if not id:
                 logger.error(
                     "Input file '%s' has a readgroup without an ID tag: %s",
@@ -143,40 +144,37 @@ def call_variants(
                     rg_line,
                 )
                 sys.exit(2)
-            replace_rg_args[-1].append(
-                f"{id}={rg_line}\tLR:1".replace("\t", "\\t")
-            )
+            replace_rg_args[0][-1].append(f"{id}=ID:{id}\\tSM:{new_sm}\\tLR:1")
+            if lr_read_filter:
+                lr_rg_read_filter.append(f"{lr_read_filter},rgid={id}")
             if longread_tech.upper() == "ONT":
                 tr_read_filter.append(
                     f"TrimRepeat,max_repeat_unit=2,min_repeat_span=6,rgid={id}"
                 )
-    stage1_args: Dict[str, Any] = {
-        "split_size": 500,
-    }
-    if longread_tech.upper() == "ONT":
-        stage1_args = {
-            "split_size": 300,
-            "kmer_missing_rate": 0.001,
-            "mk_avg_bq": 23,
-            "prune_factor": 2,
-            "mk_max_init_hapcnt": 200,
-            "ploidy": 4,
-        }
 
     # readgroup handling for short-reads
+    sr_rg_read_filter: List[str] = []
     ultima_read_filter: List[str] = []
-    if shortread_tech.upper() == "ULTIMA":
-        for aln in sr_aln:
-            aln_rgs = cmds.get_rg_lines(aln, dry_run)
-            for rg_line in aln_rgs:
-                id = parse_rg_line(rg_line).get("ID")
-                if not id:
-                    logger.error(
-                        "Input file '%s' has a readgroup without an ID tag:%s",
-                        aln,
-                        rg_line,
-                    )
-                    sys.exit(2)
+    for aln in sr_aln:
+        aln_rgs = cmds.get_rg_lines(aln, dry_run)
+        if hybrid_set_rg:
+            replace_rg_args[1].append([])
+        for rg_line in aln_rgs:
+            rg_line_d = parse_rg_line(rg_line)
+            id = rg_line_d.get("ID")
+            new_sm = hybrid_rg_sm if hybrid_set_rg else rg_line_d.get("SM")
+            if not id:
+                logger.error(
+                    "Input file '%s' has a readgroup without an ID tag:%s",
+                    aln,
+                    rg_line,
+                )
+                sys.exit(2)
+            if hybrid_set_rg:
+                replace_rg_args[1][-1].append(f"{id}=ID:{id}\\tSM:{new_sm}")
+            if sr_read_filter:
+                sr_rg_read_filter.append(f"{sr_read_filter},rgid={id}")
+            if shortread_tech.upper() == "ULTIMA":
                 ultima_read_filter.append(f"UltimaReadFilter,rgid={id}")
 
     # First pass - combined variant calling
@@ -186,10 +184,13 @@ def call_variants(
     driver: BaseDriver = Driver(
         reference=reference,
         thread_count=cores,
-        replace_rg=replace_rg_args,
+        replace_rg=replace_rg_args[0] + replace_rg_args[1],
         input=lr_aln + sr_aln,
         interval=bed,
-        read_filter=tr_read_filter + ultima_read_filter,
+        read_filter=tr_read_filter
+        + ultima_read_filter
+        + lr_rg_read_filter
+        + sr_rg_read_filter,
     )
     driver.add_algo(
         DNAscope(
@@ -216,19 +217,20 @@ def call_variants(
             threads=cores,
         ),
         "hybrid-select",
-        1,
+        0,
     )
 
     mapq0_bed = tmp_dir.joinpath("hybrid_mapq0.bed")
     driver = Driver(
         reference=reference,
         thread_count=cores,
-        replace_rg=replace_rg_args,
+        replace_rg=replace_rg_args[0] + replace_rg_args[1],
         input=lr_aln + sr_aln,
+        read_filter=lr_rg_read_filter + sr_rg_read_filter,
     )
     driver.add_algo(
         HybridStage2(
-            mode="4",
+            model=model_bundle.joinpath("HybridStage2_region.model"),
             all_bed=mapq0_bed,
         )
     )
@@ -263,41 +265,21 @@ def call_variants(
     rm_cmd = ["rm", str(selected_bed), str(mapq0_slop_bed)]
     rm_job1 = Job(shlex.join(rm_cmd), "rm-tmp1", 0, True)
 
-    nocoor_driver: Optional[BaseDriver] = None
-    stage1_nocoor_fa = tmp_dir.joinpath("stage1_nocoor.fa")
-    stage1_nocoor_bed = tmp_dir.joinpath("stage1_nocoor.bed")
-    if use_nocoor:
-        nocoor_driver = Driver(
-            reference=reference,
-            thread_count=cores,
-            replace_rg=replace_rg_args,
-            input=lr_aln,
-            interval="NO_COOR",
-        )
-        nocoor_driver.add_algo(
-            HybridStage1(
-                "-",
-                model=model_bundle.joinpath("HybridStage1.model"),
-                fa_file=stage1_nocoor_fa,
-                bed_file=stage1_nocoor_bed,
-            )
-        )
-
     stage1_ins_fa = tmp_dir.joinpath("stage1_ins.fa")
     stage1_ins_bed = tmp_dir.joinpath("stage1_ins.bed")
     ins_driver = Driver(
         reference=reference,
         thread_count=cores,
-        replace_rg=replace_rg_args,
+        replace_rg=replace_rg_args[0],
         input=lr_aln,
+        read_filter=lr_rg_read_filter,
     )
     ins_driver.add_algo(
         HybridStage1(
             "-",
-            model=model_bundle.joinpath("HybridStage1.model"),
+            model=model_bundle.joinpath("HybridStage1_ins.model"),
             fa_file=stage1_ins_fa,
             bed_file=stage1_ins_bed,
-            cut_indel=1,
         )
     )
 
@@ -307,9 +289,10 @@ def call_variants(
     stage1_driver = Driver(
         reference=reference,
         thread_count=cores,
-        replace_rg=replace_rg_args,
+        replace_rg=replace_rg_args[0],
         input=lr_aln,
         interval=diff_bed,
+        read_filter=lr_rg_read_filter,
     )
     stage1_driver.add_algo(
         HybridStage1(
@@ -317,10 +300,7 @@ def call_variants(
             model=model_bundle.joinpath("HybridStage1.model"),
             hap_bam=stage1_hap_bam,
             hap_bed=stage1_hap_bed,
-            cut_len=sr_read_length,
-            split_overlap=sr_read_length,
             hap_vcf=stage1_hap_vcf,
-            **stage1_args,
         )
     )
 
@@ -331,17 +311,15 @@ def call_variants(
             reference=reference,
             cores=cores,
             readgroup=f"@RG\\tID:hybrid-18893\\tSM:{hybrid_rg_sm}",
-            nocoor_driver=nocoor_driver,
             ins_driver=ins_driver,
             stage1_driver=stage1_driver,
+            bwa_model=model_bundle.joinpath("HybridStage1_bwa.model"),
         ),
         "first-stage",
         cores,
     )
     rm_cmd = [
         "rm",
-        str(stage1_nocoor_fa),
-        str(stage1_nocoor_bed),
         str(stage1_ins_fa),
         str(stage1_ins_bed),
         str(stage1_hap_vcf),
@@ -349,7 +327,6 @@ def call_variants(
     rm_job2 = Job(shlex.join(rm_cmd), "rm-tmp2", 0, True)
 
     stage2_bed = tmp_dir.joinpath("hybrid_stage2.bed")
-    stage2_reg_bed = tmp_dir.joinpath("hybrid_stage2_reg.bed")
     stage2_unmap_bam = tmp_dir.joinpath("hybrid_stage2_unmap.bam")
     stage2_alt_bam = tmp_dir.joinpath("hybrid_stage2_alt.bam")
     driver = Driver(
@@ -364,10 +341,6 @@ def call_variants(
             unmap_bam=stage2_unmap_bam,
             alt_bam=stage2_alt_bam,
             all_bed=stage2_bed,
-            min_kmer_size=80,
-            prune_factor=5,
-            target_extension=30,
-            mode="0",
         )
     )
     second_stage_job = Job(
@@ -375,31 +348,23 @@ def call_variants(
         "second-stage",
         cores,
     )
-    merge_job = Job(
-        cmds.cmd_bedtools_merge(
-            stage2_bed,
-            stage2_reg_bed,
-            distance=2 * stage3_ext,
-        ),
-        "merge-bed",
-        0,
-    )
-    rm_cmd = ["rm", str(stage1_bam), str(stage1_hap_bam), str(stage2_bed)]
+
+    rm_cmd = ["rm", str(stage1_bam), str(stage1_hap_bam)]
     rm_job3 = Job(shlex.join(rm_cmd), "rm-tmp3", 0, True)
 
     stage3_bam = tmp_dir.joinpath("hybrid_stage3.bam")
     driver = Driver(
         reference=reference,
         thread_count=cores,
-        replace_rg=replace_rg_args,
-        input=lr_aln + [stage2_unmap_bam, stage2_alt_bam] + sr_aln,
-        interval=stage2_reg_bed,
+        replace_rg=replace_rg_args[0] + replace_rg_args[1],
+        input=lr_aln + sr_aln + [stage2_unmap_bam, stage2_alt_bam],
+        interval=stage2_bed,
+        read_filter=lr_rg_read_filter + sr_rg_read_filter,
     )
     driver.add_algo(
         HybridStage3(
             "-",
             model=model_bundle.joinpath("HybridStage3.model"),
-            region_ext=stage3_ext,
         )
     )
     third_stage_job = Job(
@@ -419,10 +384,10 @@ def call_variants(
     driver = Driver(
         reference=reference,
         thread_count=cores,
-        replace_rg=replace_rg_args,
+        replace_rg=replace_rg_args[0],
         input=lr_aln + [stage3_bam],
-        interval=stage2_reg_bed,
-        read_filter=tr_read_filter + ultima_read_filter,
+        interval=stage2_bed,
+        read_filter=tr_read_filter + ultima_read_filter + lr_rg_read_filter,
     )
     driver.add_algo(
         DNAscope(
@@ -442,7 +407,7 @@ def call_variants(
         cmds.bcftools_subset(
             subset_vcf,
             combined_vcf,
-            stage2_reg_bed,
+            stage2_bed,
         ),
         "subset-calls",
         0,
@@ -512,7 +477,6 @@ def call_variants(
         stage1_job,
         rm_job2,
         second_stage_job,
-        merge_job,
         rm_job3,
         third_stage_job,
         rm_job4,
@@ -607,17 +571,16 @@ def call_variants(
     action="store_true",
 )
 @arg(
-    "--longread_tech",
-    help="Sequencing technology used to generate the long reads.",
-    choices=["HiFi", "ONT"],
-)
-@arg(
     "--dry_run",
     help="Print the commands without running them.",
 )
 @arg(
     "--skip_svs",
     help="Skip SV calling",
+)
+@arg(
+    "--skip_metrics",
+    help="Skip all metrics collection and multiQC",
 )
 @arg(
     "--skip_mosdepth",
@@ -644,30 +607,39 @@ def call_variants(
     type=path_arg(exists=True, is_file=True),
 )
 @arg(
-    "--lr_fastq_taglist",
-    help="A comma-separated list of tags to retain. Defaults to '%(default)s'"
-    " and the 'RG' tag is required",
-)
-@arg(
     "--bam_format",
     help="Use the BAM format instead of CRAM for output aligned files",
     action="store_true",
 )
 @arg(
+    "--rgsm",
+    help="Overwrite the SM tag of the input readgroups for compatibility",
+)
+@arg(
+    "--lr_fastq_taglist",
+    # help="A comma-separated list of tags to retain. Defaults to "
+    # "'%(default)s' and the 'RG' tag is required",
+    help=argparse.SUPPRESS,
+)
+@arg(
     "--bwa_args",
-    help="Extra arguments for sentieon bwa",
+    # help="Extra arguments for sentieon bwa",
+    help=argparse.SUPPRESS,
 )
 @arg(
     "--bwa_k",
-    help="The '-K' argument in bwa",
+    # help="The '-K' argument in bwa",
+    help=argparse.SUPPRESS,
 )
 @arg(
     "--minimap2_args",
-    help="Extra arguments for sentieon minimap2",
+    # help="Extra arguments for sentieon minimap2",
+    help=argparse.SUPPRESS,
 )
 @arg(
     "--util_sort_args",
-    help="Extra arguments for sentieon util sort",
+    # help="Extra arguments for sentieon util sort",
+    help=argparse.SUPPRESS,
 )
 @arg(
     "--skip_version_check",
@@ -690,10 +662,14 @@ def call_variants(
     help=argparse.SUPPRESS,
     action="store_true",
 )
+# Extra readgroup arguments
 @arg(
-    "--use_nocoor",
+    "--sr_read_filter",
     help=argparse.SUPPRESS,
-    action="store_true",
+)
+@arg(
+    "--lr_read_filter",
+    help=argparse.SUPPRESS,
 )
 def dnascope_hybrid(
     output_vcf: pathlib.Path,
@@ -709,16 +685,17 @@ def dnascope_hybrid(
     cores: int = mp.cpu_count(),
     gvcf: bool = False,  # pylint: disable=W0613
     sr_duplicate_marking: str = "markdup",
-    longread_tech: str = "HiFi",  # pylint: disable=W0613
     dry_run: bool = False,
     skip_svs: bool = False,
     skip_mosdepth: bool = False,
+    skip_metrics: bool = False,
     skip_multiqc: bool = False,
     skip_cnv: bool = False,
     lr_align_input: bool = False,
     lr_input_ref: Optional[pathlib.Path] = None,
-    lr_fastq_taglist: str = "*",  # pylint: disable=W0613
     bam_format: bool = False,  # pylint: disable=W0613
+    rgsm: Optional[str] = None,
+    lr_fastq_taglist: str = "*",  # pylint: disable=W0613
     bwa_args: str = "",  # pylint: disable=W0613
     bwa_k: int = 100000000,
     minimap2_args: str = "-Y",  # pylint: disable=W0613
@@ -729,7 +706,8 @@ def dnascope_hybrid(
     retain_tmpdir: bool = False,
     bwt_max_mem: Optional[str] = None,
     no_split_alignment: bool = False,
-    use_nocoor: bool = False,
+    sr_read_filter: Optional[str] = None,  # pylint: disable=W0613
+    lr_read_filter: Optional[str] = None,  # pylint: disable=W0613
     **kwargs: str,
 ):
     """
@@ -743,10 +721,11 @@ def dnascope_hybrid(
     sr_r2_fastq = sr_r2_fastq if sr_r2_fastq else []
     sr_readgroups = sr_readgroups if sr_readgroups else []
     sr_aln = sr_aln if sr_aln else []
-
     lr_aln = lr_aln if lr_aln else []
     assert lr_aln
     bwa_k_arg = str(bwa_k)
+    skip_multiqc = True if skip_metrics else skip_multiqc
+    skip_mosdepth = True if skip_metrics else skip_mosdepth
 
     assert logger.parent
     logger.parent.setLevel(kwargs["loglevel"])
@@ -760,7 +739,6 @@ def dnascope_hybrid(
     set_bwt_max_mem(bwt_max_mem, None, n_alignment_jobs)
 
     # Parse the bundle_info.json file
-    longread_tech_cli = longread_tech
     bundle_info_bytes = ar_load(str(model_bundle) + "/bundle_info.json")
     if isinstance(bundle_info_bytes, list):
         bundle_info_bytes = b"{}"
@@ -769,15 +747,34 @@ def dnascope_hybrid(
     longread_tech = bundle_info.get("longReadPlatform")
     shortread_tech = bundle_info.get("shortReadPlatform")
     if not longread_tech or not shortread_tech:
-        # logger.warning(
-        #     "The model bundle file does not have the expected attributes. "
-        #     "Are you using the latest version?"
-        # )
-        pass
-    if not longread_tech:
-        longread_tech = longread_tech_cli
+        logger.error(
+            "The bundle file does not have the expected attributes. "
+            "Please check that you using the latest bundle version."
+        )
+        sys.exit(2)
     if not shortread_tech:
         shortread_tech = "Illumina"
+    req_version = packaging.version.Version(
+        bundle_info.get("minScriptVersion", __version__)
+    )
+    if req_version > packaging.version.Version(__version__):
+        logger.error(
+            "The model bundle requires version %s or later of the "
+            "sentieon-cli.",
+            req_version,
+        )
+        sys.exit(2)
+    if bundle_info.get("pipeline", "DNAscope Hybrid") != "DNAscope Hybrid":
+        logger.error("The model bundle is for a different pipeline.")
+        sys.exit(2)
+
+    bundle_members = set(ar_load(str(model_bundle)))
+    if "longreadsv.model" not in bundle_members:
+        logger.info("No LongReadSV model found. Skipping SV calling")
+        skip_svs = True
+    if "cnv.model" not in bundle_members:
+        logger.info("No CNVscope model found. Skipping CNV calling")
+        skip_cnv = True
 
     # Confirm that all readgroups have the same RGSM
     hybrid_rg_sm = ""
@@ -801,11 +798,12 @@ def dnascope_hybrid(
                     continue
                 if dry_run:
                     continue
-                elif rg_sm_tag != sm:
+                elif rg_sm_tag != sm and not rgsm:
                     logger.error(
                         "Input file '%s' has a different RG-SM tag from"
                         " previously seen alignment files.\nfound='%s'"
-                        " expected='%s'",
+                        " expected='%s'. Please set the `--rgsm` argument to"
+                        " fix",
                         aln,
                         sm,
                         rg_sm_tag,
@@ -823,15 +821,19 @@ def dnascope_hybrid(
             continue
         if dry_run:
             continue
-        elif rg_sm_tag != sm:
+        elif rg_sm_tag != sm and not rgsm:
             logger.error(
                 "Input readgroup, '%s' has a different RG-SM tag from"
-                " previously seen tags.\nfound='%s'\nexpected='%s'",
+                " previously seen tags.\nfound='%s'\nexpected='%s'. Please"
+                " set the `--rgsm` argument to fix.",
                 rg,
                 sm,
                 rg_sm_tag,
             )
             sys.exit(2)
+    hybrid_set_rg = True if rgsm else False
+    if rgsm:
+        hybrid_rg_sm = rgsm
 
     if not library_preloaded("libjemalloc.so"):
         logger.warning(
@@ -848,7 +850,7 @@ def dnascope_hybrid(
     tmp_dir_str = tmp()
     tmp_dir = pathlib.Path(tmp_dir_str)
 
-    logger.info("Building the fist DAG")
+    logger.info("Building the DAG")
     dag = DAG()
 
     # Short-read alignment
@@ -871,15 +873,16 @@ def dnascope_hybrid(
         **locals(),
     )
     sr_aln = deduped
-    dag.add_job(lc_job, align_fastq_jobs)
-    if dedup_job:
-        dag.add_job(dedup_job, {lc_job})
-        if metrics_job:
-            dag.add_job(metrics_job, {dedup_job})
-            if rehead_job:
-                dag.add_job(rehead_job, {metrics_job})
-        if fq_rm_job:
-            dag.add_job(fq_rm_job, {dedup_job})
+    if lc_job:
+        dag.add_job(lc_job, align_fastq_jobs)
+        if dedup_job:
+            dag.add_job(dedup_job, {lc_job})
+            if metrics_job and not skip_metrics:
+                dag.add_job(metrics_job, {dedup_job})
+                if rehead_job:
+                    dag.add_job(rehead_job, {metrics_job})
+            if fq_rm_job:
+                dag.add_job(fq_rm_job, {dedup_job})
 
     # Long-read alignment
     realign_jobs: Set[Job] = set()
@@ -901,7 +904,8 @@ def dnascope_hybrid(
     if not skip_multiqc:
         multiqc_job = multiqc(**locals())
         multiqc_dependencies: Set[Job] = set()
-        multiqc_dependencies.add(lc_job)
+        if lc_job:
+            multiqc_dependencies.add(lc_job)
         if metrics_job:
             multiqc_dependencies.add(metrics_job)
         if rehead_job:
@@ -915,47 +919,15 @@ def dnascope_hybrid(
         longreadsv_job = call_svs(**locals())
         dag.add_job(longreadsv_job, realign_jobs)
 
+    sr_preprocessing_jobs: Set[Job] = set()
+    sr_preprocessing_jobs.update(align_fastq_jobs)
+    if dedup_job:
+        sr_preprocessing_jobs.add(dedup_job)
     if not skip_cnv:
-        sr_preprocessing_jobs: Set[Job] = set()
-        sr_preprocessing_jobs.update(align_fastq_jobs)
-        if dedup_job:
-            sr_preprocessing_jobs.add(dedup_job)
         sample_input = sr_aln
         cnvscope_job, cnvmodelapply_job = call_cnvs(**locals())
         dag.add_job(cnvscope_job, sr_preprocessing_jobs)
         dag.add_job(cnvmodelapply_job, {cnvscope_job})
-
-    # Perform inital processing first
-    #  - necessary to ensure we can get read length from aligned short-reads
-    logger.debug("Creating the first scheduler")
-    scheduler = ThreadScheduler(
-        dag,
-        cores,
-    )
-
-    logger.debug("Creating the first executor")
-    Executor = DryRunExecutor if dry_run else LocalExecutor
-    executor = Executor(scheduler)
-
-    logger.info("Starting first execution")
-    executor.execute()
-
-    if executor.jobs_with_errors:
-        raise CommandError("Preprocessing failed")
-    if len(dag.waiting_jobs) > 0 or len(dag.ready_jobs) > 0:
-        raise CommandError(
-            "The DAG has some unexecuted jobs\n"
-            f"Waiting jobs: {dag.waiting_jobs}\n"
-            f"Ready jobs: {dag.ready_jobs}\n"
-        )
-
-    # Find the read length of short reads
-    sr_read_length = 151
-    if not dry_run:
-        sr_read_length = get_read_length_aln(sr_aln[0], reference)
-
-    logger.info("Building the second DAG")
-    dag = DAG()
 
     (
         call_job,
@@ -967,7 +939,6 @@ def dnascope_hybrid(
         stage1_job,
         rm_job2,
         second_stage_job,
-        merge_job,
         rm_job3,
         third_stage_job,
         rm_job4,
@@ -979,17 +950,16 @@ def dnascope_hybrid(
         apply_job,
         norm_job,
     ) = call_variants(**locals())
-    dag.add_job(call_job)
+    dag.add_job(call_job, realign_jobs | sr_preprocessing_jobs)
     dag.add_job(select_job, {call_job})
-    dag.add_job(mapq0_job)
+    dag.add_job(mapq0_job, realign_jobs | sr_preprocessing_jobs)
     dag.add_job(mapq0_slop_job, {mapq0_job})
     dag.add_job(cat_merge_job, {mapq0_slop_job, select_job})
     dag.add_job(stage1_job, {cat_merge_job})
     dag.add_job(second_stage_job, {stage1_job})
-    dag.add_job(merge_job, {second_stage_job})
-    dag.add_job(third_stage_job, {merge_job})
+    dag.add_job(third_stage_job, {second_stage_job})
     dag.add_job(call2_job, {third_stage_job})
-    dag.add_job(subset_job, {merge_job})
+    dag.add_job(subset_job, {second_stage_job})
     dag.add_job(concat_job, {subset_job, call2_job})
     dag.add_job(anno_job, {concat_job})
     dag.add_job(apply_job, {anno_job})
@@ -999,21 +969,21 @@ def dnascope_hybrid(
     if not retain_tmpdir:
         dag.add_job(rm_job1, {cat_merge_job})
         dag.add_job(rm_job2, {stage1_job})
-        dag.add_job(rm_job3, {merge_job})
+        dag.add_job(rm_job3, {second_stage_job})
         dag.add_job(rm_job4, {third_stage_job})
         dag.add_job(rm_job5, {concat_job})
 
-    logger.debug("Creating the second scheduler")
+    logger.debug("Creating the scheduler")
     scheduler = ThreadScheduler(
         dag,
         cores,
     )
 
-    logger.debug("Creating the second executor")
+    logger.debug("Creating the executor")
     Executor = DryRunExecutor if dry_run else LocalExecutor
     executor = Executor(scheduler)
 
-    logger.info("Starting second execution")
+    logger.info("Starting execution")
     executor.execute()
 
     if not retain_tmpdir:
