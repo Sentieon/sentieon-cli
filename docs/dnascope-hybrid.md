@@ -110,6 +110,12 @@ The following files are output by the DNAscope Hybrid pipeline:
 - `sample_mm2_sorted_*.cram`: aligned and coordinate-sorted long-reads from the input uBAM, uCRAM, BAM, or CRAM files.
 - `sample_metrics`: a directory containing QC metrics for the analyzed sample.
 
+## Troubleshooting
+
+### The pipeline complains, "Input ... has a different RG-SM tag"
+
+This error will occur if the pipeline detects that the input files have (or will have) different readgroup `SM` tags. To fix this error, please use the `--rgsm` argument to adjust the `SM` tags of the input files during variant calling. Note that with this argument, all reads in the input files will be used during variant calling. 
+
 
 [Python]: https://www.python.org/
 [bcftools]: http://samtools.github.io/bcftools/bcftools.html
