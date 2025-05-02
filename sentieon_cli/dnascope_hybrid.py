@@ -768,6 +768,14 @@ def dnascope_hybrid(
         logger.error("The model bundle is for a different pipeline.")
         sys.exit(2)
 
+    bundle_members = set(ar_load(str(model_bundle)))
+    if "longreadsv.model" not in bundle_members:
+        logger.info("No LongReadSV model found. Skipping SV calling")
+        skip_svs = True
+    if "cnv.model" not in bundle_members:
+        logger.info("No CNVscope model found. Skipping CNV calling")
+        skip_cnv = True
+
     # Confirm that all readgroups have the same RGSM
     hybrid_rg_sm = ""
     rg_sm_tag = None
