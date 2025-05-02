@@ -748,8 +748,8 @@ def dnascope_hybrid(
     shortread_tech = bundle_info.get("shortReadPlatform")
     if not longread_tech or not shortread_tech:
         logger.error(
-             "The bundle file does not have the expected attributes. "
-             "Please check that you using the latest bundle version."
+            "The bundle file does not have the expected attributes. "
+            "Please check that you using the latest bundle version."
         )
         sys.exit(2)
     if not shortread_tech:
