@@ -571,11 +571,6 @@ def call_variants(
     action="store_true",
 )
 @arg(
-    "--longread_tech",
-    help="Sequencing technology used to generate the long reads.",
-    choices=["HiFi", "ONT"],
-)
-@arg(
     "--dry_run",
     help="Print the commands without running them.",
 )
@@ -690,7 +685,6 @@ def dnascope_hybrid(
     cores: int = mp.cpu_count(),
     gvcf: bool = False,  # pylint: disable=W0613
     sr_duplicate_marking: str = "markdup",
-    longread_tech: str = "HiFi",  # pylint: disable=W0613
     dry_run: bool = False,
     skip_svs: bool = False,
     skip_mosdepth: bool = False,
@@ -745,7 +739,6 @@ def dnascope_hybrid(
     set_bwt_max_mem(bwt_max_mem, None, n_alignment_jobs)
 
     # Parse the bundle_info.json file
-    longread_tech_cli = longread_tech
     bundle_info_bytes = ar_load(str(model_bundle) + "/bundle_info.json")
     if isinstance(bundle_info_bytes, list):
         bundle_info_bytes = b"{}"
@@ -754,13 +747,11 @@ def dnascope_hybrid(
     longread_tech = bundle_info.get("longReadPlatform")
     shortread_tech = bundle_info.get("shortReadPlatform")
     if not longread_tech or not shortread_tech:
-        # logger.warning(
-        #     "The model bundle file does not have the expected attributes. "
-        #     "Are you using the latest version?"
-        # )
-        pass
-    if not longread_tech:
-        longread_tech = longread_tech_cli
+        logger.error(
+             "The bundle file does not have the expected attributes. "
+             "Please check that you using the latest bundle version."
+        )
+        sys.exit(2)
     if not shortread_tech:
         shortread_tech = "Illumina"
     req_version = packaging.version.Version(
