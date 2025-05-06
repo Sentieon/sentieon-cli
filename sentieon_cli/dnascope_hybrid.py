@@ -4,6 +4,7 @@ Functionality for the DNAscope hybrid pipeline
 
 import argparse
 from contextlib import contextmanager
+import copy
 import multiprocessing as mp
 import os
 import json
@@ -11,7 +12,7 @@ import pathlib
 import shlex
 import shutil
 import sys
-from typing import Any, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import packaging.version
 
@@ -82,6 +83,8 @@ def call_variants(
     lr_aln: List[pathlib.Path],
     model_bundle: pathlib.Path,
     hybrid_set_rg: bool,
+    lr_aln_readgroups: List[List[Dict[str, str]]],
+    sr_aln_readgroups: List[List[Dict[str, str]]],
     hybrid_rg_sm: str = "",
     dbsnp: Optional[pathlib.Path] = None,
     bed: Optional[pathlib.Path] = None,
@@ -130,20 +133,11 @@ def call_variants(
     tr_read_filter: List[str] = []
     lr_rg_read_filter: List[str] = []
     replace_rg_args: Tuple[List[List[str]], List[List[str]]] = ([], [])
-    for aln in lr_aln:
-        aln_rgs = cmds.get_rg_lines(aln, dry_run)
+    for aln_rgs in lr_aln_readgroups:
         replace_rg_args[0].append([])
-        for rg_line in aln_rgs:
-            rg_line_d = parse_rg_line(rg_line)
+        for rg_line_d in aln_rgs:
             id = rg_line_d.get("ID")
             new_sm = hybrid_rg_sm if hybrid_set_rg else rg_line_d.get("SM")
-            if not id:
-                logger.error(
-                    "Input file '%s' has a readgroup without an ID tag: %s",
-                    aln,
-                    rg_line,
-                )
-                sys.exit(2)
             replace_rg_args[0][-1].append(f"{id}=ID:{id}\\tSM:{new_sm}\\tLR:1")
             if lr_read_filter:
                 lr_rg_read_filter.append(f"{lr_read_filter},rgid={id}")
@@ -155,21 +149,12 @@ def call_variants(
     # readgroup handling for short-reads
     sr_rg_read_filter: List[str] = []
     ultima_read_filter: List[str] = []
-    for aln in sr_aln:
-        aln_rgs = cmds.get_rg_lines(aln, dry_run)
+    for aln_rgs in sr_aln_readgroups:
         if hybrid_set_rg:
             replace_rg_args[1].append([])
-        for rg_line in aln_rgs:
-            rg_line_d = parse_rg_line(rg_line)
+        for rg_line_d in aln_rgs:
             id = rg_line_d.get("ID")
             new_sm = hybrid_rg_sm if hybrid_set_rg else rg_line_d.get("SM")
-            if not id:
-                logger.error(
-                    "Input file '%s' has a readgroup without an ID tag:%s",
-                    aln,
-                    rg_line,
-                )
-                sys.exit(2)
             if hybrid_set_rg:
                 replace_rg_args[1][-1].append(f"{id}=ID:{id}\\tSM:{new_sm}")
             if sr_read_filter:
@@ -776,61 +761,57 @@ def dnascope_hybrid(
         logger.info("No CNVscope model found. Skipping CNV calling")
         skip_cnv = True
 
+    # Collect the readgroup tags from all input files
+    all_readgroups: Tuple[
+        List[List[Dict[str, str]]],  # long-read alignments
+        List[List[Dict[str, str]]],  # short-read alignments
+        List[List[Dict[str, str]]],  # short-read fastq
+    ] = ([], [], [])
+    for i, aln_list in enumerate((lr_aln, sr_aln)):
+        for aln in aln_list:
+            all_readgroups[i].append([])
+            aln_rgs = cmds.get_rg_lines(aln, dry_run)
+            for rg_line in aln_rgs:
+                all_readgroups[i][-1].append(parse_rg_line(rg_line))
+    for rg in sr_readgroups:
+        all_readgroups[2].append([])
+        all_readgroups[2][-1].append(parse_rg_line(rg.replace(r"\t", "\t")))
+
     # Confirm that all readgroups have the same RGSM
     hybrid_rg_sm = ""
     rg_sm_tag = None
-    for aln_files in sr_aln, lr_aln:
-        for aln in aln_files:
-            rg_lines = cmds.get_rg_lines(aln, dry_run)
-            for rg_line in rg_lines:
-                sm = parse_rg_line(rg_line).get("SM")
+    for rg_aln_list in all_readgroups:
+        for rg_list in rg_aln_list:
+            for aln_rg in rg_list:
+                sm = aln_rg.get("SM")
                 if not sm:
                     logger.error(
-                        "Input file '%s' has a readgroup line without a SM"
-                        " tag: %s",
-                        aln,
-                        rg_line,
+                        "Found a readgroup without a SM tag: %s",
+                        str(aln_rg),
                     )
                     sys.exit(2)
+                if not aln_rg.get("ID"):
+                    logger.error(
+                        "Found a readgroup without an ID tag: %s",
+                        str(aln_rg),
+                    )
+
                 if rg_sm_tag is None:
                     rg_sm_tag = sm
                     hybrid_rg_sm = sm
-                    continue
                 if dry_run:
                     continue
                 elif rg_sm_tag != sm and not rgsm:
                     logger.error(
-                        "Input file '%s' has a different RG-SM tag from"
+                        "Input readgroup '%s' has a different RG-SM tag from"
                         " previously seen alignment files.\nfound='%s'"
                         " expected='%s'. Please set the `--rgsm` argument to"
-                        " fix",
-                        aln,
+                        " override the SM tag in the input files",
+                        str(aln_rg),
                         sm,
                         rg_sm_tag,
                     )
                     sys.exit(2)
-
-    for rg in sr_readgroups:
-        sm = parse_rg_line(rg.replace(r"\t", "\t")).get("SM")
-        if not sm:
-            logger.error("Input readgroup does not have a SM tag: %s", rg)
-            sys.exit(2)
-        if rg_sm_tag is None:
-            rg_sm_tag = sm
-            hybrid_rg_sm = sm
-            continue
-        if dry_run:
-            continue
-        elif rg_sm_tag != sm and not rgsm:
-            logger.error(
-                "Input readgroup, '%s' has a different RG-SM tag from"
-                " previously seen tags.\nfound='%s'\nexpected='%s'. Please"
-                " set the `--rgsm` argument to fix.",
-                rg,
-                sm,
-                rg_sm_tag,
-            )
-            sys.exit(2)
     hybrid_set_rg = True if rgsm else False
     if rgsm:
         hybrid_rg_sm = rgsm
@@ -928,6 +909,21 @@ def dnascope_hybrid(
         cnvscope_job, cnvmodelapply_job = call_cnvs(**locals())
         dag.add_job(cnvscope_job, sr_preprocessing_jobs)
         dag.add_job(cnvmodelapply_job, {cnvscope_job})
+
+    # Pass the readgroups to the hybrid calling function
+    lr_aln_readgroups = all_readgroups[0]
+    sr_aln_readgroups: List[List[Dict[str, str]]] = []
+    if sr_duplicate_marking == "none":
+        # Without dedup, retain the original rg structure
+        sr_aln_readgroups = copy.deepcopy(all_readgroups[1])
+        sr_aln_readgroups.extend(copy.deepcopy(all_readgroups[2]))
+    else:
+        # Flatten
+        sr_aln_readgroups.append([])
+        for rg_aln_list in all_readgroups[1:]:
+            for rg_list in rg_aln_list:
+                for aln_rg in rg_list:
+                    sr_aln_readgroups[-1].append(aln_rg)
 
     (
         call_job,
