@@ -760,6 +760,11 @@ def dnascope_hybrid(
     if "cnv.model" not in bundle_members:
         logger.info("No CNVscope model found. Skipping CNV calling")
         skip_cnv = True
+    if "bwa.model" not in bundle_members and len(sr_r1_fastq) > 0:
+        logger.error(
+            "Alignment with bwa is not supported with this model bundle"
+        )
+        sys.exit(2)
 
     # Collect the readgroup tags from all input files
     all_readgroups: Tuple[
