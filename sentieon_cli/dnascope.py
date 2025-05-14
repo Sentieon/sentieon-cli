@@ -312,7 +312,9 @@ class DNAscopePipeline(BasePipeline):
         del self.duplicate_marking
 
         # vaidate
-        if not self.sample_input and not (self.sr_r1_fastq and self.sr_readgroups):
+        if not self.sample_input and not (
+            self.sr_r1_fastq and self.sr_readgroups
+        ):
             self.logger.error(
                 "Please supply either the `--sample_input` or `--r1_fastq` "
                 "and `--readgroups` arguments"
@@ -373,7 +375,9 @@ class DNAscopePipeline(BasePipeline):
     def total_input_size(self) -> int:
         """Find the total size of all inputs"""
         total_input_size = sum([x.stat().st_size for x in self.sample_input])
-        for r1, r2 in itertools.zip_longest(self.sr_r1_fastq, self.sr_r2_fastq):
+        for r1, r2 in itertools.zip_longest(
+            self.sr_r1_fastq, self.sr_r2_fastq
+        ):
             for fq in (r1, r2):
                 if isinstance(fq, pathlib.Path):
                     total_input_size += fq.stat().st_size
@@ -389,8 +393,7 @@ class DNAscopePipeline(BasePipeline):
 
         if (
             shm_free > total_input_size * 2.3
-            and total_mem
-            > total_input_size + 40 * 1024**3 * n_alignment_jobs
+            and total_mem > total_input_size + 40 * 1024**3 * n_alignment_jobs
         ):
             self.logger.debug("Using /dev/shm for temporary files")
             return True
@@ -771,9 +774,11 @@ class DNAscopePipeline(BasePipeline):
         driver = Driver(
             reference=self.reference,
             thread_count=self.cores,
-            input=[deduped]
-            if self.sr_duplicate_marking != "none"
-            else sample_input,
+            input=(
+                [deduped]
+                if self.sr_duplicate_marking != "none"
+                else sample_input
+            ),
             interval=self.bed,
         )
         if self.assay == "WES" and self.bed:
