@@ -260,6 +260,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         self.lr_fastq_taglist = "*"
         self.sr_read_filter: Optional[str] = None
         self.lr_read_filter: Optional[str] = None
+        self.assay = "WGS"
 
     def validate(self) -> None:
         self.validate_bundle()
@@ -436,32 +437,13 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         assert self.reference
         assert self.model_bundle
 
-        # Short-reads
-        dnascope_pipeline = DNAscopePipeline()
-        dnascope_pipeline.reference = self.reference
-        dnascope_pipeline.model_bundle = self.model_bundle
-        dnascope_pipeline.r1_fastq = self.sr_r1_fastq
-        dnascope_pipeline.r2_fastq = self.sr_r2_fastq
-        dnascope_pipeline.readgroups = self.sr_readgroups
-        dnascope_pipeline.skip_version_check = self.skip_version_check
-        dnascope_pipeline.numa_nodes = self.numa_nodes
-        dnascope_pipeline.bam_format = self.bam_format
-        dnascope_pipeline.util_sort_args = self.util_sort_args
-        dnascope_pipeline.duplicate_marking = self.duplicate_marking
-        dnascope_pipeline.output_vcf = self.output_vcf
-        dnascope_pipeline.cores = self.cores
-        dnascope_pipeline.model_bundle = self.model_bundle
-        dnascope_pipeline.bwa_args = self.bwa_args
-        dnascope_pipeline.bwa_k = self.bwa_k
-        dnascope_pipeline.assay = "WGS"
-
         # Short-read alignment
         sr_aln = self.sr_aln
         (
             aligned_fastq,
             align_fastq_jobs,
             fq_rm_job,
-        ) = dnascope_pipeline.sr_align_fastq()
+        ) = self.sr_align_fastq()
         for job in align_fastq_jobs:
             dag.add_job(job)
         sr_aln.extend(aligned_fastq)
@@ -473,7 +455,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             dedup_job,
             metrics_job,
             rehead_job,
-        ) = dnascope_pipeline.dedup_and_metrics(
+        ) = self.dedup_and_metrics(
             sample_input=sr_aln,
         )
         sr_aln = deduped
@@ -488,36 +470,21 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
                 if fq_rm_job:
                     dag.add_job(fq_rm_job, {dedup_job})
 
-        # Long-reads
-        dnascopelr_pipeline = DNAscopeLRPipeline()
-        dnascope_pipeline.reference = self.reference
-        dnascope_pipeline.model_bundle = self.model_bundle
-        dnascopelr_pipeline.output_vcf = self.output_vcf
-        dnascopelr_pipeline.skip_version_check = self.skip_version_check
-        dnascopelr_pipeline.bam_format = self.bam_format
-        dnascopelr_pipeline.sample_input = self.lr_aln
-        dnascopelr_pipeline.dry_run = self.dry_run
-        dnascopelr_pipeline.cores = self.cores
-        dnascopelr_pipeline.input_ref = self.input_ref
-        dnascopelr_pipeline.fastq_taglist = self.fastq_taglist
-        dnascopelr_pipeline.minimap2_args = self.minimap2_args
-        dnascopelr_pipeline.util_sort_args = self.util_sort_args
-
         # Long-read alignment
         realign_jobs: Set[Job] = set()
         lr_aln = self.lr_aln
         if self.lr_align_input:
-            lr_aln, realign_jobs = dnascopelr_pipeline.lr_align_inputs()
+            lr_aln, realign_jobs = self.lr_align_inputs()
             for job in realign_jobs:
                 dag.add_job(job)
 
         if not self.skip_mosdepth:
-            mosdpeth_jobs = dnascopelr_pipeline.mosdepth(sample_input=lr_aln)
+            mosdpeth_jobs = self.mosdepth(sample_input=lr_aln)
             for job in mosdpeth_jobs:
                 dag.add_job(job, realign_jobs)
 
         if not self.skip_multiqc:
-            multiqc_job = dnascope_pipeline.multiqc()
+            multiqc_job = self.multiqc()
             multiqc_dependencies: Set[Job] = set()
             if lc_job:
                 multiqc_dependencies.add(lc_job)
@@ -530,7 +497,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
                 dag.add_job(multiqc_job, multiqc_dependencies)
 
         if not self.skip_svs:
-            longreadsv_job = dnascopelr_pipeline.call_svs(lr_aln)
+            longreadsv_job = self.call_svs(lr_aln)
             dag.add_job(longreadsv_job, realign_jobs)
 
         sr_preprocessing_jobs: Set[Job] = set()

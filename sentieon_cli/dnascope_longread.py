@@ -272,7 +272,12 @@ class DNAscopeLRPipeline(BasePipeline):
         self.use_pbsv = False
 
     def validate(self) -> None:
-        if not self.sample_input or self.fastq:
+        # uniquify pipeline attributes
+        self.lr_aln = self.sample_input
+        del self.sample_input
+
+        # validate
+        if not self.lr_aln or self.fastq:
             self.logger.error(
                 "Please suppy either the `--sample_input` or `--fastq` and "
                 "`--readgroups` arguments"
@@ -323,7 +328,7 @@ class DNAscopeLRPipeline(BasePipeline):
         self.logger.info("Building the DAG")
         dag = DAG()
 
-        sample_input = self.sample_input if self.sample_input else []
+        sample_input = self.lr_aln
         realign_jobs: Set[Job] = set()
         if self.align:
             sample_input, realign_jobs = self.lr_align_inputs()
@@ -468,7 +473,7 @@ class DNAscopeLRPipeline(BasePipeline):
         suffix = "bam" if self.bam_format else "cram"
         sample_name = self.output_vcf.name.replace(".vcf.gz", "")
         realign_jobs = set()
-        for i, input_aln in enumerate(self.sample_input):
+        for i, input_aln in enumerate(self.lr_aln):
             out_aln = pathlib.Path(
                 str(self.output_vcf).replace(
                     ".vcf.gz", f"_mm2_sorted_{i}.{suffix}"

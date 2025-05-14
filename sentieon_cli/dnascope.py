@@ -300,7 +300,19 @@ class DNAscopePipeline(BasePipeline):
 
     def validate(self) -> None:
         assert self.output_vcf
-        if not self.sample_input and not (self.r1_fastq and self.readgroups):
+
+        # uniquify pipeline attributes
+        self.sr_r1_fastq = self.r1_fastq
+        self.sr_r2_fastq = self.r2_fastq
+        self.sr_readgroups = self.readgroups
+        self.sr_duplicate_marking = self.duplicate_marking
+        del self.r1_fastq
+        del self.r2_fastq
+        del self.readgroups
+        del self.duplicate_marking
+
+        # vaidate
+        if not self.sample_input and not (self.sr_r1_fastq and self.sr_readgroups):
             self.logger.error(
                 "Please supply either the `--sample_input` or `--r1_fastq` "
                 "and `--readgroups` arguments"
@@ -329,7 +341,7 @@ class DNAscopePipeline(BasePipeline):
                     "across decoy and unplaced contigs."
                 )
 
-        if len(self.r1_fastq) != len(self.readgroups):
+        if len(self.sr_r1_fastq) != len(self.sr_readgroups):
             self.logger.error(
                 "The number of readgroups does not equal the number of fastq "
                 "files"
@@ -361,7 +373,7 @@ class DNAscopePipeline(BasePipeline):
     def total_input_size(self) -> int:
         """Find the total size of all inputs"""
         total_input_size = sum([x.stat().st_size for x in self.sample_input])
-        for r1, r2 in itertools.zip_longest(self.r1_fastq, self.r2_fastq):
+        for r1, r2 in itertools.zip_longest(self.sr_r1_fastq, self.sr_r2_fastq):
             for fq in (r1, r2):
                 if isinstance(fq, pathlib.Path):
                     total_input_size += fq.stat().st_size
@@ -497,7 +509,7 @@ class DNAscopePipeline(BasePipeline):
         res: List[pathlib.Path] = []
         suffix = "bam" if self.bam_format else "cram"
         util_sort_args = self.util_sort_args
-        if self.duplicate_marking != "none":
+        if self.sr_duplicate_marking != "none":
             suffix = "bam"
             util_sort_args += " --bam_compression 1 "
         jobs = set()
@@ -508,7 +520,7 @@ class DNAscopePipeline(BasePipeline):
                     ".vcf.gz", f"_bwa_sorted_{i}.{suffix}"
                 )
             )
-            if self.duplicate_marking != "none":
+            if self.sr_duplicate_marking != "none":
                 out_aln = self.tmp_dir.joinpath(f"bwa_sorted_{i}.{suffix}")
             rg_lines = cmds.get_rg_lines(input_aln, self.dry_run)
             rg_header = self.tmp_dir.joinpath(f"input_{i}.hdr")
@@ -558,7 +570,7 @@ class DNAscopePipeline(BasePipeline):
 
         res: List[pathlib.Path] = []
         jobs: Set[Job] = set()
-        if not self.r1_fastq and not self.readgroups:
+        if not self.sr_r1_fastq and not self.sr_readgroups:
             return (res, jobs, None)
 
         if not self.skip_version_check:
@@ -577,13 +589,13 @@ class DNAscopePipeline(BasePipeline):
         n_alignment_jobs = max(1, len(self.numa_nodes))
         suffix = "bam" if self.bam_format else "cram"
         util_sort_args = self.util_sort_args
-        if self.duplicate_marking != "none":
+        if self.sr_duplicate_marking != "none":
             suffix = "bam"
             util_sort_args += " --bam_compression 1 "
         align_outputs: List[pathlib.Path] = []
         for i, (r1, r2, rg) in enumerate(
             itertools.zip_longest(
-                self.r1_fastq, self.r2_fastq, self.readgroups
+                self.sr_r1_fastq, self.sr_r2_fastq, self.sr_readgroups
             )
         ):
             for j in range(n_alignment_jobs):
@@ -592,7 +604,7 @@ class DNAscopePipeline(BasePipeline):
                         ".vcf.gz", f"_bwa_sorted_fq_{i}_{j}.{suffix}"
                     )
                 )
-                if self.duplicate_marking != "none":
+                if self.sr_duplicate_marking != "none":
                     out_aln = self.tmp_dir.joinpath(
                         f"bwa_sorted_fq_{i}_{j}.{suffix}"
                     )
@@ -695,7 +707,7 @@ class DNAscopePipeline(BasePipeline):
             thread_count=self.cores,
             input=sample_input,
         )
-        if self.duplicate_marking != "none":
+        if self.sr_duplicate_marking != "none":
             driver.add_algo(
                 LocusCollector(
                     out_score,
@@ -706,7 +718,7 @@ class DNAscopePipeline(BasePipeline):
         # Prefer to run InsertSizeMetricAlgo after duplicate marking
         if not self.skip_metrics and (
             (self.assay == "WES" and not self.bed)
-            or self.duplicate_marking == "none"
+            or self.sr_duplicate_marking == "none"
         ):
             driver.add_algo(InsertSizeMetricAlgo(is_metrics))
 
@@ -718,12 +730,12 @@ class DNAscopePipeline(BasePipeline):
             if self.assay == "WGS":
                 driver.add_algo(GCBias(gc_metrics, summary=gc_summary))
 
-        if not (self.duplicate_marking == "none" and self.skip_metrics):
+        if not (self.sr_duplicate_marking == "none" and self.skip_metrics):
             lc_job = Job(
                 shlex.join(driver.build_cmd()), "locuscollector", self.cores
             )
 
-        if self.duplicate_marking == "none":
+        if self.sr_duplicate_marking == "none":
             return (sample_input, lc_job, None, None, None)
 
         # Dedup
@@ -744,7 +756,7 @@ class DNAscopePipeline(BasePipeline):
                 out_score,
                 cram_write_options="version=3.0,compressor=rans",
                 metrics=dedup_metrics,
-                rmdup=(self.duplicate_marking == "rmdup"),
+                rmdup=(self.sr_duplicate_marking == "rmdup"),
             )
         )
         dedup_job = Job(shlex.join(driver.build_cmd()), "dedup", self.cores)
@@ -760,7 +772,7 @@ class DNAscopePipeline(BasePipeline):
             reference=self.reference,
             thread_count=self.cores,
             input=[deduped]
-            if self.duplicate_marking != "none"
+            if self.sr_duplicate_marking != "none"
             else sample_input,
             interval=self.bed,
         )
