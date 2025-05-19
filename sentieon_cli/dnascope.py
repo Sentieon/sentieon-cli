@@ -97,7 +97,7 @@ class DNAscopePipeline(BasePipeline):
             "help": "Sample R2 fastq files.",
             "type": path_arg(exists=True, is_file=True),
         },
-        "readgroup": {
+        "readgroups": {
             "nargs": "*",
             "help": "Readgroup information for the fastq files.",
         },
@@ -138,7 +138,6 @@ class DNAscopePipeline(BasePipeline):
         "pcr_free": {
             "help": "Use arguments for PCR-free data processing",
             "action": "store_true",
-            "type": bool,
         },
         "gvcf": {
             "flags": ["-g", "--gvcf"],
@@ -147,7 +146,6 @@ class DNAscopePipeline(BasePipeline):
                 " (default generates only the VCF)"
             ),
             "action": "store_true",
-            "type": bool,
         },
         "duplicate_marking": {
             "help": "Options for duplicate marking.",
@@ -162,32 +160,26 @@ class DNAscopePipeline(BasePipeline):
         "consensus": {
             "help": "Generate consensus reads during dedup",
             "action": "store_true",
-            "type": bool,
         },
         "dry_run": {
             "help": "Print the commands without running them.",
             "action": "store_true",
-            "type": bool,
         },
         "skip_small_variants": {
             "help": "Skip small variant (SNV/indel) calling",
             "action": "store_true",
-            "type": bool,
         },
         "skip_svs": {
             "help": "Skip SV calling",
             "action": "store_true",
-            "type": bool,
         },
         "skip_metrics": {
             "help": "Skip all metrics collection and multiQC",
             "action": "store_true",
-            "type": bool,
         },
         "skip_multiqc": {
             "help": "Skip multiQC report generation",
             "action": "store_true",
-            "type": bool,
         },
         "align": {
             "help": (
@@ -196,7 +188,6 @@ class DNAscopePipeline(BasePipeline):
                 "input file."
             ),
             "action": "store_true",
-            "type": bool,
         },
         "collate_align": {
             "help": (
@@ -205,7 +196,6 @@ class DNAscopePipeline(BasePipeline):
                 "BAM/CRAM input."
             ),
             "action": "store_true",
-            "type": bool,
         },
         "input_ref": {
             "help": (
@@ -219,7 +209,6 @@ class DNAscopePipeline(BasePipeline):
                 "Use the BAM format instead of CRAM for output aligned files"
             ),
             "action": "store_true",
-            "type": bool,
         },
         "bwa_args": {
             "help": "Extra arguments for sentieon bwa",
@@ -236,7 +225,6 @@ class DNAscopePipeline(BasePipeline):
         "skip_version_check": {
             "help": argparse.SUPPRESS,
             "action": "store_true",
-            "type": bool,
         },
         "bwt_max_mem": {
             # Manually set `bwt_max_mem`
@@ -246,17 +234,15 @@ class DNAscopePipeline(BasePipeline):
             # Do not use /dev/shm, even on high memory machines
             "help": argparse.SUPPRESS,
             "action": "store_true",
-            "type": bool,
         },
         "no_split_alignment": {
             "help": argparse.SUPPRESS,
             "action": "store_true",
-            "type": bool,
         },
     }
 
     positionals: Dict[str, Dict[str, Any]] = {
-        "output-vcf": {
+        "output_vcf": {
             "help": "Output VCF File. The file name must end in .vcf.gz",
             "type": path_arg(),
         },

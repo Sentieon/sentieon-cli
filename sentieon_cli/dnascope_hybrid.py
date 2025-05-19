@@ -125,37 +125,30 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
                 " (default generates only the VCF)"
             ),
             "action": "store_true",
-            "type": bool,
         },
         "dry_run": {
             "help": "Print the commands without running them.",
             "action": "store_true",
-            "type": bool,
         },
         "skip_svs": {
             "help": "Skip SV calling",
             "action": "store_true",
-            "type": bool,
         },
         "skip_metrics": {
             "help": "Skip all metrics collection and multiQC",
             "action": "store_true",
-            "type": bool,
         },
         "skip_mosdepth": {
             "help": "Skip QC with mosdepth.",
             "action": "store_true",
-            "type": bool,
         },
         "skip_multiqc": {
             "help": "Skip multiQC report generation.",
             "action": "store_true",
-            "type": bool,
         },
         "skip_cnv": {
             "help": "Skip CNV calling.",
             "action": "store_true",
-            "type": bool,
         },
         "lr_align_input": {
             "help": (
@@ -163,7 +156,6 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
                 "reference genome"
             ),
             "action": "store_true",
-            "type": bool,
         },
         "lr_input_ref": {
             "help": (
@@ -177,7 +169,6 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
                 "Use the BAM format instead of CRAM for output aligned files"
             ),
             "action": "store_true",
-            "type": bool,
         },
         "rgsm": {
             "help": (
@@ -214,12 +205,10 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         "skip_version_check": {
             "help": argparse.SUPPRESS,
             "action": "store_true",
-            "type": bool,
         },
         "retain_tmpdir": {
             "help": argparse.SUPPRESS,
             "action": "store_true",
-            "type": bool,
         },
         "bwt_max_mem": {
             # Manually set `bwt_max_mem`
@@ -228,7 +217,6 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         "no_split_alignment": {
             "help": argparse.SUPPRESS,
             "action": "store_true",
-            "type": bool,
         },
         "sr_read_filter": {
             "help": argparse.SUPPRESS,
@@ -239,7 +227,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
     }
 
     positionals: Dict[str, Dict[str, Any]] = {
-        "output-vcf": {
+        "output_vcf": {
             "help": "Output VCF File. The file name must end in .vcf.gz",
             "type": path_arg(),
         },

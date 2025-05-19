@@ -143,7 +143,6 @@ class DNAscopeLRPipeline(BasePipeline):
                 " (default generates only the VCF)"
             ),
             "action": "store_true",
-            "type": bool,
         },
         "tech": {
             "help": "Sequencing technology used to generate the reads.",
@@ -153,34 +152,28 @@ class DNAscopeLRPipeline(BasePipeline):
         "dry_run": {
             "help": "Print the commands without running them.",
             "action": "store_true",
-            "type": bool,
         },
         "skip_small_variants": {
             "help": "Skip small variant (SNV/indel) calling.",
             "action": "store_true",
-            "type": bool,
         },
         "skip_svs": {
             "help": "Skip SV calling.",
             "action": "store_true",
-            "type": bool,
         },
         "skip_mosdepth": {
             "help": "Skip QC with mosdepth.",
             "action": "store_true",
-            "type": bool,
         },
         "skip_cnv": {
             "help": "Skip CNV calling.",
             "action": "store_true",
-            "type": bool,
         },
         "align": {
             "help": (
                 "Align the input BAM/CRAM/uBAM file to the reference genome."
             ),
             "action": "store_true",
-            "type": bool,
         },
         "input_ref": {
             "help": (
@@ -201,7 +194,6 @@ class DNAscopeLRPipeline(BasePipeline):
                 "Use the BAM format instead of CRAM for output aligned files."
             ),
             "action": "store_true",
-            "type": bool,
         },
         "minimap2_args": {
             "help": "Extra arguments for sentieon minimap2.",
@@ -218,22 +210,19 @@ class DNAscopeLRPipeline(BasePipeline):
         "skip_version_check": {
             "help": argparse.SUPPRESS,
             "action": "store_true",
-            "type": bool,
         },
         "retain_tmpdir": {
             "help": argparse.SUPPRESS,
             "action": "store_true",
-            "type": bool,
         },
         "use_pbsv": {
             "help": argparse.SUPPRESS,
             "action": "store_true",
-            "type": bool,
         },
     }
 
     positionals: Dict[str, Dict[str, Any]] = {
-        "output-vcf": {
+        "output_vcf": {
             "help": "Output VCF File. The file name must end in .vcf.gz",
             "type": path_arg(),
         },
@@ -277,7 +266,7 @@ class DNAscopeLRPipeline(BasePipeline):
         del self.sample_input
 
         # validate
-        if not self.lr_aln or self.fastq:
+        if not (self.lr_aln or self.fastq):
             self.logger.error(
                 "Please suppy either the `--sample_input` or `--fastq` and "
                 "`--readgroups` arguments"

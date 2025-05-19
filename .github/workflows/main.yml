@@ -1,4 +1,4 @@
-name: CI-main
+name: CI-smoke
 on:
   pull_request:
 
@@ -9,7 +9,7 @@ env:
   LICENSE_MESSAGE: ${{ secrets.LICENSE_MESSAGE }}
 
 jobs:
-  smoke:
+  sr_smoke:
     strategy:
       fail-fast: true
       max-parallel: 1
@@ -32,23 +32,11 @@ jobs:
         run: |
           poetry config virtualenvs.in-project true
           poetry install
-      - name: Install bcftools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y bcftools
       - name: Install samtools
         run: |
           curl -L https://github.com/samtools/samtools/releases/download/1.19.2/samtools-1.19.2.tar.bz2 | tar -jxf -
           cd samtools-1.19.2
           ./configure && sudo make install
-      - name: Install bedtools
-        run: |
-          sudo curl -L -o /usr/local/bin/bedtools "https://github.com/arq5x/bedtools2/releases/download/v2.31.0/bedtools.static"
-          sudo chmod ugo+x /usr/local/bin/bedtools
-      - name: Install mosdepth
-        run: |
-          sudo curl -L -o /usr/local/bin/mosdepth "https://github.com/brentp/mosdepth/releases/download/v0.3.8/mosdepth"
-          sudo chmod ugo+x /usr/local/bin/mosdepth
       - name: Install multiqc
         run: |
           pip install multiqc
@@ -59,10 +47,6 @@ jobs:
           echo "PATH=$(pwd)/sentieon-genomics-$SENTIEON_VERSION/bin:$PATH" >> $GITHUB_ENV
         env:
           SENTIEON_VERSION: ${{ matrix.sentieon-version }}
-      - name: Download long-read model
-        run: |
-          curl -L "https://s3.amazonaws.com/sentieon-release/other/DNAscopePacBio2.1.bundle" \
-            > "DNAscope PacBio2.1.bundle"
       - name: Download short-read model
         run: |
           curl -L "https://s3.amazonaws.com/sentieon-release/other/DNAscopeIlluminaWGS2.0.bundle" \
@@ -102,6 +86,68 @@ jobs:
           if [ ! -f "output_sr2.vcf.gz" ]; then
             exit 1
           fi
+  lr_smoke:
+    strategy:
+      fail-fast: true
+      max-parallel: 1
+      matrix:
+        python-version: ["3.8", "3.13"]
+        poetry-version: ["1.5.1"]
+        sentieon-version: ["202503"]
+        os: [ubuntu-22.04] #, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Run image
+        uses: abatilo/actions-poetry@v2
+        with:
+          poetry-version: ${{ matrix.poetry-version }}
+      - name: Install the project dependencies
+        run: |
+          poetry config virtualenvs.in-project true
+          poetry install
+      - name: Install bcftools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bcftools
+      - name: Install samtools
+        run: |
+          curl -L https://github.com/samtools/samtools/releases/download/1.19.2/samtools-1.19.2.tar.bz2 | tar -jxf -
+          cd samtools-1.19.2
+          ./configure && sudo make install
+      - name: Install bedtools
+        run: |
+          sudo curl -L -o /usr/local/bin/bedtools "https://github.com/arq5x/bedtools2/releases/download/v2.31.0/bedtools.static"
+          sudo chmod ugo+x /usr/local/bin/bedtools
+      - name: Install mosdepth
+        run: |
+          sudo curl -L -o /usr/local/bin/mosdepth "https://github.com/brentp/mosdepth/releases/download/v0.3.8/mosdepth"
+          sudo chmod ugo+x /usr/local/bin/mosdepth
+      - name: Install sentieon
+        run: |
+          curl -L https://s3.amazonaws.com/sentieon-release/software/sentieon-genomics-$SENTIEON_VERSION.tar.gz | tar -zxf -
+          echo "SENTIEON_VERSION=$SENTIEON_VERSION" >> $GITHUB_ENV
+          echo "PATH=$(pwd)/sentieon-genomics-$SENTIEON_VERSION/bin:$PATH" >> $GITHUB_ENV
+        env:
+          SENTIEON_VERSION: ${{ matrix.sentieon-version }}
+      - name: Download long-read model
+        run: |
+          curl -L "https://s3.amazonaws.com/sentieon-release/other/DNAscopePacBio2.1.bundle" \
+            > "DNAscope PacBio2.1.bundle"
+      - name: set SENTIEON_AUTH_DATA
+        run: |
+          SENTIEON_AUTH_DATA=$(python3 .github/scripts/license_message.py encrypt --key "$ENCRYPTION_KEY" --message "$LICENSE_MESSAGE")
+          echo "SENTIEON_AUTH_DATA=$SENTIEON_AUTH_DATA" >> $GITHUB_ENV
+      - name: Test spaces
+        run: |
+          gzip -dc tests/smoke/ref.fa.bgz > "tests/smoke/r ef.fa"
+          cp tests/smoke/ref.fa.fai "tests/smoke/r ef.fa.fai"
+          cp tests/smoke/sample.cram "tests/smoke/sam ple.cram"
+          cp tests/smoke/sample.cram.crai "tests/smoke/sam ple.cram.crai"
+          echo -e "chr20\t0\t2500" > "tests/smoke/r ef.bed"
       - name: Smoke test - long-read
         run: |
           . .venv/bin/activate
@@ -151,5 +197,83 @@ jobs:
             --repeat-model tests/smoke/sample_repeat.model --skip-cnv \
             "output fq.vcf.gz"
           if [ ! -f "output fq.vcf.gz" -o ! -f "output fq_mm2_sorted_fq_0.cram" -o ! -f "output fq.sv.vcf.gz" ]; then
+            exit 1
+          fi
+  hybrid_smoke:
+    strategy:
+      fail-fast: true
+      max-parallel: 1
+      matrix:
+        python-version: ["3.8", "3.13"]
+        poetry-version: ["1.5.1"]
+        sentieon-version: ["202503.01.rc1"]
+        os: [ubuntu-22.04] #, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Run image
+        uses: abatilo/actions-poetry@v2
+        with:
+          poetry-version: ${{ matrix.poetry-version }}
+      - name: Install the project dependencies
+        run: |
+          poetry config virtualenvs.in-project true
+          poetry install
+      - name: Install bcftools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bcftools
+      - name: Install samtools
+        run: |
+          curl -L https://github.com/samtools/samtools/releases/download/1.19.2/samtools-1.19.2.tar.bz2 | tar -jxf -
+          cd samtools-1.19.2
+          ./configure && sudo make install
+      - name: Install bedtools
+        run: |
+          sudo curl -L -o /usr/local/bin/bedtools "https://github.com/arq5x/bedtools2/releases/download/v2.31.0/bedtools.static"
+          sudo chmod ugo+x /usr/local/bin/bedtools
+      - name: Install mosdepth
+        run: |
+          sudo curl -L -o /usr/local/bin/mosdepth "https://github.com/brentp/mosdepth/releases/download/v0.3.8/mosdepth"
+          sudo chmod ugo+x /usr/local/bin/mosdepth
+      - name: Install multiqc
+        run: |
+          pip install multiqc
+      - name: Install sentieon
+        run: |
+          curl -L https://s3.amazonaws.com/sentieon-release/software/sentieon-genomics-$SENTIEON_VERSION.tar.gz | tar -zxf -
+          echo "SENTIEON_VERSION=$SENTIEON_VERSION" >> $GITHUB_ENV
+          echo "PATH=$(pwd)/sentieon-genomics-$SENTIEON_VERSION/bin:$PATH" >> $GITHUB_ENV
+        env:
+          SENTIEON_VERSION: ${{ matrix.sentieon-version }}
+      - name: Download hybrid model
+        run: |
+          curl -L "https://s3.amazonaws.com/sentieon-release/other/HybridIlluminaPacBio1.1.bundle" \
+            > "DNAscope hybrid IlmnPB1.1.bundle"
+      - name: set SENTIEON_AUTH_DATA
+        run: |
+          SENTIEON_AUTH_DATA=$(python3 .github/scripts/license_message.py encrypt --key "$ENCRYPTION_KEY" --message "$LICENSE_MESSAGE")
+          echo "SENTIEON_AUTH_DATA=$SENTIEON_AUTH_DATA" >> $GITHUB_ENV
+      - name: Test spaces
+        run: |
+          gzip -dc tests/smoke/ref.fa.bgz > "tests/smoke/r ef.fa"
+          cp tests/smoke/ref.fa.fai "tests/smoke/r ef.fa.fai"
+          cp tests/smoke/sample.cram "tests/smoke/sam ple.cram"
+          cp tests/smoke/sample.cram.crai "tests/smoke/sam ple.cram.crai"
+          sentieon bwa index "tests/smoke/r ef.fa"
+          echo -e "chr20\t0\t2500" > "tests/smoke/r ef.bed"
+      - name: Smoke test - hybrid
+        run: |
+          . .venv/bin/activate
+          sentieon-cli -v dnascope-hybrid -t 1 -r "tests/smoke/r ef.fa" \
+            --sr_aln "tests/smoke/illumina.cram" \
+            --lr_aln "tests/smoke/sam ple.cram" \
+            -m "DNAscope hybrid IlmnPB1.1.bundle" \
+            --sr_duplicate_marking none \
+            "output_hybrid1.vcf.gz"
+          if [ ! -f "output_hybrid1.vcf.gz" ]; then
             exit 1
           fi

@@ -41,7 +41,9 @@ class BasePipeline(ABC):
         for k in self.params.keys():
             assert k in self.__dict__
             if k in args.__dict__:
-                setattr(self, k, getattr(args, k))
+                val = getattr(args, k)
+                if val is not None:
+                    setattr(self, k, val)
         for k in self.positionals.keys():
             assert k in self.__dict__
             if k in args.__dict__:
@@ -57,6 +59,7 @@ class BasePipeline(ABC):
         self.cores = mp.cpu_count()
         self.numa_nodes: List[str] = []
         self.dry_run = False
+        self.retain_tmpdir = False
 
     def main(self, args: argparse.Namespace) -> None:
         """Run the DNAscope pipeline"""
@@ -71,7 +74,8 @@ class BasePipeline(ABC):
         dag = self.build_dag()
         executor = self.run(dag)
 
-        shutil.rmtree(tmp_dir_str)
+        if not self.retain_tmpdir:
+            shutil.rmtree(tmp_dir_str)
 
         if executor.jobs_with_errors:
             raise ValueError("Execution failed")
