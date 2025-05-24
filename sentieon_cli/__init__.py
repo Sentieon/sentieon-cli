@@ -1,9 +1,12 @@
-from . import argh_parser, dnascope, dnascope_hybrid, dnascope_longread
+from . import argh_parser
+from .dnascope import DNAscopePipeline
+from .dnascope_hybrid import DNAscopeHybridPipeline
+from .dnascope_longread import DNAscopeLRPipeline
 
 
 def main():
     """main entry point for this project"""
-    parser = argh_parser.CustomArghParser()
+    parser = argh_parser.CustomArgparseParser()
     parser.add_argument(
         "-v",
         "--verbose",
@@ -21,15 +24,27 @@ def main():
         dest="loglevel",
         const="DEBUG",
     )
+    subparsers = parser.add_subparsers(required=True)
 
-    parser.add_commands(
-        [
-            dnascope.dnascope,
-            dnascope_longread.dnascope_longread,
-            dnascope_hybrid.dnascope_hybrid,
-        ]
-    )
-    parser.dispatch()
+    # DNAscope parser
+    pipeline = DNAscopePipeline()
+    dnascope_subparser = subparsers.add_parser("dnascope")
+    pipeline.add_arguments(dnascope_subparser)
+    dnascope_subparser.set_defaults(pipeline=pipeline.main)
+
+    # DNAscope LongRead parser
+    pipeline = DNAscopeLRPipeline()
+    dnascopelr_subparser = subparsers.add_parser("dnascope-longread")
+    pipeline.add_arguments(dnascopelr_subparser)
+    dnascopelr_subparser.set_defaults(pipeline=pipeline.main)
+
+    pipeline = DNAscopeHybridPipeline()
+    dnascope_hybrid_subparser = subparsers.add_parser("dnascope-hybrid")
+    pipeline.add_arguments(dnascope_hybrid_subparser)
+    dnascope_hybrid_subparser.set_defaults(pipeline=pipeline.main)
+
+    args = parser.parse_args()
+    args.pipeline(args)
 
 
 if __name__ == "__main__":
