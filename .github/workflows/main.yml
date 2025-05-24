@@ -76,8 +76,8 @@ jobs:
       - name: Smoke test - short-read fastq
         run: |
           . .venv/bin/activate
-          samtools fastq --reference "tests/smoke/r ef.fa" -1 sr_r1.fastq.gz \
-            -2 sr_r2.fastq.gz "tests/smoke/illumina.cram" > /dev/null
+          samtools collate --reference "tests/smoke/r ef.fa" -Ou "tests/smoke/illumina.cram" \
+            | samtools fastq -1 sr_r1.fastq.gz -2 sr_r2.fastq.gz > /dev/null
           sentieon-cli -v dnascope -t 1 -r "tests/smoke/r ef.fa" --pcr-free \
           --r1-fastq sr_r1.fastq.gz --r2-fastq sr_r2.fastq.gz \
             --readgroups "@RG\tID:HG002-1\tSM:HG002" \
@@ -275,5 +275,22 @@ jobs:
             --sr_duplicate_marking none \
             "output_hybrid1.vcf.gz"
           if [ ! -f "output_hybrid1.vcf.gz" ]; then
+            exit 1
+          fi
+      - name: Smoke test - realign
+        run: |
+          . .venv/bin/activate
+          samtools collate --reference "tests/smoke/r ef.fa" -Ou "tests/smoke/illumina.cram" \
+            | samtools fastq -1 sr_r1.fastq.gz -2 sr_r2.fastq.gz > /dev/null
+          sentieon-cli -v dnascope-hybrid -t 1 -r "tests/smoke/r ef.fa" \
+            --sr_r1_fastq sr_r1.fastq.gz \
+            --sr_r2_fastq sr_r2.fastq.gz \
+            --sr_readgroups "@RG\tID:HG002-SR\tSM:HG002\tPL:ILLUMINA" \
+            --lr_aln "tests/smoke/sam ple.cram" \
+            --lr_align_input \
+            --lr_input_ref "tests/smoke/r ef.fa" \
+            -m "DNAscope hybrid IlmnPB1.1.bundle" \
+            "output_hybrid2.vcf.gz"
+          if [ ! -f "output_hybrid2.vcf.gz" ]; then
             exit 1
           fi

@@ -423,8 +423,7 @@ def bcftools_subset(
     regions_bed: pathlib.Path,
 ) -> str:
     """Subset a vcf with bcftools"""
-    cmds = []
-    cmds.append(
+    bcftools_subset_cmd = shlex.join(
         [
             "bcftools",
             "view",
@@ -433,7 +432,7 @@ def bcftools_subset(
             str(mix_vcf),
         ]
     )
-    cmds.append(
+    vcfconvert_cmd = shlex.join(
         [
             "sentieon",
             "util",
@@ -442,7 +441,24 @@ def bcftools_subset(
             str(out_vcf),
         ]
     )
-    return " | ".join([shlex.join(x) for x in cmds])
+    cp_cmd = shlex.join(
+        [
+            "sentieon",
+            "util",
+            "vcfconvert",
+            str(mix_vcf),
+            str(out_vcf),
+        ]
+    )
+    return (
+        f'if [ -s "{regions_bed}" ]; then   '
+        + bcftools_subset_cmd
+        + " | "
+        + vcfconvert_cmd
+        + "; else   "
+        + cp_cmd
+        + "; fi"
+    )
 
 
 def bcftools_concat(
