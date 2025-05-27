@@ -1,9 +1,9 @@
-import argh
+import argparse
 
 
-class CustomArghParser(argh.ArghParser):
+class CustomArgparseParser(argparse.ArgumentParser):
     """
-    Modify the argh parser to accept hyphens or underscores
+    Modify the argparse parser to accept hyphens or underscores
     """
 
     def _parse_optional(self, arg_string):
