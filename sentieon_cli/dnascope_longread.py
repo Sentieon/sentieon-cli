@@ -74,6 +74,21 @@ class DNAscopeLRPipeline(BasePipeline):
     """The DNAscope LongRead pipeline"""
 
     params: Dict[str, Dict[str, Any]] = {
+        "fastq": {
+            "nargs": "*",
+            "help": "Sample fastq files.",
+            "type": path_arg(exists=True, is_file=True),
+        },
+        "model_bundle": {
+            "flags": ["-m", "--model_bundle"],
+            "help": "The model bundle file.",
+            "required": True,
+            "type": path_arg(exists=True, is_file=True),
+        },
+        "readgroups": {
+            "nargs": "*",
+            "help": "Readgroup information for the fastq files.",
+        },
         "reference": {
             "flags": ["-r", "--reference"],
             "required": True,
@@ -86,41 +101,23 @@ class DNAscopeLRPipeline(BasePipeline):
             "help": "sample BAM or CRAM file.",
             "type": path_arg(exists=True, is_file=True),
         },
-        "fastq": {
-            "nargs": "*",
-            "help": "Sample fastq files.",
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "readgroups": {
-            "nargs": "*",
-            "help": "Readgroup information for the fastq files.",
-        },
-        "model_bundle": {
-            "flags": ["-m", "--model_bundle"],
-            "help": "The model bundle file.",
-            "required": True,
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "dbsnp": {
-            "flags": ["-d", "--dbsnp"],
+        "align": {
             "help": (
-                "dbSNP vcf file Supplying this file will annotate variants "
-                "with their dbSNP refSNP ID numbers."
+                "Align the input BAM/CRAM/uBAM file to the reference genome."
             ),
-            "type": path_arg(exists=True, is_file=True),
+            "action": "store_true",
+        },
+        "bam_format": {
+            "help": (
+                "Use the BAM format instead of CRAM for output aligned files."
+            ),
+            "action": "store_true",
         },
         "bed": {
             "flags": ["-b", "--bed"],
             "help": (
                 "Region BED file. Supplying this file will restrict diploid "
                 "variant calling to the intervals inside the BED file."
-            ),
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "haploid_bed": {
-            "help": (
-                "A BED file of haploid regions. Supplying this file will "
-                "perform haploid variant calling across these regions."
             ),
             "type": path_arg(exists=True, is_file=True),
         },
@@ -136,6 +133,18 @@ class DNAscopeLRPipeline(BasePipeline):
             ),
             "default": mp.cpu_count(),
         },
+        "dbsnp": {
+            "flags": ["-d", "--dbsnp"],
+            "help": (
+                "dbSNP vcf file Supplying this file will annotate variants "
+                "with their dbSNP refSNP ID numbers."
+            ),
+            "type": path_arg(exists=True, is_file=True),
+        },
+        "dry_run": {
+            "help": "Print the commands without running them.",
+            "action": "store_true",
+        },
         "gvcf": {
             "flags": ["-g", "--gvcf"],
             "help": (
@@ -144,13 +153,26 @@ class DNAscopeLRPipeline(BasePipeline):
             ),
             "action": "store_true",
         },
-        "tech": {
-            "help": "Sequencing technology used to generate the reads.",
-            "choices": ["HiFi", "ONT"],
-            "default": "HiFi",
+        "haploid_bed": {
+            "help": (
+                "A BED file of haploid regions. Supplying this file will "
+                "perform haploid variant calling across these regions."
+            ),
+            "type": path_arg(exists=True, is_file=True),
         },
-        "dry_run": {
-            "help": "Print the commands without running them.",
+        "input_ref": {
+            "help": (
+                "Used to decode the input alignment file. Required if the "
+                "input file is in the CRAM/uCRAM formats."
+            ),
+            "type": path_arg(exists=True, is_file=True),
+        },
+        "skip_cnv": {
+            "help": "Skip CNV calling.",
+            "action": "store_true",
+        },
+        "skip_mosdepth": {
+            "help": "Skip QC with mosdepth.",
             "action": "store_true",
         },
         "skip_small_variants": {
@@ -161,63 +183,44 @@ class DNAscopeLRPipeline(BasePipeline):
             "help": "Skip SV calling.",
             "action": "store_true",
         },
-        "skip_mosdepth": {
-            "help": "Skip QC with mosdepth.",
-            "action": "store_true",
-        },
-        "skip_cnv": {
-            "help": "Skip CNV calling.",
-            "action": "store_true",
-        },
-        "align": {
-            "help": (
-                "Align the input BAM/CRAM/uBAM file to the reference genome."
-            ),
-            "action": "store_true",
-        },
-        "input_ref": {
-            "help": (
-                "Used to decode the input alignment file. Required if the "
-                "input file is in the CRAM/uCRAM formats."
-            ),
-            "type": path_arg(exists=True, is_file=True),
+        "tech": {
+            "help": "Sequencing technology used to generate the reads.",
+            "choices": ["HiFi", "ONT"],
+            "default": "HiFi",
         },
         "fastq_taglist": {
-            "help": (
-                "A comma-separated list of tags to retain. Defaults to "
-                "'%(default)s' and the 'RG' tag is required."
-            ),
+            #"help": (
+            #    "A comma-separated list of tags to retain. Defaults to "
+            #    "'%(default)s' and the 'RG' tag is required."
+            #),
+            "help": argparse.SUPPRESS,
             "default": "*",
         },
-        "bam_format": {
-            "help": (
-                "Use the BAM format instead of CRAM for output aligned files."
-            ),
-            "action": "store_true",
-        },
         "minimap2_args": {
-            "help": "Extra arguments for sentieon minimap2.",
+            #"help": "Extra arguments for sentieon minimap2.",
+            "help": argparse.SUPPRESS,
             "default": "-Y",
-        },
-        "util_sort_args": {
-            "help": "Extra arguments for sentieon util sort.",
-            "default": "--cram_write_options version=3.0,compressor=rans",
         },
         "repeat_model": {
             "help": argparse.SUPPRESS,
             "type": path_arg(exists=True, is_file=True),
         },
-        "skip_version_check": {
+        "retain_tmpdir": {
             "help": argparse.SUPPRESS,
             "action": "store_true",
         },
-        "retain_tmpdir": {
+        "skip_version_check": {
             "help": argparse.SUPPRESS,
             "action": "store_true",
         },
         "use_pbsv": {
             "help": argparse.SUPPRESS,
             "action": "store_true",
+        },
+        "util_sort_args": {
+            #"help": "Extra arguments for sentieon util sort.",
+            "help": argparse.SUPPRESS,
+            "default": "--cram_write_options version=3.0,compressor=rans",
         },
     }
 

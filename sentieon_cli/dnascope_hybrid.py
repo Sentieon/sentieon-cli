@@ -52,10 +52,27 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
     """The DNAscope Hybrid pipeline"""
 
     params: Dict[str, Dict[str, Any]] = {
+        "lr_aln": {
+            "nargs": "*",
+            "help": "Long-read BAM or CRAM files.",
+            "type": path_arg(exists=True, is_file=True),
+            "required": True,
+        },
+        "model_bundle": {
+            "flags": ["-m", "--model_bundle"],
+            "help": "The model bundle file.",
+            "required": True,
+            "type": path_arg(exists=True, is_file=True),
+        },
         "reference": {
             "flags": ["-r", "--reference"],
             "required": True,
             "help": "fasta for reference genome.",
+            "type": path_arg(exists=True, is_file=True),
+        },
+        "sr_aln": {
+            "nargs": "*",
+            "help": "Short-read BAM or CRAM files",
             "type": path_arg(exists=True, is_file=True),
         },
         "sr_r1_fastq": {
@@ -72,35 +89,11 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             "nargs": "*",
             "help": "Readgroup information for the short-read fastq files",
         },
-        "sr_aln": {
-            "nargs": "*",
-            "help": "Short-read BAM or CRAM files",
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "sr_duplicate_marking": {
-            "help": "Options for duplicate marking.",
-            "choices": ["markdup", "rmdup", "none"],
-            "default": "markdup",
-        },
-        "lr_aln": {
-            "nargs": "*",
-            "help": "Long-read BAM or CRAM files.",
-            "type": path_arg(exists=True, is_file=True),
-            "required": True,
-        },
-        "model_bundle": {
-            "flags": ["-m", "--model_bundle"],
-            "help": "The model bundle file.",
-            "required": True,
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "dbsnp": {
-            "flags": ["-d", "--dbsnp"],
+        "bam_format": {
             "help": (
-                "dbSNP vcf file Supplying this file will annotate variants "
-                "with their dbSNP refSNP ID numbers."
+                "Use the BAM format instead of CRAM for output aligned files"
             ),
-            "type": path_arg(exists=True, is_file=True),
+            "action": "store_true",
         },
         "bed": {
             "flags": ["-b", "--bed"],
@@ -118,36 +111,24 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             ),
             "default": mp.cpu_count(),
         },
+        "dbsnp": {
+            "flags": ["-d", "--dbsnp"],
+            "help": (
+                "dbSNP vcf file Supplying this file will annotate variants "
+                "with their dbSNP refSNP ID numbers."
+            ),
+            "type": path_arg(exists=True, is_file=True),
+        },
+        "dry_run": {
+            "help": "Print the commands without running them.",
+            "action": "store_true",
+        },
         "gvcf": {
             "flags": ["-g", "--gvcf"],
             "help": (
                 "Generate a gVCF output file along with the VCF."
                 " (default generates only the VCF)"
             ),
-            "action": "store_true",
-        },
-        "dry_run": {
-            "help": "Print the commands without running them.",
-            "action": "store_true",
-        },
-        "skip_svs": {
-            "help": "Skip SV calling",
-            "action": "store_true",
-        },
-        "skip_metrics": {
-            "help": "Skip all metrics collection and multiQC",
-            "action": "store_true",
-        },
-        "skip_mosdepth": {
-            "help": "Skip QC with mosdepth.",
-            "action": "store_true",
-        },
-        "skip_multiqc": {
-            "help": "Skip multiQC report generation.",
-            "action": "store_true",
-        },
-        "skip_cnv": {
-            "help": "Skip CNV calling.",
             "action": "store_true",
         },
         "lr_align_input": {
@@ -164,23 +145,36 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             ),
             "type": path_arg(exists=True, is_file=True),
         },
-        "bam_format": {
-            "help": (
-                "Use the BAM format instead of CRAM for output aligned files"
-            ),
-            "action": "store_true",
-        },
         "rgsm": {
             "help": (
                 "Overwrite the SM tag of the input readgroups for "
                 "compatibility"
             )
         },
-        "lr_fastq_taglist": {
-            # help="A comma-separated list of tags to retain. Defaults to "
-            # "'%(default)s' and the 'RG' tag is required",
-            "help": argparse.SUPPRESS,
-            "default": "*",
+        "skip_cnv": {
+            "help": "Skip CNV calling.",
+            "action": "store_true",
+        },
+        "skip_metrics": {
+            "help": "Skip all metrics collection and multiQC",
+            "action": "store_true",
+        },
+        "skip_mosdepth": {
+            "help": "Skip QC with mosdepth.",
+            "action": "store_true",
+        },
+        "skip_multiqc": {
+            "help": "Skip multiQC report generation.",
+            "action": "store_true",
+        },
+        "skip_svs": {
+            "help": "Skip SV calling",
+            "action": "store_true",
+        },
+        "sr_duplicate_marking": {
+            "help": "Options for duplicate marking.",
+            "choices": ["markdup", "rmdup", "none"],
+            "default": "markdup",
         },
         "bwa_args": {
             # help="Extra arguments for sentieon bwa",
@@ -192,17 +186,25 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             "help": argparse.SUPPRESS,
             "default": 100000000,
         },
+        "bwt_max_mem": {
+            # Manually set `bwt_max_mem`
+            "help": argparse.SUPPRESS,
+        },
+        "lr_fastq_taglist": {
+            # help="A comma-separated list of tags to retain. Defaults to "
+            # "'%(default)s' and the 'RG' tag is required",
+            "help": argparse.SUPPRESS,
+            "default": "*",
+        },
+        "lr_read_filter": {
+            "help": argparse.SUPPRESS,
+        },
         "minimap2_args": {
             # help="Extra arguments for sentieon minimap2",
             "help": argparse.SUPPRESS,
             "default": "-Y",
         },
-        "util_sort_args": {
-            # help="Extra arguments for sentieon util sort",
-            "help": argparse.SUPPRESS,
-            "default": "--cram_write_options version=3.0,compressor=rans",
-        },
-        "skip_version_check": {
+        "no_split_alignment": {
             "help": argparse.SUPPRESS,
             "action": "store_true",
         },
@@ -210,19 +212,17 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             "help": argparse.SUPPRESS,
             "action": "store_true",
         },
-        "bwt_max_mem": {
-            # Manually set `bwt_max_mem`
-            "help": argparse.SUPPRESS,
-        },
-        "no_split_alignment": {
+        "skip_version_check": {
             "help": argparse.SUPPRESS,
             "action": "store_true",
         },
         "sr_read_filter": {
             "help": argparse.SUPPRESS,
         },
-        "lr_read_filter": {
+        "util_sort_args": {
+            # help="Extra arguments for sentieon util sort",
             "help": argparse.SUPPRESS,
+            "default": "--cram_write_options version=3.0,compressor=rans",
         },
     }
 
