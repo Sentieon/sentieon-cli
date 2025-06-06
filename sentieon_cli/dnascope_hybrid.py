@@ -36,7 +36,7 @@ from .util import (
     library_preloaded,
     parse_rg_line,
     path_arg,
-    spit_alignment,
+    split_alignment,
 )
 
 
@@ -394,7 +394,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         self.numa_nodes: List[str] = []
         n_alignment_jobs = 1
         if not self.no_split_alignment:
-            self.numa_nodes = spit_alignment(self.cores)
+            self.numa_nodes = split_alignment(self.cores)
         n_alignment_jobs = max(1, len(self.numa_nodes))
 
         self.set_bwt_max_mem(0, n_alignment_jobs)

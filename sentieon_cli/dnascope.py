@@ -44,7 +44,7 @@ from .util import (
     check_version,
     library_preloaded,
     path_arg,
-    spit_alignment,
+    split_alignment,
     total_memory,
 )
 
@@ -346,7 +346,7 @@ class DNAscopePipeline(BasePipeline):
         self.numa_nodes: List[str] = []
         n_alignment_jobs = 1
         if not self.no_split_alignment:
-            self.numa_nodes = spit_alignment(self.cores)
+            self.numa_nodes = split_alignment(self.cores)
         n_alignment_jobs = max(1, len(self.numa_nodes))
 
         total_input_size = 0
