@@ -451,7 +451,7 @@ def bcftools_subset(
         ]
     )
     return (
-        f'if [ -s "{regions_bed}" ]; then   '
+        f'if [ -s "{regions_bed}" ]; then   '  # noqa
         + bcftools_subset_cmd
         + " | "
         + vcfconvert_cmd

@@ -211,12 +211,12 @@ class DNAscopePipeline(BasePipeline):
             "action": "store_true",
         },
         "bwa_args": {
-            #"help": "Extra arguments for sentieon bwa",
+            # "help": "Extra arguments for sentieon bwa",
             "help": argparse.SUPPRESS,
             "default": "",
         },
         "bwa_k": {
-            #"help": "The '-K' argument in bwa",
+            # "help": "The '-K' argument in bwa",
             "help": argparse.SUPPRESS,
             "default": 100000000,
         },
@@ -238,7 +238,7 @@ class DNAscopePipeline(BasePipeline):
             "action": "store_true",
         },
         "util_sort_args": {
-            #"help": "Extra arguments for sentieon util sort",
+            # "help": "Extra arguments for sentieon util sort",
             "help": argparse.SUPPRESS,
             "default": "--cram_write_options version=3.0,compressor=rans",
         },

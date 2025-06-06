@@ -189,15 +189,15 @@ class DNAscopeLRPipeline(BasePipeline):
             "default": "HiFi",
         },
         "fastq_taglist": {
-            #"help": (
+            # "help": (
             #    "A comma-separated list of tags to retain. Defaults to "
             #    "'%(default)s' and the 'RG' tag is required."
-            #),
+            # ),
             "help": argparse.SUPPRESS,
             "default": "*",
         },
         "minimap2_args": {
-            #"help": "Extra arguments for sentieon minimap2.",
+            # "help": "Extra arguments for sentieon minimap2.",
             "help": argparse.SUPPRESS,
             "default": "-Y",
         },
@@ -218,7 +218,7 @@ class DNAscopeLRPipeline(BasePipeline):
             "action": "store_true",
         },
         "util_sort_args": {
-            #"help": "Extra arguments for sentieon util sort.",
+            # "help": "Extra arguments for sentieon util sort.",
             "help": argparse.SUPPRESS,
             "default": "--cram_write_options version=3.0,compressor=rans",
         },
