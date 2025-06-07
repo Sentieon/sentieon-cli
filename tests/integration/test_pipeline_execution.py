@@ -23,11 +23,11 @@ class TestPipelineDryRunExecution:
 
     def setup_method(self):
         """Setup test environment"""
-        self.helper, self.patches = setup_basic_test_environment()
+        self.helper = setup_basic_test_environment()
 
     def teardown_method(self):
         """Cleanup test environment"""
-        teardown_test_environment(self.helper, self.patches)
+        teardown_test_environment(self.helper)
 
     def test_dnascope_dry_run_execution(self):
         """Test DNAscope pipeline dry-run execution"""
@@ -106,11 +106,11 @@ class TestPipelineCommandGeneration:
 
     def setup_method(self):
         """Setup test environment"""
-        self.helper, self.patches = setup_basic_test_environment()
+        self.helper = setup_basic_test_environment()
 
     def teardown_method(self):
         """Cleanup test environment"""
-        teardown_test_environment(self.helper, self.patches)
+        teardown_test_environment(self.helper)
 
     def test_dnascope_command_parameters(self):
         """Test DNAscope command parameter generation"""
@@ -191,11 +191,11 @@ class TestPipelineErrorHandling:
 
     def setup_method(self):
         """Setup test environment"""
-        self.helper, self.patches = setup_basic_test_environment()
+        self.helper = setup_basic_test_environment()
 
     def teardown_method(self):
         """Cleanup test environment"""
-        teardown_test_environment(self.helper, self.patches)
+        teardown_test_environment(self.helper)
 
     def test_missing_required_files(self):
         """Test handling of missing required files"""
@@ -249,11 +249,11 @@ class TestDAGDependencyValidation:
 
     def setup_method(self):
         """Setup test environment"""
-        self.helper, self.patches = setup_basic_test_environment()
+        self.helper = setup_basic_test_environment()
 
     def teardown_method(self):
         """Cleanup test environment"""
-        teardown_test_environment(self.helper, self.patches)
+        teardown_test_environment(self.helper)
 
     def test_alignment_to_dedup_dependency(self):
         """Test that deduplication depends on alignment"""

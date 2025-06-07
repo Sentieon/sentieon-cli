@@ -224,64 +224,6 @@ class PipelineTestHelper:
         self.fs.cleanup()
 
 
-class MockExternalTools:
-    """Mock external tool dependencies for testing"""
-
-    @staticmethod
-    def mock_version_check():
-        """Mock version checking to always pass"""
-        return patch('sentieon_cli.util.check_version', return_value=True)
-
-    @staticmethod
-    def mock_library_preloaded():
-        """Mock library preloading check"""
-        return patch('sentieon_cli.util.library_preloaded', return_value=True)
-
-    @staticmethod
-    def mock_ar_load(bundle_info=None, bundle_members=None):
-        """Mock ar_load function for bundle file testing"""
-        if bundle_info is None:
-            bundle_info = {
-                "longReadPlatform": "HiFi",
-                "shortReadPlatform": "Illumina",
-                "minScriptVersion": "1.0.0",
-                "pipeline": "DNAscope Hybrid"
-            }
-
-        if bundle_members is None:
-            bundle_members = [
-                "longreadsv.model",
-                "cnv.model",
-                "bwa.model",
-                "dnascope.model",
-                "diploid_model",
-                "haploid_model",
-                "gvcf_model",
-                "hybrid.model",
-                "HybridStage1.model",
-                "HybridStage2.model",
-                "HybridStage3.model"
-            ]
-
-        def mock_ar_load_func(path):
-            # Parse the path to determine what to return
-            if path.endswith("/bundle_info.json"):
-                import json
-                return json.dumps(bundle_info).encode()
-            elif "/" in path and not path.endswith("/bundle_info.json"):
-                # Specific member request (path/member)
-                base_path, member = path.rsplit("/", 1)
-                if member in bundle_members:
-                    return b"mock_model_data"
-                else:
-                    raise RuntimeError(f"Member {member} not found in archive")
-            else:
-                # List all members - called with just the bundle path
-                return bundle_members
-
-        return patch('sentieon_cli.archive.ar_load', side_effect=mock_ar_load_func)
-
-
 class CommandValidator:
     """Helper for validating generated commands"""
 
@@ -344,24 +286,10 @@ class DAGAnalyzer:
 def setup_basic_test_environment():
     """Setup a basic test environment with common mocks"""
     helper = PipelineTestHelper()
-
-    patches = [
-        MockExternalTools.mock_version_check(),
-        MockExternalTools.mock_library_preloaded(),
-        MockExternalTools.mock_ar_load(),
-    ]
-
-    # Start all patches
-    started_patches = [p.start() for p in patches]
-
-    return helper, started_patches
+    return helper
 
 
-def teardown_test_environment(helper: PipelineTestHelper, patches: List):
+def teardown_test_environment(helper: PipelineTestHelper):
     """Teardown test environment"""
-    # Stop all patches
-    for patch in patches:
-        patch.stop()
-
     # Cleanup filesystem
     helper.cleanup()
