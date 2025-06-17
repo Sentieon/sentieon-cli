@@ -216,6 +216,10 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             "help": argparse.SUPPRESS,
             "action": "store_true",
         },
+        "skip_model_apply": {
+            "help": argparse.SUPPRESS,
+            "action": "store_true",
+        },
         "sr_read_filter": {
             "help": argparse.SUPPRESS,
         },
@@ -249,6 +253,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         self.sr_read_filter: Optional[str] = None
         self.lr_read_filter: Optional[str] = None
         self.assay = "WGS"
+        self.skip_model_apply = False
 
     def validate(self) -> None:
         self.validate_bundle()
@@ -539,8 +544,10 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         dag.add_job(subset_job, {second_stage_job})
         dag.add_job(concat_job, {subset_job, call2_job})
         dag.add_job(anno_job, {concat_job})
-        dag.add_job(apply_job, {anno_job})
-        dag.add_job(norm_job, {apply_job})
+        if apply_job:
+            dag.add_job(apply_job, {anno_job})
+        if apply_job and norm_job:
+            dag.add_job(norm_job, {apply_job})
 
         # Remove intermediate files during processing
         if not self.retain_tmpdir:
@@ -575,8 +582,8 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         Job,
         Job,
         Job,
-        Job,
-        Job,
+        Optional[Job],
+        Optional[Job],
     ]:
         """
         Call SNVs and indels using the DNAscope hybrid pipeline
@@ -895,6 +902,8 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             str(files("sentieon_cli.scripts").joinpath("hybrid_anno.py"))
         )
         combined_anno_vcf = self.tmp_dir.joinpath("combined_tmp_anno.vcf.gz")
+        if self.skip_model_apply:
+            combined_anno_vcf = self.output_vcf
         anno_job = Job(
             cmds.cmd_pyexec_hybrid_anno(
                 combined_anno_vcf,
@@ -906,6 +915,28 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             "anno-calls",
             0,
         )
+        if self.skip_model_apply:
+            return (
+                call_job,
+                select_job,
+                mapq0_job,
+                mapq0_slop_job,
+                cat_merge_job,
+                rm_job1,
+                stage1_job,
+                rm_job2,
+                second_stage_job,
+                rm_job3,
+                third_stage_job,
+                rm_job4,
+                call2_job,
+                subset_job,
+                concat_job,
+                rm_job5,
+                anno_job,
+                None,
+                None,
+            )
 
         # Model Apply
         apply_vcf = self.tmp_dir.joinpath("combined_apply.vcf.gz")
