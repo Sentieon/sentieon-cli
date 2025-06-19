@@ -4,3 +4,8 @@ dist/
 .vscode/
 secrets.env
 .*.swp
+
+# Other files
+notes.txt
+.secrets
+.DS_Store
