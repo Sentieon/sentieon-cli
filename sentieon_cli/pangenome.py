@@ -818,6 +818,10 @@ class PangenomePipeline(BasePipeline):
 
     def get_sex(self) -> None:
         """Retrieve the sample sex"""
+        if self.dry_run:
+            self.logger.info("Setting sample sex to MALE for dry-run")
+            self.sample_sex = SampleSex.MALE
+            return
         with open(self.ploidy_json) as fh:
             data = json.load(fh)
             sex = data["sex"]
