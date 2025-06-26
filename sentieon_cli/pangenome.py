@@ -118,21 +118,6 @@ class PangenomePipeline(BasePipeline):
             "nargs": "*",
             "help": "Readgroup information for the fastq files.",
         },
-        "t1k_hla": {
-            "help": "The DNA HLA FASTA file for T1K.",
-            "required": True,
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "t1k_kir": {
-            "help": "The DNA KIR FASTA file for T1K.",
-            "required": True,
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "expansion_catalog": {
-            "help": "An ExpansionHunter variant catalog.",
-            "required": True,
-            "type": path_arg(exists=True, is_file=True),
-        },
         # Additional arguments
         "cores": {
             "flags": ["-t", "--cores"],
@@ -154,6 +139,10 @@ class PangenomePipeline(BasePipeline):
             "help": "Print the commands without running them.",
             "action": "store_true",
         },
+        "expansion_catalog": {
+            "help": "An ExpansionHunter variant catalog. Required for expansion calling.",
+            "type": path_arg(exists=True, is_file=True),
+        },
         "kmer_memory": {
             "help": "Memory limit for KMC in GB.",
             "default": 128,
@@ -163,6 +152,18 @@ class PangenomePipeline(BasePipeline):
             "nargs": "*",
             "type": path_arg(exists=True, is_file=True),
             "help": "Known sites for realignment.",
+        },
+        "segdup_caller_genes": {
+            "type": str,
+            "help": "Genes for SegDup calling. Ex: 'CFH,CFHR3,CYP11B1,CYP2D6,GBA,NCF1,PMS2,SMN1,STRC'. Required for SegDup calling."
+        },
+        "t1k_hla": {
+            "help": "The DNA HLA FASTA file for T1K. Required for HLA calling.",
+            "type": path_arg(exists=True, is_file=True),
+        },
+        "t1k_kir": {
+            "help": "The DNA KIR FASTA file for T1K. Required for KIA calling.",
+            "type": path_arg(exists=True, is_file=True),
         },
         # Hidden arguments
         "retain_tmpdir": {
@@ -193,16 +194,17 @@ class PangenomePipeline(BasePipeline):
         self.r1_fastq: List[pathlib.Path] = []
         self.r2_fastq: List[pathlib.Path] = []
         self.readgroups: List[str] = []
-        self.t1k_hla: Optional[pathlib.Path] = None
-        self.t1k_kir: Optional[pathlib.Path] = None
-        self.expansion_catalog: Optional[pathlib.Path] = None
         self.model_bundle: Optional[pathlib.Path] = None
         self.dbsnp: Optional[pathlib.Path] = None
         self.cores = mp.cpu_count()
+        self.expansion_catalog: Optional[pathlib.Path] = None
         self.kmer_memory = 128
         self.known_sites: List[pathlib.Path] = []
-        self.skip_version_check = False
+        self.segdup_caller_genes: Optional[str] = None
+        self.t1k_hla: Optional[pathlib.Path] = None
+        self.t1k_kir: Optional[pathlib.Path] = None
         self.retain_tmpdir = False
+        self.skip_version_check = False
 
     def main(self, args: argparse.Namespace) -> None:
         """Run the pipeline"""
@@ -402,13 +404,17 @@ class PangenomePipeline(BasePipeline):
         dag.add_job(ploidy_job, {dedup_job})
 
         # HLA and KIR calling with T1K
-        hla_job, kir_job = self.build_diverse_jobs(out_hla, out_kir)
-        dag.add_job(hla_job)
-        dag.add_job(kir_job)
+        if self.t1k_hla:
+            hla_job = self.build_t1k_job(out_hla, self.t1k_hla, "hla-wgs")
+            dag.add_job(hla_job)
+        if self.t1k_kir:
+            kir_job = self.build_t1k_job(out_kir, self.t1k_kir, "kir-wgs")
+            dag.add_job(kir_job)
 
         # special-caller
-        segdup_job = self.build_segdup_job(out_segdup, self.realigned_cram)
-        dag.add_job(segdup_job, {realign_job})
+        if self.segdup_caller_genes:
+            segdup_job = self.build_segdup_job(out_segdup, self.realigned_cram, genes=self.segdup_caller_genes)
+            dag.add_job(segdup_job, {realign_job})
 
         return dag
 
@@ -822,47 +828,32 @@ class PangenomePipeline(BasePipeline):
             else:
                 self.sample_sex = SampleSex.UNKNOWN
 
-    def build_diverse_jobs(
+    def build_t1k_job(
         self,
-        out_hla: pathlib.Path,
-        out_kir: pathlib.Path,
-    ) -> Tuple[Job, Job]:
+        out_basename: pathlib.Path,
+        gene_fa: pathlib.Path,
+        preset: str,
+    ) -> Job:
         """Genotype diverse sequences with T1K"""
-        assert self.t1k_hla
-        assert self.t1k_kir
-
-        hla_job = Job(
+        job = Job(
             cmds.cmd_t1k(
-                out_hla,
+                out_basename,
                 self.r1_fastq,
                 self.r2_fastq,
-                self.t1k_hla,
-                preset="hla-wgs",
+                gene_fa=gene_fa,
+                preset=preset,
                 threads=self.cores,
             ),
-            "T1K-HLA",
+            "T1K-HLA-KIR",
             self.cores,
         )
-
-        kir_job = Job(
-            cmds.cmd_t1k(
-                out_kir,
-                self.r1_fastq,
-                self.r2_fastq,
-                self.t1k_kir,
-                preset="kir-wgs",
-                threads=self.cores,
-            ),
-            "T1K-HLA",
-            self.cores,
-        )
-
-        return (hla_job, kir_job)
+        return job
 
     def build_segdup_job(
         self,
         out_segdup: pathlib.Path,
         realigned_cram: pathlib.Path,
+        genes: str,
     ) -> Job:
         """Call variants in difficult SegDups"""
         assert self.reference
@@ -874,7 +865,7 @@ class PangenomePipeline(BasePipeline):
                 realigned_cram,
                 reference=self.reference,
                 sr_bundle=self.model_bundle,
-                genes="CFH,CFHR3,CYP11B1,CYP2D6,GBA,NCF1,PMS2,SMN1,STRC",
+                genes=genes,
             ),
             "segdup-caller",
             self.cores,
@@ -929,10 +920,11 @@ class PangenomePipeline(BasePipeline):
             dag.add_job(concat_job, {cnvapply_job, haploid_apply_job})
 
         # Repeat expansions
-        expansion_job = self.build_expansion_job(
-            out_expansions, self.realigned_cram
-        )
-        dag.add_job(expansion_job)
+        if self.expansion_catalog:
+            expansion_job = self.build_expansion_job(
+                out_expansions, self.realigned_cram, self.expansion_catalog,
+            )
+            dag.add_job(expansion_job)
 
         return dag
 
@@ -1052,17 +1044,17 @@ class PangenomePipeline(BasePipeline):
         self,
         out_expansions: pathlib.Path,
         realigned_cram: pathlib.Path,
+        expansion_catalog: pathlib.Path,
     ) -> Job:
         """Identify repeat expansions"""
         assert self.reference
-        assert self.expansion_catalog
 
         expansion_job = Job(
             cmds.cmd_expansion_hunter(
                 out_expansions,
                 realigned_cram,
                 reference=self.reference,
-                variant_catalog=self.expansion_catalog,
+                variant_catalog=expansion_catalog,
                 sex="male" if self.sample_sex == SampleSex.MALE else "female",
                 threads=self.cores,
             ),
