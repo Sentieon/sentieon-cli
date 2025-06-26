@@ -49,6 +49,8 @@ PANGENOME_MIN_VERSIONS = {
     "bcftools": packaging.version.Version("1.10"),
     "samtools": packaging.version.Version("1.16"),
     "run-t1k": None,
+    "ExpansionHunter": None,
+    "segdup-caller": None,
 }
 
 MULTIQC_MIN_VERSION = {
@@ -163,6 +165,10 @@ class PangenomePipeline(BasePipeline):
             "help": "Known sites for realignment.",
         },
         # Hidden arguments
+        "retain_tmpdir": {
+            "help": argparse.SUPPRESS,
+            "action": "store_true",
+        },
         "skip_version_check": {
             "help": argparse.SUPPRESS,
             "action": "store_true",
@@ -196,6 +202,7 @@ class PangenomePipeline(BasePipeline):
         self.kmer_memory = 128
         self.known_sites: List[pathlib.Path] = []
         self.skip_version_check = False
+        self.retain_tmpdir = False
 
     def main(self, args: argparse.Namespace) -> None:
         """Run the pipeline"""
@@ -271,7 +278,7 @@ class PangenomePipeline(BasePipeline):
         for rg in self.readgroups:
             rg_dict = parse_rg_line(rg.replace(r"\t", "\t"))
             rg_sm = rg_dict.get("SM")
-            if rg_sm:
+            if not rg_sm:
                 self.logger.error(
                     "Found a readgroup without a SM tag: %s",
                     str(rg),
@@ -341,7 +348,7 @@ class PangenomePipeline(BasePipeline):
 
         # vg haplotypes - create sample-specific pangenome
         haplotypes_job = self.build_haplotypes_job(sample_pangenome, kmer_file)
-        dag.add_job(haplotypes_job, set([kmc_job]))
+        dag.add_job(haplotypes_job, {kmc_job})
 
         # vg giraffe - align reads to pangenome
         sample_gams, giraffe_jobs = self.build_alignment_jobs(sample_pangenome)
@@ -426,10 +433,11 @@ class PangenomePipeline(BasePipeline):
                     print("@HD\tVN:1.5", file=fh)
                     print(
                         "@RG\t"
-                        + "\t".join([x + ":" + y for x, y in rg_dict.items()])
+                        + "\t".join([x + ":" + y for x, y in rg_dict.items()]),
+                        file=fh,
                     )
                     for contig, contig_l in contigs:
-                        print(f"@SQ\tSN:{contig}\tLN:{contig_l}")
+                        print(f"@SQ\tSN:{contig}\tLN:{contig_l}", file=fh)
             aln_headers.append(aln_header)
 
         return aln_headers

@@ -1231,17 +1231,12 @@ def cmd_t1k(
         str(gene_fa),
         "--od",
         str(out_prefix),
+        "-1",
     ]
-    zcat_r1 = ["zcat"] + [str(x) for x in r1_fastq]
-    zcat_r2 = ["zcat"] + [str(x) for x in r2_fastq]
-    return (
-        shlex.join(cmd)
-        + "-1 <("
-        + shlex.join(zcat_r1)
-        + ") -2 <("
-        + shlex.join(zcat_r2)
-        + ")"
-    )
+    cmd.extend([str(x) for x in r1_fastq])
+    cmd.append("-2")
+    cmd.extend([str(x) for x in r2_fastq])
+    return shlex.join(cmd)
 
 
 def cmd_expansion_hunter(
