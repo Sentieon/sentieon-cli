@@ -212,6 +212,24 @@ class Dedup(BaseAlgo):
         self.rmdup = rmdup
 
 
+class Realigner(BaseAlgo):
+    """algo Realigner"""
+
+    name = "Realigner"
+
+    def __init__(
+        self,
+        output: pathlib.Path,
+        bam_compression: Optional[int] = None,
+        cram_write_options: Optional[str] = None,
+        known_sites: List[pathlib.Path] = [],
+    ):
+        self.output = output
+        self.bam_compression = bam_compression
+        self.cram_write_options = cram_write_options
+        self.known_sites = known_sites
+
+
 class GVCFtyper(BaseAlgo):
     """algo GVCFtyper"""
 
