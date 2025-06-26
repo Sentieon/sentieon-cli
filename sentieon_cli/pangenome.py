@@ -140,7 +140,10 @@ class PangenomePipeline(BasePipeline):
             "action": "store_true",
         },
         "expansion_catalog": {
-            "help": "An ExpansionHunter variant catalog. Required for expansion calling.",
+            "help": (
+                "An ExpansionHunter variant catalog. Required for expansion "
+                "calling."
+            ),
             "type": path_arg(exists=True, is_file=True),
         },
         "kmer_memory": {
@@ -155,14 +158,22 @@ class PangenomePipeline(BasePipeline):
         },
         "segdup_caller_genes": {
             "type": str,
-            "help": "Genes for SegDup calling. Ex: 'CFH,CFHR3,CYP11B1,CYP2D6,GBA,NCF1,PMS2,SMN1,STRC'. Required for SegDup calling."
+            "help": (
+                "Genes for SegDup calling. Ex: "
+                "'CFH,CFHR3,CYP11B1,CYP2D6,GBA,NCF1,PMS2,SMN1,STRC'. Required "
+                "for SegDup calling."
+            ),
         },
         "t1k_hla": {
-            "help": "The DNA HLA FASTA file for T1K. Required for HLA calling.",
+            "help": (
+                "The DNA HLA FASTA file for T1K. Required for HLA calling."
+            ),
             "type": path_arg(exists=True, is_file=True),
         },
         "t1k_kir": {
-            "help": "The DNA KIR FASTA file for T1K. Required for KIA calling.",
+            "help": (
+                "The DNA KIR FASTA file for T1K. Required for KIA calling."
+            ),
             "type": path_arg(exists=True, is_file=True),
         },
         # Hidden arguments
@@ -413,7 +424,9 @@ class PangenomePipeline(BasePipeline):
 
         # special-caller
         if self.segdup_caller_genes:
-            segdup_job = self.build_segdup_job(out_segdup, self.realigned_cram, genes=self.segdup_caller_genes)
+            segdup_job = self.build_segdup_job(
+                out_segdup, self.realigned_cram, genes=self.segdup_caller_genes
+            )
             dag.add_job(segdup_job, {realign_job})
 
         return dag
@@ -926,7 +939,9 @@ class PangenomePipeline(BasePipeline):
         # Repeat expansions
         if self.expansion_catalog:
             expansion_job = self.build_expansion_job(
-                out_expansions, self.realigned_cram, self.expansion_catalog,
+                out_expansions,
+                self.realigned_cram,
+                self.expansion_catalog,
             )
             dag.add_job(expansion_job)
 
