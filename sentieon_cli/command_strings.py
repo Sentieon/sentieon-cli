@@ -1056,8 +1056,9 @@ def cmd_vg_pack(
     sample_gams: List[pathlib.Path],
     gbz: pathlib.Path,
     min_mapq=5,
+    threads=1,
 ) -> str:
-    cat_cmd = ["cmd"]
+    cat_cmd = ["cat"]
     cat_cmd.extend([str(x) for x in sample_gams])
     vg_cmd = [
         "vg",
@@ -1070,6 +1071,8 @@ def cmd_vg_pack(
         str(sample_pack),
         "-Q",
         str(min_mapq),
+        "--threads",
+        threads,
     ]
 
     return shlex.join(cat_cmd) + " | " + shlex.join(vg_cmd)

@@ -331,8 +331,9 @@ class PangenomePipeline(BasePipeline):
         out_svs = pathlib.Path(
             str(self.output_vcf).replace(".vcf.gz", "_svs.vcf.gz")
         )
+        # cannot use CRAM due to data issue
         self.realigned_cram = pathlib.Path(
-            str(self.output_vcf).replace(".vcf.gz", "_pangenome-aligned.cram")
+            str(self.output_vcf).replace(".vcf.gz", "_pangenome-aligned.bam")
         )
         self.ploidy_json = pathlib.Path(
             str(self.output_vcf).replace(".vcf.gz", "_ploidy.json")
@@ -560,6 +561,7 @@ class PangenomePipeline(BasePipeline):
                 sample_pack,
                 sample_gams,
                 self.gbz,
+                threads=self.cores,
             ),
             "vg-pack",
             self.cores,
@@ -634,6 +636,10 @@ class PangenomePipeline(BasePipeline):
         metrics_dir = pathlib.Path(
             str(self.output_vcf).replace(".vcf.gz", "_metrics")
         )
+        try:
+            os.mkdir(metrics_dir)
+        except FileExistsError:
+            pass
         mqbc_metrics = metrics_dir.joinpath(
             metric_base + ".mean_qual_by_cycle.txt"
         )
