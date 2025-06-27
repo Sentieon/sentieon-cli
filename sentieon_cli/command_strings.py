@@ -1072,7 +1072,7 @@ def cmd_vg_pack(
         "-Q",
         str(min_mapq),
         "--threads",
-        threads,
+        str(threads),
     ]
 
     return shlex.join(cat_cmd) + " | " + shlex.join(vg_cmd)
