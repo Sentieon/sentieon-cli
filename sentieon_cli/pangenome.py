@@ -58,6 +58,91 @@ MULTIQC_MIN_VERSION = {
 }
 
 
+SV_HDR_ATTR = {
+    "INFO": {
+        "AT": {
+            "Number": "R",
+            "Type": "String",
+            "Description": '"Allele Traversal as path in graph"',
+        },
+        "DP": {
+            "Number": "1",
+            "Type": "Integer",
+            "Description": '"Total Depth"',
+        },
+    },
+    "FORMAT": {
+        "AD": {
+            "Number": ".",
+            "Type": "Integer",
+            "Description": (
+                '"Allelic depths for the ref and alt alleles in the order '
+                'listed"'
+            ),
+        },
+        "DP": {
+            "Number": "1",
+            "Type": "Integer",
+            "Description": '"Read Depth"',
+        },
+        "GL": {
+            "Number": "G",
+            "Type": "Float",
+            "Description": (
+                '"Genotype Likelihood, log10-scaled likelihoods of the data '
+                "given the called genotype for each possible genotype "
+                "generated from the reference and alternate alleles given the "
+                'sample ploidy"'
+            ),
+        },
+        "GP": {
+            "Number": "1",
+            "Type": "Float",
+            "Description": (
+                '"Genotype Probability, the log-scaled posterior probability '
+                'of the called genotype"'
+            ),
+        },
+        "GQ": {
+            "Number": "1",
+            "Type": "Integer",
+            "Description": (
+                '"Genotype Quality, the Phred-scaled probability estimate of '
+                'the called genotype"'
+            ),
+        },
+        "GT": {
+            "Number": "1",
+            "Type": "String",
+            "Description": '"Genotype"',
+        },
+        "MAD": {
+            "Number": "1",
+            "Type": "Integer",
+            "Description": '"Minimum site allele depth"',
+        },
+        "XD": {
+            "Number": "1",
+            "Type": "Float",
+            "Description": (
+                '"eXpected Depth, background coverage as used for the Poisson '
+                'model"'
+            ),
+        },
+    },
+    "FILTER": {
+        "lowad": {
+            "Description": (
+                '"Variant does not meet minimum allele read support threshold '
+                'of 1"'
+            ),
+        },
+        "lowdepth": {"Description": '"Variant has read depth less than 4"'},
+        "PASS": {"Description": '"All filters passed"'},
+    },
+}
+
+
 class SampleSex(Enum):
     FEMALE = 1
     MALE = 2
@@ -383,6 +468,7 @@ class PangenomePipeline(BasePipeline):
         )
 
         # Intermediate file paths
+        sv_header = self.tmp_dir.joinpath("sample_sv.hdr")
         kmer_prefix = self.tmp_dir.joinpath("sample.fq")
         kmer_file = pathlib.Path(str(kmer_prefix) + ".kff")
         sample_pangenome = self.tmp_dir.joinpath("sample_pangenome.gbz")
@@ -393,6 +479,7 @@ class PangenomePipeline(BasePipeline):
 
         # Create an alignment head for surjection
         alignment_headers = self.create_alignment_headers()
+        self.create_sv_header(sv_header, sample_name)
 
         # KMC k-mer counting
         kmc_job = self.build_kmc_job(kmer_prefix)
@@ -413,7 +500,9 @@ class PangenomePipeline(BasePipeline):
         dag.add_job(pack_job, set(giraffe_jobs))
 
         # vg call - call SVs
-        call_job = self.build_call_job(out_svs, sample_pack, sample_name)
+        call_job = self.build_call_job(
+            out_svs, sample_pack, sv_header, sample_name
+        )
         dag.add_job(call_job, {pack_job})
 
         # surject and sort - move reads back to the linear reference
@@ -511,6 +600,47 @@ class PangenomePipeline(BasePipeline):
             aln_headers.append(aln_header)
 
         return aln_headers
+
+    def create_sv_header(self, sv_header: pathlib.Path, sample_name: str):
+        """Create a header file for the SV VCF"""
+        contigs: List[Tuple[str, str]] = []
+        fai_file = str(self.reference) + ".fai"
+        if not self.dry_run:
+            with open(fai_file) as fh:
+                for line in fh:
+                    line_split = line.rstrip().split("\t")
+                    contigs.append((line_split[0], line_split[1]))
+
+        if not self.dry_run:
+            with open(sv_header, "w") as fh:
+                print(r"##fileformat=VCFv4.2", file=fh)
+                for contig, contig_l in contigs:
+                    print(
+                        f"##contig=<ID={contig},length={contig_l}>",
+                        file=fh,
+                    )
+
+                for fld in ("FILTER", "INFO", "FORMAT"):
+                    for hdr_id, hdr_d in SV_HDR_ATTR[fld].items():
+                        hdr_kv = [f"ID={hdr_id}"]
+                        for k, v in hdr_d:
+                            hdr_kv.append(f"{k}={v}")
+                        hdr_kv_str = ",".join(hdr_kv)
+                        print(f"##{fld}=<{hdr_kv_str}>", file=fh)
+
+                last_hdr_line = [
+                    "#CHROM",
+                    "POS",
+                    "ID",
+                    "REF",
+                    "ALT",
+                    "QUAL",
+                    "FILTER",
+                    "INFO",
+                    "FORMAT",
+                    sample_name,
+                ]
+                print("\t".join(last_hdr_line), file=fh)
 
     def build_kmc_job(self, kmer_prefix: pathlib.Path) -> Job:
         """Build KMC k-mer counting jobs"""
@@ -622,6 +752,7 @@ class PangenomePipeline(BasePipeline):
         self,
         out_svs: pathlib.Path,
         sample_pack: pathlib.Path,
+        sv_header: pathlib.Path,
         sample_name="",
     ) -> Job:
         """Call SVs with vg call"""
@@ -632,6 +763,7 @@ class PangenomePipeline(BasePipeline):
             cmds.cmd_sv_call(
                 out_svs,
                 sample_pack,
+                sv_header,
                 self.gbz,
                 self.snarls,
                 sample_name=sample_name,

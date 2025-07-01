@@ -1081,47 +1081,80 @@ def cmd_vg_pack(
 def cmd_sv_call(
     out_svs: pathlib.Path,
     sample_pack: pathlib.Path,
+    sv_header: pathlib.Path,
     gbz: pathlib.Path,
     snarls: pathlib.Path,
     sample_name="",
     ref_path="GRCh38",
     min_indel_size=34,
 ) -> str:
-    vg_cmd = [
-        "vg",
-        "call",
-        "-r",
-        str(snarls),
-        "-k",
-        str(sample_pack),
-        "-s",
-        sample_name,
-        "-z",
-        "--ref-sample",
-        ref_path,
-        "--progress",
-        str(gbz),
-    ]
+    cmds = []
+    cmds.append(
+        [
+            "cat",
+            str(sv_header),
+        ]
+    )
+
+    cmds.append(
+        [
+            "vg",
+            "call",
+            "-r",
+            str(snarls),
+            "-k",
+            str(sample_pack),
+            "-s",
+            sample_name,
+            "-z",
+            "--ref-sample",
+            ref_path,
+            "--progress",
+            str(gbz),
+        ]
+    )
 
     # Use bcftools to remove smaller variants
-    bcftools_cmd = [
-        "bcftools",
-        "view",
-        "-i",
-        f"ABS(ILEN) > {min_indel_size}",
-        "-",
-    ]
+    cmds.append(
+        [
+            "bcftools",
+            "view",
+            "-i",
+            f"ABS(ILEN) > {min_indel_size}",
+            "-H",
+            "-",
+        ]
+    )
 
-    sentieon_cmd = [
-        "sentieon",
-        "util",
-        "vcfconvert",
-        "-",
-        str(out_svs),
-    ]
+    # Sort the VCF
+    cmds.append(
+        [
+            "bcftools",
+            "sort",
+            "-O",
+            "v",
+        ]
+    )
 
-    all_cmds = [shlex.join(x) for x in (vg_cmd, bcftools_cmd, sentieon_cmd)]
-    return " | ".join(all_cmds)
+    cmds.append(
+        [
+            "sentieon",
+            "util",
+            "vcfconvert",
+            "-",
+            str(out_svs),
+        ]
+    )
+
+    all_cmds = [shlex.join(x) for x in cmds]
+    return (
+        "("
+        + all_cmds[0]
+        + "; "
+        + " | ".join(all_cmds[1:3])
+        + ") | "
+        + " | ".join(all_cmds[3:])
+    )
 
 
 def cmd_vg_surject(
