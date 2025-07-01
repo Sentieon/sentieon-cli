@@ -551,7 +551,7 @@ class PangenomePipeline(BasePipeline):
                 self.t1k_hla_coord,
                 "hla-wgs",
             )
-            dag.add_job(hla_job)
+            dag.add_job(hla_job, {dedup_job})
         if self.t1k_kir_seq and self.t1k_kir_coord:
             kir_job = self.build_t1k_job(
                 out_kir,
@@ -560,7 +560,7 @@ class PangenomePipeline(BasePipeline):
                 self.t1k_kir_coord,
                 "kir-wgs",
             )
-            dag.add_job(kir_job)
+            dag.add_job(kir_job, {dedup_job})
 
         # special-caller
         if self.segdup_caller_genes:
@@ -1161,7 +1161,7 @@ class PangenomePipeline(BasePipeline):
             reference=self.reference,
             thread_count=self.cores,
             input=[realigned_cram],
-            interval=first_contigs,
+            interval=','.join(first_contigs),
         )
         driver.add_algo(
             CNVscope(

@@ -1259,6 +1259,7 @@ def cmd_t1k(
 ) -> str:
     cmd = [
         "run-t1k",
+        "--abnormalUnmapFlag",
         "-t",
         str(threads),
         "--preset",
