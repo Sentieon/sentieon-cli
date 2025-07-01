@@ -164,15 +164,29 @@ class PangenomePipeline(BasePipeline):
                 "for SegDup calling."
             ),
         },
-        "t1k_hla": {
+        "t1k_hla_seq": {
             "help": (
-                "The DNA HLA FASTA file for T1K. Required for HLA calling."
+                "The DNA HLA seq FASTA file for T1K. Required for HLA calling."
             ),
             "type": path_arg(exists=True, is_file=True),
         },
-        "t1k_kir": {
+        "t1k_hla_coord": {
             "help": (
-                "The DNA KIR FASTA file for T1K. Required for KIA calling."
+                "The DNA HLA coord FASTA file for T1K. Required for HLA "
+                "calling."
+            ),
+            "type": path_arg(exists=True, is_file=True),
+        },
+        "t1k_kir_seq": {
+            "help": (
+                "The DNA KIR seq FASTA file for T1K. Required for KIA calling."
+            ),
+            "type": path_arg(exists=True, is_file=True),
+        },
+        "t1k_kir_coord": {
+            "help": (
+                "The DNA KIR coord FASTA file for T1K. Required for KIA "
+                "calling."
             ),
             "type": path_arg(exists=True, is_file=True),
         },
@@ -212,8 +226,10 @@ class PangenomePipeline(BasePipeline):
         self.kmer_memory = 128
         self.known_sites: List[pathlib.Path] = []
         self.segdup_caller_genes: Optional[str] = None
-        self.t1k_hla: Optional[pathlib.Path] = None
-        self.t1k_kir: Optional[pathlib.Path] = None
+        self.t1k_hla_seq: Optional[pathlib.Path] = None
+        self.t1k_hla_coord: Optional[pathlib.Path] = None
+        self.t1k_kir_seq: Optional[pathlib.Path] = None
+        self.t1k_kir_coord: Optional[pathlib.Path] = None
         self.retain_tmpdir = False
         self.skip_version_check = False
 
@@ -296,22 +312,44 @@ class PangenomePipeline(BasePipeline):
                     "Found a readgroup without a SM tag: %s",
                     str(rg),
                 )
+                sys.exit(2)
             if rg_sample and rg_sample != rg_sm:
                 self.logger.error(
                     "Inconsistent readgroup sample information found in: %s",
                     str(rg),
                 )
+                sys.exit(2)
             rg_sample = rg_sm
             if "ID" not in rg_dict:
                 self.logger.error(
                     "Found a readgroup without an ID tag: %s",
                     str(rg),
                 )
+                sys.exit(2)
 
         if not self.skip_version_check:
             for cmd, min_version in PANGENOME_MIN_VERSIONS.items():
                 if not check_version(cmd, min_version):
                     sys.exit(2)
+
+        # Check the T1K files
+        if (self.t1k_hla_seq and not self.t1k_hla_coord) or (
+            self.t1k_hla_coord and not self.t1k_hla_seq
+        ):
+            self.logger.error(
+                "For HLA calling, both the seq and coord fasta files need to "
+                "be supplied. Exiting"
+            )
+            sys.exit(2)
+
+        if (self.t1k_kir_seq and not self.t1k_kir_coord) or (
+            self.t1k_kir_coord and not self.t1k_kir_seq
+        ):
+            self.logger.error(
+                "For KIR calling, both the seq and coord fasta files need to "
+                "be supplied. Exiting"
+            )
+            sys.exit(2)
 
     def configure(self) -> None:
         """Configure pipeline parameters"""
@@ -416,11 +454,23 @@ class PangenomePipeline(BasePipeline):
         dag.add_job(ploidy_job, {dedup_job})
 
         # HLA and KIR calling with T1K
-        if self.t1k_hla:
-            hla_job = self.build_t1k_job(out_hla, self.t1k_hla, "hla-wgs")
+        if self.t1k_hla_seq and self.t1k_hla_coord:
+            hla_job = self.build_t1k_job(
+                out_hla,
+                deduped_bam,
+                self.t1k_hla_seq,
+                self.t1k_hla_coord,
+                "hla-wgs",
+            )
             dag.add_job(hla_job)
-        if self.t1k_kir:
-            kir_job = self.build_t1k_job(out_kir, self.t1k_kir, "kir-wgs")
+        if self.t1k_kir_seq and self.t1k_kir_coord:
+            kir_job = self.build_t1k_job(
+                out_kir,
+                deduped_bam,
+                self.t1k_kir_seq,
+                self.t1k_kir_coord,
+                "kir-wgs",
+            )
             dag.add_job(kir_job)
 
         # special-caller
@@ -854,21 +904,23 @@ class PangenomePipeline(BasePipeline):
     def build_t1k_job(
         self,
         out_basename: pathlib.Path,
-        gene_fa: pathlib.Path,
+        deduped_bam: pathlib.Path,
+        gene_seq: pathlib.Path,
+        gene_coord: pathlib.Path,
         preset: str,
     ) -> Job:
         """Genotype diverse sequences with T1K"""
         job = Job(
             cmds.cmd_t1k(
                 out_basename,
-                self.r1_fastq,
-                self.r2_fastq,
-                gene_fa=gene_fa,
+                deduped_bam,
+                gene_seq=gene_seq,
+                gene_coord=gene_coord,
                 preset=preset,
-                threads=self.cores,
+                threads=1,
             ),
             "T1K-HLA-KIR",
-            self.cores,
+            0,
         )
         return job
 

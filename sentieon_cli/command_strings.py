@@ -1218,9 +1218,9 @@ def cmd_estimate_ploidy(
 
 def cmd_t1k(
     out_prefix: pathlib.Path,
-    r1_fastq: List[pathlib.Path],
-    r2_fastq: List[pathlib.Path],
-    gene_fa: pathlib.Path,
+    deduped_bam: pathlib.Path,
+    gene_seq: pathlib.Path,
+    gene_coord: pathlib.Path,
     preset: str,
     threads=1,
 ) -> str:
@@ -1231,14 +1231,14 @@ def cmd_t1k(
         "--preset",
         preset,
         "-f",
-        str(gene_fa),
+        str(gene_seq),
+        "-c",
+        str(gene_coord),
         "--od",
         str(out_prefix),
-        "-1",
+        "-b",
+        str(deduped_bam),
     ]
-    cmd.extend([str(x) for x in r1_fastq])
-    cmd.append("-2")
-    cmd.extend([str(x) for x in r2_fastq])
     return shlex.join(cmd)
 
 
