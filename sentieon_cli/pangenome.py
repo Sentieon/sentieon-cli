@@ -623,7 +623,7 @@ class PangenomePipeline(BasePipeline):
                 for fld in ("FILTER", "INFO", "FORMAT"):
                     for hdr_id, hdr_d in SV_HDR_ATTR[fld].items():
                         hdr_kv = [f"ID={hdr_id}"]
-                        for k, v in hdr_d:
+                        for k, v in hdr_d.items():
                             hdr_kv.append(f"{k}={v}")
                         hdr_kv_str = ",".join(hdr_kv)
                         print(f"##{fld}=<{hdr_kv_str}>", file=fh)
