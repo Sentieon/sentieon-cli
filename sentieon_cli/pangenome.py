@@ -1161,7 +1161,7 @@ class PangenomePipeline(BasePipeline):
             reference=self.reference,
             thread_count=self.cores,
             input=[realigned_cram],
-            interval=','.join(first_contigs),
+            interval=",".join(first_contigs),
         )
         driver.add_algo(
             CNVscope(
