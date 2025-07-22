@@ -47,6 +47,10 @@ CALLING_MIN_VERSIONS = {
     "samtools": packaging.version.Version("1.16"),
 }
 
+MIN_BUNDLE_VERSION = {
+    "ONT": packaging.version.Version("1.2"),
+}
+
 
 class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
     """The DNAscope Hybrid pipeline"""
@@ -320,6 +324,16 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         if bundle_info.get("pipeline", "DNAscope Hybrid") != "DNAscope Hybrid":
             self.logger.error("The model bundle is for a different pipeline.")
             sys.exit(2)
+        bundle_version = packaging.version.Version(
+            bundle_info.get("bundleVersion", "1.0")
+        )
+        if self.longread_tech.upper() == "ONT":
+            if bundle_version < MIN_BUNDLE_VERSION["ONT"]:
+                self.logger.error(
+                    "The model bundle is for an older version of the "
+                    "pipeline. Please update to the latest model bundle."
+                )
+                sys.exit(2)
 
         bundle_members = set(ar_load(str(self.model_bundle)))
         if "longreadsv.model" not in bundle_members:
@@ -600,7 +614,6 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
                     sys.exit(2)
 
         # readgroup handling for long-reads
-        tr_read_filter: List[str] = []
         lr_rg_read_filter: List[str] = []
         replace_rg_args: Tuple[List[List[str]], List[List[str]]] = ([], [])
         for aln_rgs in self.lr_aln_readgroups:
@@ -618,11 +631,6 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
                 if self.lr_read_filter:
                     lr_rg_read_filter.append(
                         f"{self.lr_read_filter},rgid={id}"
-                    )
-                if self.longread_tech.upper() == "ONT":
-                    tr_read_filter.append(
-                        f"TrimRepeat,max_repeat_unit=2,min_repeat_span=6,"
-                        f"rgid={id}"
                     )
 
         # readgroup handling for short-reads
@@ -659,8 +667,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             replace_rg=replace_rg_args[0] + replace_rg_args[1],
             input=lr_aln + sr_aln,
             interval=self.bed,
-            read_filter=tr_read_filter
-            + ultima_read_filter
+            read_filter=ultima_read_filter
             + lr_rg_read_filter
             + sr_rg_read_filter,
         )
@@ -859,9 +866,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             replace_rg=replace_rg_args[0],
             input=lr_aln + [stage3_bam],
             interval=stage2_bed,
-            read_filter=tr_read_filter
-            + ultima_read_filter
-            + lr_rg_read_filter,
+            read_filter=ultima_read_filter + lr_rg_read_filter,
         )
         driver.add_algo(
             DNAscope(
