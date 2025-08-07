@@ -36,7 +36,7 @@ from .util import (
     library_preloaded,
     parse_rg_line,
     path_arg,
-    spit_alignment,
+    split_alignment,
 )
 
 
@@ -47,15 +47,36 @@ CALLING_MIN_VERSIONS = {
     "samtools": packaging.version.Version("1.16"),
 }
 
+MIN_BUNDLE_VERSION = {
+    "ONT": packaging.version.Version("1.2"),
+}
+
 
 class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
     """The DNAscope Hybrid pipeline"""
 
     params: Dict[str, Dict[str, Any]] = {
+        "lr_aln": {
+            "nargs": "*",
+            "help": "Long-read BAM or CRAM files.",
+            "type": path_arg(exists=True, is_file=True),
+            "required": True,
+        },
+        "model_bundle": {
+            "flags": ["-m", "--model_bundle"],
+            "help": "The model bundle file.",
+            "required": True,
+            "type": path_arg(exists=True, is_file=True),
+        },
         "reference": {
             "flags": ["-r", "--reference"],
             "required": True,
             "help": "fasta for reference genome.",
+            "type": path_arg(exists=True, is_file=True),
+        },
+        "sr_aln": {
+            "nargs": "*",
+            "help": "Short-read BAM or CRAM files",
             "type": path_arg(exists=True, is_file=True),
         },
         "sr_r1_fastq": {
@@ -72,35 +93,11 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             "nargs": "*",
             "help": "Readgroup information for the short-read fastq files",
         },
-        "sr_aln": {
-            "nargs": "*",
-            "help": "Short-read BAM or CRAM files",
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "sr_duplicate_marking": {
-            "help": "Options for duplicate marking.",
-            "choices": ["markdup", "rmdup", "none"],
-            "default": "markdup",
-        },
-        "lr_aln": {
-            "nargs": "*",
-            "help": "Long-read BAM or CRAM files.",
-            "type": path_arg(exists=True, is_file=True),
-            "required": True,
-        },
-        "model_bundle": {
-            "flags": ["-m", "--model_bundle"],
-            "help": "The model bundle file.",
-            "required": True,
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "dbsnp": {
-            "flags": ["-d", "--dbsnp"],
+        "bam_format": {
             "help": (
-                "dbSNP vcf file Supplying this file will annotate variants "
-                "with their dbSNP refSNP ID numbers."
+                "Use the BAM format instead of CRAM for output aligned files"
             ),
-            "type": path_arg(exists=True, is_file=True),
+            "action": "store_true",
         },
         "bed": {
             "flags": ["-b", "--bed"],
@@ -118,36 +115,24 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             ),
             "default": mp.cpu_count(),
         },
+        "dbsnp": {
+            "flags": ["-d", "--dbsnp"],
+            "help": (
+                "dbSNP vcf file Supplying this file will annotate variants "
+                "with their dbSNP refSNP ID numbers."
+            ),
+            "type": path_arg(exists=True, is_file=True),
+        },
+        "dry_run": {
+            "help": "Print the commands without running them.",
+            "action": "store_true",
+        },
         "gvcf": {
             "flags": ["-g", "--gvcf"],
             "help": (
                 "Generate a gVCF output file along with the VCF."
                 " (default generates only the VCF)"
             ),
-            "action": "store_true",
-        },
-        "dry_run": {
-            "help": "Print the commands without running them.",
-            "action": "store_true",
-        },
-        "skip_svs": {
-            "help": "Skip SV calling",
-            "action": "store_true",
-        },
-        "skip_metrics": {
-            "help": "Skip all metrics collection and multiQC",
-            "action": "store_true",
-        },
-        "skip_mosdepth": {
-            "help": "Skip QC with mosdepth.",
-            "action": "store_true",
-        },
-        "skip_multiqc": {
-            "help": "Skip multiQC report generation.",
-            "action": "store_true",
-        },
-        "skip_cnv": {
-            "help": "Skip CNV calling.",
             "action": "store_true",
         },
         "lr_align_input": {
@@ -164,23 +149,36 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             ),
             "type": path_arg(exists=True, is_file=True),
         },
-        "bam_format": {
-            "help": (
-                "Use the BAM format instead of CRAM for output aligned files"
-            ),
-            "action": "store_true",
-        },
         "rgsm": {
             "help": (
                 "Overwrite the SM tag of the input readgroups for "
                 "compatibility"
             )
         },
-        "lr_fastq_taglist": {
-            # help="A comma-separated list of tags to retain. Defaults to "
-            # "'%(default)s' and the 'RG' tag is required",
-            "help": argparse.SUPPRESS,
-            "default": "*",
+        "skip_cnv": {
+            "help": "Skip CNV calling.",
+            "action": "store_true",
+        },
+        "skip_metrics": {
+            "help": "Skip all metrics collection and multiQC",
+            "action": "store_true",
+        },
+        "skip_mosdepth": {
+            "help": "Skip QC with mosdepth.",
+            "action": "store_true",
+        },
+        "skip_multiqc": {
+            "help": "Skip multiQC report generation.",
+            "action": "store_true",
+        },
+        "skip_svs": {
+            "help": "Skip SV calling",
+            "action": "store_true",
+        },
+        "sr_duplicate_marking": {
+            "help": "Options for duplicate marking.",
+            "choices": ["markdup", "rmdup", "none"],
+            "default": "markdup",
         },
         "bwa_args": {
             # help="Extra arguments for sentieon bwa",
@@ -192,17 +190,25 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             "help": argparse.SUPPRESS,
             "default": 100000000,
         },
+        "bwt_max_mem": {
+            # Manually set `bwt_max_mem`
+            "help": argparse.SUPPRESS,
+        },
+        "lr_fastq_taglist": {
+            # help="A comma-separated list of tags to retain. Defaults to "
+            # "'%(default)s' and the 'RG' tag is required",
+            "help": argparse.SUPPRESS,
+            "default": "*",
+        },
+        "lr_read_filter": {
+            "help": argparse.SUPPRESS,
+        },
         "minimap2_args": {
             # help="Extra arguments for sentieon minimap2",
             "help": argparse.SUPPRESS,
             "default": "-Y",
         },
-        "util_sort_args": {
-            # help="Extra arguments for sentieon util sort",
-            "help": argparse.SUPPRESS,
-            "default": "--cram_write_options version=3.0,compressor=rans",
-        },
-        "skip_version_check": {
+        "no_split_alignment": {
             "help": argparse.SUPPRESS,
             "action": "store_true",
         },
@@ -210,19 +216,21 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             "help": argparse.SUPPRESS,
             "action": "store_true",
         },
-        "bwt_max_mem": {
-            # Manually set `bwt_max_mem`
+        "skip_version_check": {
             "help": argparse.SUPPRESS,
+            "action": "store_true",
         },
-        "no_split_alignment": {
+        "skip_model_apply": {
             "help": argparse.SUPPRESS,
             "action": "store_true",
         },
         "sr_read_filter": {
             "help": argparse.SUPPRESS,
         },
-        "lr_read_filter": {
+        "util_sort_args": {
+            # help="Extra arguments for sentieon util sort",
             "help": argparse.SUPPRESS,
+            "default": "--cram_write_options version=3.0,compressor=rans",
         },
     }
 
@@ -249,6 +257,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         self.sr_read_filter: Optional[str] = None
         self.lr_read_filter: Optional[str] = None
         self.assay = "WGS"
+        self.skip_model_apply = False
 
     def validate(self) -> None:
         self.validate_bundle()
@@ -315,6 +324,16 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         if bundle_info.get("pipeline", "DNAscope Hybrid") != "DNAscope Hybrid":
             self.logger.error("The model bundle is for a different pipeline.")
             sys.exit(2)
+        bundle_version = packaging.version.Version(
+            bundle_info.get("bundleVersion", "1.0")
+        )
+        if self.longread_tech.upper() == "ONT":
+            if bundle_version < MIN_BUNDLE_VERSION["ONT"]:
+                self.logger.error(
+                    "The model bundle is for an older version of the "
+                    "pipeline. Please update to the latest model bundle."
+                )
+                sys.exit(2)
 
         bundle_members = set(ar_load(str(self.model_bundle)))
         if "longreadsv.model" not in bundle_members:
@@ -394,7 +413,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         self.numa_nodes: List[str] = []
         n_alignment_jobs = 1
         if not self.no_split_alignment:
-            self.numa_nodes = spit_alignment(self.cores)
+            self.numa_nodes = split_alignment(self.cores)
         n_alignment_jobs = max(1, len(self.numa_nodes))
 
         self.set_bwt_max_mem(0, n_alignment_jobs)
@@ -539,8 +558,10 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         dag.add_job(subset_job, {second_stage_job})
         dag.add_job(concat_job, {subset_job, call2_job})
         dag.add_job(anno_job, {concat_job})
-        dag.add_job(apply_job, {anno_job})
-        dag.add_job(norm_job, {apply_job})
+        if apply_job:
+            dag.add_job(apply_job, {anno_job})
+        if apply_job and norm_job:
+            dag.add_job(norm_job, {apply_job})
 
         # Remove intermediate files during processing
         if not self.retain_tmpdir:
@@ -575,8 +596,8 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         Job,
         Job,
         Job,
-        Job,
-        Job,
+        Optional[Job],
+        Optional[Job],
     ]:
         """
         Call SNVs and indels using the DNAscope hybrid pipeline
@@ -593,7 +614,6 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
                     sys.exit(2)
 
         # readgroup handling for long-reads
-        tr_read_filter: List[str] = []
         lr_rg_read_filter: List[str] = []
         replace_rg_args: Tuple[List[List[str]], List[List[str]]] = ([], [])
         for aln_rgs in self.lr_aln_readgroups:
@@ -611,11 +631,6 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
                 if self.lr_read_filter:
                     lr_rg_read_filter.append(
                         f"{self.lr_read_filter},rgid={id}"
-                    )
-                if self.longread_tech.upper() == "ONT":
-                    tr_read_filter.append(
-                        f"TrimRepeat,max_repeat_unit=2,min_repeat_span=6,"
-                        f"rgid={id}"
                     )
 
         # readgroup handling for short-reads
@@ -652,8 +667,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             replace_rg=replace_rg_args[0] + replace_rg_args[1],
             input=lr_aln + sr_aln,
             interval=self.bed,
-            read_filter=tr_read_filter
-            + ultima_read_filter
+            read_filter=ultima_read_filter
             + lr_rg_read_filter
             + sr_rg_read_filter,
         )
@@ -852,9 +866,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             replace_rg=replace_rg_args[0],
             input=lr_aln + [stage3_bam],
             interval=stage2_bed,
-            read_filter=tr_read_filter
-            + ultima_read_filter
-            + lr_rg_read_filter,
+            read_filter=ultima_read_filter + lr_rg_read_filter,
         )
         driver.add_algo(
             DNAscope(
@@ -895,6 +907,8 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             str(files("sentieon_cli.scripts").joinpath("hybrid_anno.py"))
         )
         combined_anno_vcf = self.tmp_dir.joinpath("combined_tmp_anno.vcf.gz")
+        if self.skip_model_apply:
+            combined_anno_vcf = self.output_vcf
         anno_job = Job(
             cmds.cmd_pyexec_hybrid_anno(
                 combined_anno_vcf,
@@ -906,6 +920,28 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             "anno-calls",
             0,
         )
+        if self.skip_model_apply:
+            return (
+                call_job,
+                select_job,
+                mapq0_job,
+                mapq0_slop_job,
+                cat_merge_job,
+                rm_job1,
+                stage1_job,
+                rm_job2,
+                second_stage_job,
+                rm_job3,
+                third_stage_job,
+                rm_job4,
+                call2_job,
+                subset_job,
+                concat_job,
+                rm_job5,
+                anno_job,
+                None,
+                None,
+            )
 
         # Model Apply
         apply_vcf = self.tmp_dir.joinpath("combined_apply.vcf.gz")

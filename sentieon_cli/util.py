@@ -3,6 +3,7 @@ Utility functions
 """
 
 import argparse
+import multiprocessing as mp
 import os
 import pathlib
 import re
@@ -16,7 +17,7 @@ import packaging.version
 
 from .logging import get_logger
 
-__version__ = "1.2.3"
+__version__ = "1.3.0"
 
 logger = get_logger(__name__)
 
@@ -139,14 +140,17 @@ def total_memory() -> int:
 
 def find_numa_nodes() -> List[str]:
     """Find NUMA nodes on the system, if available"""
-    res = sp.run("lscpu", capture_output=True, text=True)
     numa_nodes = []
-    for line in res.stdout.split("\n"):
-        m = NUMA_NODE_PAT.match(line)
-        if m:
-            cpus = m.groupdict()["cpus"]
-            numa_nodes.append(cpus)
-    logger.debug("Identified NUMA nodes: %s", numa_nodes)
+    try:
+        res = sp.run("lscpu", capture_output=True, text=True)
+        for line in res.stdout.split("\n"):
+            m = NUMA_NODE_PAT.match(line)
+            if m:
+                cpus = m.groupdict()["cpus"]
+                numa_nodes.append(cpus)
+        logger.debug("Identified NUMA nodes: %s", numa_nodes)
+    except FileNotFoundError:
+        numa_nodes = ["0-" + str(mp.cpu_count() - 1)]
     return numa_nodes
 
 
@@ -167,7 +171,7 @@ def split_numa_nodes(numa_nodes: List[str]) -> List[str]:
     return new_numa_nodes
 
 
-def spit_alignment(cores: int) -> List[str]:
+def split_alignment(cores: int) -> List[str]:
     """split large alignment tasks into smaller parts on large machines"""
     numa_nodes = find_numa_nodes()
     while len(numa_nodes) > 0 and cores / len(numa_nodes) >= 48:
