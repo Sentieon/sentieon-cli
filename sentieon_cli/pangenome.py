@@ -33,8 +33,8 @@ from .driver import (
     InsertSizeMetricAlgo,
     MeanQualityByCycle,
     LocusCollector,
+    ReadWriter,
     QualDistribution,
-    Realigner,
     WgsMetricsAlgo,
 )
 from .job import Job
@@ -44,7 +44,7 @@ from .util import __version__, check_version, parse_rg_line, path_arg, tmp
 
 PANGENOME_MIN_VERSIONS = {
     "kmc": None,
-    "sentieon driver": packaging.version.Version("202503"),
+    "sentieon driver": packaging.version.Version("202503.01"),
     "vg": None,
     "bcftools": packaging.version.Version("1.10"),
     "samtools": packaging.version.Version("1.16"),
@@ -204,6 +204,12 @@ class PangenomePipeline(BasePipeline):
             "help": "Readgroup information for the fastq files.",
         },
         # Additional arguments
+        "bam_format": {
+            "help": (
+                "Use the BAM format instead of CRAM for output aligned files."
+            ),
+            "action": "store_true",
+        },
         "cores": {
             "flags": ["-t", "--cores"],
             "help": (
@@ -233,13 +239,8 @@ class PangenomePipeline(BasePipeline):
         },
         "kmer_memory": {
             "help": "Memory limit for KMC in GB.",
-            "default": 128,
+            "default": 58,
             "type": int,
-        },
-        "known_sites": {
-            "nargs": "*",
-            "type": path_arg(exists=True, is_file=True),
-            "help": "Known sites for realignment.",
         },
         "segdup_caller_genes": {
             "type": str,
@@ -305,11 +306,11 @@ class PangenomePipeline(BasePipeline):
         self.r2_fastq: List[pathlib.Path] = []
         self.readgroups: List[str] = []
         self.model_bundle: Optional[pathlib.Path] = None
+        self.bam_format = False
         self.dbsnp: Optional[pathlib.Path] = None
         self.cores = mp.cpu_count()
         self.expansion_catalog: Optional[pathlib.Path] = None
         self.kmer_memory = 128
-        self.known_sites: List[pathlib.Path] = []
         self.segdup_caller_genes: Optional[str] = None
         self.t1k_hla_seq: Optional[pathlib.Path] = None
         self.t1k_hla_coord: Optional[pathlib.Path] = None
@@ -323,7 +324,6 @@ class PangenomePipeline(BasePipeline):
         self.handle_arguments(args)
         self.setup_logging(args)
         self.validate()
-        self.configure()
 
         tmp_dir_str = tmp()
         self.tmp_dir = pathlib.Path(tmp_dir_str)
@@ -372,20 +372,6 @@ class PangenomePipeline(BasePipeline):
                 fai_file,
             )
             sys.exit(2)
-
-        # Confirm the known sites files are indexed
-        for sites_file in self.known_sites:
-            idx_suffix = (
-                ".tbi" if str(sites_file).endswith(".vcf.gz") else ".idx"
-            )
-            idx_file = str(sites_file) + idx_suffix
-            if not os.path.isfile(idx_file):
-                self.logger.error(
-                    "The index for the known sites file %s does not exist. "
-                    "Please index the VCF file.",
-                    str(sites_file),
-                )
-                sys.exit(2)
 
         # Validate readgroups
         rg_sample = None
@@ -451,12 +437,14 @@ class PangenomePipeline(BasePipeline):
         ]
 
         # Output files
+        suffix = "bam" if self.bam_format else "cram"
         out_svs = pathlib.Path(
             str(self.output_vcf).replace(".vcf.gz", "_svs.vcf.gz")
         )
-        # cannot use CRAM due to data issue
-        self.realigned_cram = pathlib.Path(
-            str(self.output_vcf).replace(".vcf.gz", "_pangenome-aligned.bam")
+        self.deduped_cram = pathlib.Path(
+            str(self.output_vcf).replace(
+                ".vcf.gz", f"_pangenome-aligned.{suffix}"
+            )
         )
         self.ploidy_json = pathlib.Path(
             str(self.output_vcf).replace(".vcf.gz", "_ploidy.json")
@@ -474,7 +462,8 @@ class PangenomePipeline(BasePipeline):
         sample_pangenome = self.tmp_dir.joinpath("sample_pangenome.gbz")
         sample_pack = self.tmp_dir.joinpath("sample_coverage.pack")
         lc_score = self.tmp_dir.joinpath("sample_lc_score.txt.gz")
-        deduped_bam = self.tmp_dir.joinpath("sample_deduped.bam")
+        ## Ensure we have a bam file for t1k
+        rw_bam = self.tmp_dir.joinpath("sample_deduped.bam")
         dnascope_tmp = self.tmp_dir.joinpath("sample_dnascope_tmp.vcf.gz")
 
         # Create an alignment head for surjection
@@ -514,17 +503,17 @@ class PangenomePipeline(BasePipeline):
 
         # duplicate marking
         lc_job, dedup_job = self.build_dedup_job(
-            lc_score, deduped_bam, aligned_bams
+            lc_score, self.deduped_cram, aligned_bams
         )
         dag.add_job(lc_job, set(surject_jobs))
         dag.add_job(dedup_job, {lc_job})
 
-        # indel realignment
-        realign_job, rehead_job = self.build_realign_job(
-            self.realigned_cram, deduped_bam
+        # metrics - collect some metrics after dedup
+        metrics_job, rehead_job = self.build_metrics_job(
+            rw_bam, self.deduped_cram
         )
-        dag.add_job(realign_job, {dedup_job})
-        dag.add_job(rehead_job, {realign_job})
+        dag.add_job(metrics_job, {dedup_job})
+        dag.add_job(rehead_job, {metrics_job})
 
         # multiqc
         multiqc_job = self.multiqc()
@@ -533,41 +522,44 @@ class PangenomePipeline(BasePipeline):
 
         # small variant calling
         dnascope_job, dnamodelapply_job = self.build_smallvar_job(
-            dnascope_tmp, self.realigned_cram
+            dnascope_tmp, self.deduped_cram
         )
-        dag.add_job(dnascope_job, {realign_job})
+        dag.add_job(dnascope_job, {dedup_job})
         dag.add_job(dnamodelapply_job, {dnascope_job})
 
         # estimate ploidy
-        ploidy_job = self.build_ploidy_job(self.ploidy_json, deduped_bam)
+        ploidy_job = self.build_ploidy_job(
+            self.ploidy_json,
+            aligned_bams,
+        )
         dag.add_job(ploidy_job, {dedup_job})
 
         # HLA and KIR calling with T1K
         if self.t1k_hla_seq and self.t1k_hla_coord:
             hla_job = self.build_t1k_job(
                 out_hla,
-                deduped_bam,
+                rw_bam,
                 self.t1k_hla_seq,
                 self.t1k_hla_coord,
                 "hla-wgs",
             )
-            dag.add_job(hla_job, {dedup_job})
+            dag.add_job(hla_job, {metrics_job})
         if self.t1k_kir_seq and self.t1k_kir_coord:
             kir_job = self.build_t1k_job(
                 out_kir,
-                deduped_bam,
+                rw_bam,
                 self.t1k_kir_seq,
                 self.t1k_kir_coord,
                 "kir-wgs",
             )
-            dag.add_job(kir_job, {dedup_job})
+            dag.add_job(kir_job, {metrics_job})
 
         # special-caller
         if self.segdup_caller_genes:
             segdup_job = self.build_segdup_job(
-                out_segdup, self.realigned_cram, genes=self.segdup_caller_genes
+                out_segdup, self.deduped_cram, genes=self.segdup_caller_genes
             )
-            dag.add_job(segdup_job, {realign_job})
+            dag.add_job(segdup_job, {dedup_job})
 
         return dag
 
@@ -860,11 +852,13 @@ class PangenomePipeline(BasePipeline):
             reference=self.reference,
             thread_count=self.cores,
             input=aligned_bams,
+            read_filter="IndelLeftAlignReadTransform",
         )
         driver.add_algo(
             Dedup(
                 deduped_bam,
                 lc_score,
+                cram_write_options="version=3.0,compressor=rans",
                 metrics=dedup_metrics,
             )
         )
@@ -872,10 +866,10 @@ class PangenomePipeline(BasePipeline):
 
         return (lc_job, dedup_job)
 
-    def build_realign_job(
+    def build_metrics_job(
         self,
-        realigned_cram: pathlib.Path,
         deduped_bam: pathlib.Path,
+        deduped_cram: pathlib.Path,
     ) -> Tuple[Job, Job]:
         assert self.output_vcf
 
@@ -894,19 +888,14 @@ class PangenomePipeline(BasePipeline):
         driver = Driver(
             reference=self.reference,
             thread_count=self.cores,
-            input=[deduped_bam],
+            input=[deduped_cram],
         )
+        driver.add_algo(ReadWriter(deduped_bam))
         driver.add_algo(InsertSizeMetricAlgo(is_metrics))
         driver.add_algo(WgsMetricsAlgo(wgs_metrics, include_unpaired="true"))
-        driver.add_algo(
-            Realigner(
-                realigned_cram,
-                known_sites=self.known_sites,
-            )
-        )
-        realigner_job = Job(
+        metrics_job = Job(
             shlex.join(driver.build_cmd()),
-            "realigner",
+            "metrics",
             self.cores,
         )
 
@@ -916,7 +905,7 @@ class PangenomePipeline(BasePipeline):
             "Rehead metrics",
             0,
         )
-        return (realigner_job, rehead_job)
+        return (metrics_job, rehead_job)
 
     def multiqc(self) -> Optional[Job]:
         """Run MultiQC on the metrics files"""
@@ -1000,7 +989,7 @@ class PangenomePipeline(BasePipeline):
     def build_ploidy_job(
         self,
         ploidy_json: pathlib.Path,
-        deduped_bam: pathlib.Path,
+        deduped_bam: List[pathlib.Path],
     ) -> Job:
         """Estimate sample ploidy and sex"""
         estimate_ploidy = pathlib.Path(
@@ -1117,7 +1106,7 @@ class PangenomePipeline(BasePipeline):
             cnvscope_autosomes,
             cnvscope_haploid_tmp,
             cnvscope_haploid,
-            self.realigned_cram,
+            self.deduped_cram,
         )
         dag.add_job(cnvscope_job)
         dag.add_job(cnvapply_job, {cnvscope_job})
@@ -1130,7 +1119,7 @@ class PangenomePipeline(BasePipeline):
         if self.expansion_catalog:
             expansion_job = self.build_expansion_job(
                 out_expansions,
-                self.realigned_cram,
+                self.deduped_cram,
                 self.expansion_catalog,
             )
             dag.add_job(expansion_job)

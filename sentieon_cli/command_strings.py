@@ -1235,17 +1235,21 @@ def cmd_vg_surject(
 
 def cmd_estimate_ploidy(
     output_json: pathlib.Path,
-    aln_file: pathlib.Path,
+    aln_files: List[pathlib.Path],
     ploidy_script: pathlib.Path,
 ) -> str:
-    cmd = [
-        "python3",
-        str(ploidy_script),
-        "-i",
-        str(aln_file),
-        "--outfile",
-        str(output_json),
-    ]
+    cmd = (
+        [
+            "python3",
+            str(ploidy_script),
+            "-i",
+        ]
+        + [str(x) for x in aln_files]
+        + [
+            "--outfile",
+            str(output_json),
+        ]
+    )
     return shlex.join(cmd)
 
 

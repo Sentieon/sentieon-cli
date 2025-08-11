@@ -31,7 +31,11 @@ IDXSTATS_CMD = ["samtools", "idxstats"]
 def process_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "-i", "--input_bam", required=True, help="The input bam file"
+        "-i",
+        "--input_bam",
+        nargs="+",
+        required=True,
+        help="The input bam file",
     )
     parser.add_argument(
         "--contigs",
@@ -59,16 +63,20 @@ def main(args: argparse.Namespace):
     autosomes: Dict[str, bool] = {x: True for x in args.autosomes}
 
     idxstats_results: Dict[str, Tuple[int, int]] = {}
-    cmd = IDXSTATS_CMD + [args.input_bam]
-    res = subprocess.run(
-        cmd, check=True, capture_output=True, universal_newlines=True
-    )
-    for line in res.stdout.split("\n"):
-        line_split = line.split("\t")
-        chrom = line_split[0]
 
-        if chrom in contigs:
-            idxstats_results[chrom] = (int(line_split[1]), int(line_split[2]))
+    for input_bam in args.input_bam:
+        cmd = IDXSTATS_CMD + [input_bam]
+        res = subprocess.run(
+            cmd, check=True, capture_output=True, universal_newlines=True
+        )
+        for line in res.stdout.split("\n"):
+            line_split = line.split("\t")
+            chrom = line_split[0]
+
+            if chrom in contigs:
+                prev_reads = idxstats_results.get(chrom, (0,0))[1]
+                total_reads = prev_reads + int(line_split[2])
+                idxstats_results[chrom] = (int(line_split[1]), total_reads)
 
     # Calculate the average reads per base over autosomes
     total_bases = sum(
