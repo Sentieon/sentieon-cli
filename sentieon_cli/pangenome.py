@@ -462,7 +462,7 @@ class PangenomePipeline(BasePipeline):
         sample_pangenome = self.tmp_dir.joinpath("sample_pangenome.gbz")
         sample_pack = self.tmp_dir.joinpath("sample_coverage.pack")
         lc_score = self.tmp_dir.joinpath("sample_lc_score.txt.gz")
-        ## Ensure we have a bam file for t1k
+        # - Ensure we have a bam file for t1k
         rw_bam = self.tmp_dir.joinpath("sample_deduped.bam")
         dnascope_tmp = self.tmp_dir.joinpath("sample_dnascope_tmp.vcf.gz")
 
