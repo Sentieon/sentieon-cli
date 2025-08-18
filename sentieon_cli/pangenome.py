@@ -143,6 +143,26 @@ SV_HDR_ATTR = {
 }
 
 
+GRCh38_CONTIGS_NOT_IN_PANGENOME = {
+    "chr14_KI270726v1_random",
+    "chr15_KI270727v1_random",
+    "chr1_KI270711v1_random",
+    "chr22_KI270737v1_random",
+    "chr22_KI270739v1_random",
+    "chrUn_GL000213v1",
+    "chrUn_KI270338v1",
+    "chrUn_KI270364v1",
+    "chrUn_KI270371v1",
+    "chrUn_KI270372v1",
+    "chrUn_KI270374v1",
+    "chrUn_KI270375v1",
+    "chrUn_KI270424v1",
+    "chrUn_KI270528v1",
+    "chrUn_KI270581v1",
+    "chrUn_KI270587v1",
+}
+
+
 class SampleSex(Enum):
     FEMALE = 1
     MALE = 2
@@ -201,7 +221,10 @@ class PangenomePipeline(BasePipeline):
         },
         "readgroups": {
             "nargs": "*",
-            "help": "Readgroup information for the fastq files.",
+            "help": (
+                "Readgroup information for the fastq files. Only the ID and "
+                "SM attributes are used."
+            ),
         },
         # Additional arguments
         "bam_format": {
@@ -456,6 +479,7 @@ class PangenomePipeline(BasePipeline):
         )
 
         # Intermediate file paths
+        surject_paths_dict = self.tmp_dir.joinpath("GRCh38_pansn_paths.dict")
         sv_header = self.tmp_dir.joinpath("sample_sv.hdr")
         kmer_prefix = self.tmp_dir.joinpath("sample.fq")
         kmer_file = pathlib.Path(str(kmer_prefix) + ".kff")
@@ -466,8 +490,8 @@ class PangenomePipeline(BasePipeline):
         rw_bam = self.tmp_dir.joinpath("sample_deduped.bam")
         dnascope_tmp = self.tmp_dir.joinpath("sample_dnascope_tmp.vcf.gz")
 
-        # Create an alignment head for surjection
-        alignment_headers = self.create_alignment_headers()
+        # Create files used to generate headers
+        self.create_paths_dict(surject_paths_dict)
         self.create_sv_header(sv_header, sample_name)
 
         # KMC k-mer counting
@@ -496,16 +520,18 @@ class PangenomePipeline(BasePipeline):
 
         # surject and sort - move reads back to the linear reference
         aligned_bams, surject_jobs = self.build_surject_jobs(
-            sample_gams, alignment_headers
+            sample_gams, surject_paths_dict
         )
         for job in surject_jobs:
             dag.add_job(job, set(giraffe_jobs))
 
         # duplicate marking
-        lc_job, dedup_job = self.build_dedup_job(
+        hdr_jobs, lc_job, dedup_job = self.build_dedup_job(
             lc_score, self.deduped_cram, aligned_bams
         )
-        dag.add_job(lc_job, set(surject_jobs))
+        for job in hdr_jobs:
+            dag.add_job(job, set(surject_jobs))
+        dag.add_job(lc_job, set(hdr_jobs))
         dag.add_job(dedup_job, {lc_job})
 
         # metrics - collect some metrics after dedup
@@ -530,9 +556,9 @@ class PangenomePipeline(BasePipeline):
         # estimate ploidy
         ploidy_job = self.build_ploidy_job(
             self.ploidy_json,
-            aligned_bams,
+            [rw_bam],
         )
-        dag.add_job(ploidy_job, {dedup_job})
+        dag.add_job(ploidy_job, {metrics_job})
 
         # HLA and KIR calling with T1K
         if self.t1k_hla_seq and self.t1k_hla_coord:
@@ -563,10 +589,14 @@ class PangenomePipeline(BasePipeline):
 
         return dag
 
-    def create_alignment_headers(self) -> List[pathlib.Path]:
-        """Create header files for the surjected alignments"""
-        aln_headers: List[pathlib.Path] = []
-
+    def create_paths_dict(
+        self,
+        surject_paths_dict: pathlib.Path,
+        ctg_prefix="GRCh38#0#",
+        assembly="38",
+        species="Homo sapiens",
+    ):
+        """Create a .dict file for surjection"""
         contigs: List[Tuple[str, str]] = []
         fai_file = str(self.reference) + ".fai"
         if not self.dry_run:
@@ -575,23 +605,22 @@ class PangenomePipeline(BasePipeline):
                     line_split = line.rstrip().split("\t")
                     contigs.append((line_split[0], line_split[1]))
 
-        for i, rg in enumerate(self.readgroups):
-            rg_dict = parse_rg_line(rg.replace(r"\t", "\t"))
-
-            aln_header = self.tmp_dir.joinpath(f"sample_aligned_{i}.hdr")
-            if not self.dry_run:
-                with open(aln_header, "w") as fh:
-                    print("@HD\tVN:1.5", file=fh)
+            with open(surject_paths_dict, "w") as ofh:
+                print("@HD\tVN:1.5", file=ofh)
+                for ctg_name, ctg_len in contigs:
+                    if ctg_name in GRCh38_CONTIGS_NOT_IN_PANGENOME:
+                        continue
+                    flds = {
+                        "SN": f"{ctg_prefix}{ctg_name}",
+                        "LN": ctg_len,
+                        "AS": assembly,
+                        "SP": species,
+                    }
                     print(
-                        "@RG\t"
-                        + "\t".join([x + ":" + y for x, y in rg_dict.items()]),
-                        file=fh,
+                        "@SQ\t"
+                        + "\t".join([f"{x}:{y}" for x, y in flds.items()]),
+                        file=ofh,
                     )
-                    for contig, contig_l in contigs:
-                        print(f"@SQ\tSN:{contig}\tLN:{contig_l}", file=fh)
-            aln_headers.append(aln_header)
-
-        return aln_headers
 
     def create_sv_header(self, sv_header: pathlib.Path, sample_name: str):
         """Create a header file for the SV VCF"""
@@ -768,7 +797,7 @@ class PangenomePipeline(BasePipeline):
     def build_surject_jobs(
         self,
         sample_gams: List[pathlib.Path],
-        alignment_headers: List[pathlib.Path],
+        surject_paths_dict: pathlib.Path,
     ) -> Tuple[List[pathlib.Path], List[Job]]:
         """Surject gam files on the linear reference"""
         assert self.xg
@@ -776,19 +805,17 @@ class PangenomePipeline(BasePipeline):
         aligned_bams: List[pathlib.Path] = []
         surject_jobs: List[Job] = []
 
-        for i, (sample_gam, sample_hdr) in enumerate(
-            zip(sample_gams, alignment_headers)
-        ):
+        for i, sample_gam in enumerate(sample_gams):
             sample_bam = self.tmp_dir.joinpath(f"sample_aligned_{i}.bam")
             surject_job = Job(
                 cmds.cmd_vg_surject(
                     sample_bam,
-                    sample_hdr,
                     sample_gam,
                     self.xg,
+                    surject_paths_dict,
                     threads=self.cores,
                 ),
-                "vg_surject",
+                f"vg_surject_{i}",
                 self.cores,
             )
 
@@ -801,9 +828,25 @@ class PangenomePipeline(BasePipeline):
         lc_score: pathlib.Path,
         deduped_bam: pathlib.Path,
         aligned_bams: List[pathlib.Path],
-    ) -> Tuple[Job, Job]:
+    ) -> Tuple[List[Job], Job, Job]:
         """Mark duplicates"""
         assert self.output_vcf
+
+        # Create .hdr files for each input file
+        hdr_jobs: List[Job] = []
+        for i, bam in enumerate(aligned_bams):
+            hdr = pathlib.Path(str(bam) + ".hdr")
+            hdr_jobs.append(
+                Job(
+                    cmds.strip_ctg_prefix(
+                        hdr,
+                        bam,
+                        "GRCh38#0#",
+                    ),
+                    f"create_hdr_{i}",
+                    0,
+                )
+            )
 
         # Output metrics
         metric_base = self.output_vcf.name.replace(".vcf.gz", "") + ".txt"
@@ -848,6 +891,7 @@ class PangenomePipeline(BasePipeline):
             self.cores,
         )
 
+        # Dedup
         driver = Driver(
             reference=self.reference,
             thread_count=self.cores,
@@ -864,7 +908,7 @@ class PangenomePipeline(BasePipeline):
         )
         dedup_job = Job(shlex.join(driver.build_cmd()), "dedup", self.cores)
 
-        return (lc_job, dedup_job)
+        return (hdr_jobs, lc_job, dedup_job)
 
     def build_metrics_job(
         self,

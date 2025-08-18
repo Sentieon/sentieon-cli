@@ -1159,55 +1159,31 @@ def cmd_sv_call(
 
 def cmd_vg_surject(
     out_bam: pathlib.Path,
-    sample_hdr: pathlib.Path,
     sample_gam: pathlib.Path,
     xg: pathlib.Path,
+    surject_paths_dict: pathlib.Path,
     threads=1,
-    strip_prefix=r"GRCh38#0#",
     surject_xargs: List[str] = [
         "--interleaved",
         "--progress",
-        "--into-ref",
-        "GRCh38",
     ],
 ) -> str:
     cmds = []
     cmds.append(
         [
-            "cat",
-            str(sample_hdr),
-        ]
-    )
-
-    cmds.append(
-        [
             "vg",
             "surject",
-            "--bam-output",
+            "--sam-output",
             "-t",
             str(threads),
             "-x",
             str(xg),
+            "--into-paths",
+            shlex.quote(str(surject_paths_dict)),
         ]
     )
     cmds[-1].extend(surject_xargs)
     cmds[-1].append(str(sample_gam))
-
-    cmds.append(
-        [
-            "samtools",
-            "view",
-            "-",
-        ]
-    )
-
-    cmds.append(
-        [
-            "sed",
-            "-e",
-            f"s/{strip_prefix}//g",
-        ]
-    )
 
     cmds.append(
         [
@@ -1223,13 +1199,34 @@ def cmd_vg_surject(
     )
 
     all_cmds = [shlex.join(x) for x in cmds]
+    return " | ".join(all_cmds)
+
+
+def strip_ctg_prefix(
+    output_header: pathlib.Path,
+    bam: pathlib.Path,
+    prefix: str,
+) -> str:
+    # Also remove the M5 tag
+    cmds = []
+    cmds.append(["samtools", "view", "-H", shlex.quote(str(bam))])
+
+    cmds.append(
+        [
+            "sed",
+            "-e",
+            f"s/\tSN:{prefix}/\tSN:/",
+            "-e",
+            "s/\tM5:[0-9a-zA-Z]*\t/\t/",
+            "-e",
+            "s/\tM5:[0-9a-zA-Z]*$//",
+        ]
+    )
+
     return (
-        "("
-        + all_cmds[0]
-        + "; "
-        + " | ".join(all_cmds[1:4])
-        + ") | "
-        + all_cmds[4]
+        " | ".join([shlex.join(x) for x in cmds])
+        + " > "
+        + shlex.quote(str(output_header))
     )
 
 
