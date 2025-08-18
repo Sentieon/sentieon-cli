@@ -19,6 +19,7 @@ import packaging.version
 from importlib_resources import files
 
 from . import command_strings as cmds
+from .archive import ar_load
 from .dag import DAG
 from .driver import (
     AlignmentStat,
@@ -371,6 +372,8 @@ class PangenomePipeline(BasePipeline):
         assert self.output_vcf
         assert self.reference
 
+        self.validate_bundle()
+
         if not self.r1_fastq:
             self.logger.error("Please supply --r1_fastq arguments")
             sys.exit(2)
@@ -442,6 +445,46 @@ class PangenomePipeline(BasePipeline):
             self.logger.error(
                 "For KIR calling, both the seq and coord fasta files need to "
                 "be supplied. Exiting"
+            )
+            sys.exit(2)
+
+    def validate_bundle(self) -> None:
+        bundle_info_bytes = ar_load(
+            str(self.model_bundle) + "/bundle_info.json"
+        )
+        if isinstance(bundle_info_bytes, list):
+            bundle_info_bytes = b"{}"
+
+        bundle_info = json.loads(bundle_info_bytes.decode())
+        try:
+            req_version = packaging.version.Version(
+                bundle_info["minScriptVersion"]
+            )
+            bundle_pipeline = bundle_info["pipeline"]
+        except KeyError:
+            self.logger.error(
+                "The model bundle does not have the expected attributes"
+            )
+            sys.exit(2)
+        if req_version > packaging.version.Version(__version__):
+            self.logger.error(
+                "The model bundle requires version %s or later of the "
+                "sentieon-cli.",
+                req_version,
+            )
+            sys.exit(2)
+        if bundle_pipeline != "DNAscope pangenome":
+            self.logger.error("The model bundle is for a different pipeline.")
+            sys.exit(2)
+
+        bundle_members = set(ar_load(str(self.model_bundle)))
+        if (
+            "bwa.model" not in bundle_members
+            or "cnv.model" not in bundle_members
+            or "dnascope.model" not in bundle_members
+        ):
+            self.logger.error(
+                "Expected model files not found in the model bundle file"
             )
             sys.exit(2)
 
