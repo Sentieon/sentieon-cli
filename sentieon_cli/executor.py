@@ -2,7 +2,9 @@
 
 import asyncio
 import asyncio.subprocess
+import signal
 import sys
+import time
 from typing import Any, List, Tuple
 
 from .job import Job
@@ -53,18 +55,36 @@ class LocalExecutor(BaseExecutor):
 
     def __init__(self, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
+        self.start_new_jobs = True
         self.running: List[
             Tuple[
                 Job,
                 asyncio.subprocess.Process,
                 asyncio.Task[int],
+                str,
+                int,
             ]
         ] = []
+        signal.signal(signal.SIGINT, self.exit_gracefully)
+        signal.signal(signal.SIGTERM, self.exit_gracefully)
+
+    def exit_gracefully(self, signum, frame) -> None:
+        logger.error("Termination signal detected. Terminating jobs.")
+        self.start_new_jobs = False
+        for running_job in self.running:
+            _job, proc, _task, _cmd, _start_time = running_job
+            proc.send_signal(signal=signal.SIGTERM)
+        time.sleep(10)
+        for running_job in self.running:
+            _job, proc, _task, _cmd, _start_time = running_job
+            if proc.returncode != 0:
+                proc.kill()
 
     async def run_job(self, job: Job) -> None:
         """Run a job"""
         cmd = job.shell
         logger.info("Running: %s", cmd)
+        start_time = time.monotonic_ns()
         proc = await asyncio.create_subprocess_shell(
             cmd,
             stdout=sys.stdout,
@@ -76,6 +96,8 @@ class LocalExecutor(BaseExecutor):
                 job,
                 proc,
                 asyncio.create_task(proc.wait()),
+                cmd,
+                start_time,
             )
         )
 
@@ -104,12 +126,20 @@ class LocalExecutor(BaseExecutor):
             ]
 
             # Check job execution
-            for job, proc, _task in finished_jobs:
+            for job, proc, _task, cmd, start_time in finished_jobs:
+                end_time = time.monotonic_ns()
+                total_seconds = (end_time - start_time) / 1e9
                 if proc.returncode != 0 and not job.fail_ok:
                     logger.error("Error running command, '%s'", job.shell)
                     self.jobs_with_errors.append(job)
+                    self.start_new_jobs = False
+                else:
+                    logger.info(
+                        f"Finished job with status {proc.returncode} in "
+                        f"{total_seconds:.2f}: {cmd}"
+                    )
 
-            if self.jobs_with_errors:
+            if not self.start_new_jobs:
                 # Don't start new jobs
                 continue
 

@@ -77,6 +77,14 @@ class BasePipeline(ABC):
         if not self.retain_tmpdir:
             shutil.rmtree(tmp_dir_str)
 
+        self.check_execution(dag, executor)
+
+    def check_execution(
+        self,
+        dag: DAG,
+        executor: BaseExecutor,
+    ):
+        """Check the DAG and executor after a run"""
         if executor.jobs_with_errors:
             raise ValueError("Execution failed")
 

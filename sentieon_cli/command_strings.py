@@ -966,3 +966,361 @@ def cmd_mosdepth(
     cmd.append(str(output_directory))
     cmd.append(str(sample_input))
     return shlex.join(cmd)
+
+
+def cmd_kmc(
+    output_prefix: pathlib.Path,
+    file_list: pathlib.Path,
+    tmp_dir: pathlib.Path,
+    k=29,
+    memory=128,
+    threads=1,
+) -> str:
+    cmd = [
+        "kmc",
+        f"-k{k}",
+        f"-m{memory}",
+        "-okff",
+        f"-t{threads}",
+        "-hp",
+        f"@{file_list}",
+        str(output_prefix),
+        str(tmp_dir),
+    ]
+    return shlex.join(cmd)
+
+
+def cmd_vg_haplotypes(
+    output_gbz: pathlib.Path,
+    kmer_file: pathlib.Path,
+    hapl: pathlib.Path,
+    gbz: pathlib.Path,
+    threads=1,
+    verbosity=1,
+    xargs: List[str] = ["--include-reference", "--diploid-sampling"],
+) -> str:
+    cmd = [
+        "vg",
+        "haplotypes",
+        "-g",
+        str(output_gbz),
+        "-t",
+        str(threads),
+        "-v",
+        str(verbosity),
+        "-i",
+        str(hapl),
+        "-k",
+        str(kmer_file),
+        str(gbz),
+    ]
+    cmd.extend(xargs)
+    return shlex.join(cmd)
+
+
+def cmd_vg_giraffe(
+    sample_gam: pathlib.Path,
+    sample_pangenome: pathlib.Path,
+    fastq1: pathlib.Path,
+    fastq2: Optional[pathlib.Path],
+    readgroup="rg-1",
+    sample="sample",
+    threads=1,
+    max_fragment_length=3000,
+) -> str:
+    vg_cmd = [
+        "vg",
+        "giraffe",
+        "-t",
+        str(threads),
+        "-Z",
+        str(sample_pangenome),
+        "--read-group",
+        readgroup,
+        "--sample",
+        sample,
+        "-L",
+        str(max_fragment_length),
+        "--progress",
+        "-f",
+        str(fastq1),
+    ]
+    if fastq2:
+        vg_cmd.extend(["-f", str(fastq2)])
+
+    return shlex.join(vg_cmd) + " > " + str(sample_gam)
+
+
+def cmd_vg_pack(
+    sample_pack: pathlib.Path,
+    sample_gams: List[pathlib.Path],
+    gbz: pathlib.Path,
+    min_mapq=5,
+    threads=1,
+) -> str:
+    cat_cmd = ["cat"]
+    cat_cmd.extend([str(x) for x in sample_gams])
+    vg_cmd = [
+        "vg",
+        "pack",
+        "-x",
+        str(gbz),
+        "-g",
+        "-",
+        "-o",
+        str(sample_pack),
+        "-Q",
+        str(min_mapq),
+        "--threads",
+        str(threads),
+    ]
+
+    return shlex.join(cat_cmd) + " | " + shlex.join(vg_cmd)
+
+
+def cmd_sv_call(
+    out_svs: pathlib.Path,
+    sample_pack: pathlib.Path,
+    sv_header: pathlib.Path,
+    gbz: pathlib.Path,
+    snarls: pathlib.Path,
+    sample_name="",
+    ref_path="GRCh38",
+    min_indel_size=34,
+) -> str:
+    cmds = []
+    cmds.append(
+        [
+            "cat",
+            str(sv_header),
+        ]
+    )
+
+    cmds.append(
+        [
+            "vg",
+            "call",
+            "-r",
+            str(snarls),
+            "-k",
+            str(sample_pack),
+            "-s",
+            sample_name,
+            "-z",
+            "--ref-sample",
+            ref_path,
+            "--progress",
+            str(gbz),
+        ]
+    )
+
+    # Use bcftools to remove smaller variants
+    cmds.append(
+        [
+            "bcftools",
+            "view",
+            "-i",
+            f"ABS(ILEN) > {min_indel_size}",
+            "-H",
+            "-",
+        ]
+    )
+
+    # Sort the VCF
+    cmds.append(
+        [
+            "bcftools",
+            "sort",
+            "-O",
+            "v",
+        ]
+    )
+
+    cmds.append(
+        [
+            "sentieon",
+            "util",
+            "vcfconvert",
+            "-",
+            str(out_svs),
+        ]
+    )
+
+    all_cmds = [shlex.join(x) for x in cmds]
+    return (
+        "("
+        + all_cmds[0]
+        + "; "
+        + " | ".join(all_cmds[1:3])
+        + ") | "
+        + " | ".join(all_cmds[3:])
+    )
+
+
+def cmd_vg_surject(
+    out_bam: pathlib.Path,
+    sample_gam: pathlib.Path,
+    xg: pathlib.Path,
+    surject_paths_dict: pathlib.Path,
+    threads=1,
+    surject_xargs: List[str] = [
+        "--interleaved",
+        "--progress",
+    ],
+) -> str:
+    cmds = []
+    cmds.append(
+        [
+            "vg",
+            "surject",
+            "--sam-output",
+            "-t",
+            str(threads),
+            "-x",
+            str(xg),
+            "--into-paths",
+            shlex.quote(str(surject_paths_dict)),
+        ]
+    )
+    cmds[-1].extend(surject_xargs)
+    cmds[-1].append(str(sample_gam))
+
+    cmds.append(
+        [
+            "sentieon",
+            "util",
+            "sort",
+            "--sam2bam",
+            "-i",
+            "-",
+            "-o",
+            str(out_bam),
+        ]
+    )
+
+    all_cmds = [shlex.join(x) for x in cmds]
+    return " | ".join(all_cmds)
+
+
+def strip_ctg_prefix(
+    output_header: pathlib.Path,
+    bam: pathlib.Path,
+    prefix: str,
+) -> str:
+    # Also remove the M5 tag
+    cmds = []
+    cmds.append(["samtools", "view", "-H", shlex.quote(str(bam))])
+
+    cmds.append(
+        [
+            "sed",
+            "-e",
+            f"s/\tSN:{prefix}/\tSN:/",
+            "-e",
+            "s/\tM5:[0-9a-zA-Z]*\t/\t/",
+            "-e",
+            "s/\tM5:[0-9a-zA-Z]*$//",
+        ]
+    )
+
+    return (
+        " | ".join([shlex.join(x) for x in cmds])
+        + " > "
+        + shlex.quote(str(output_header))
+    )
+
+
+def cmd_estimate_ploidy(
+    output_json: pathlib.Path,
+    aln_files: List[pathlib.Path],
+    ploidy_script: pathlib.Path,
+) -> str:
+    cmd = (
+        [
+            "python3",
+            str(ploidy_script),
+            "-i",
+        ]
+        + [str(x) for x in aln_files]
+        + [
+            "--outfile",
+            str(output_json),
+        ]
+    )
+    return shlex.join(cmd)
+
+
+def cmd_t1k(
+    out_prefix: pathlib.Path,
+    deduped_bam: pathlib.Path,
+    gene_seq: pathlib.Path,
+    gene_coord: pathlib.Path,
+    preset: str,
+    threads=1,
+) -> str:
+    cmd = [
+        "run-t1k",
+        "--abnormalUnmapFlag",
+        "-t",
+        str(threads),
+        "--preset",
+        preset,
+        "-f",
+        str(gene_seq),
+        "-c",
+        str(gene_coord),
+        "--od",
+        str(out_prefix),
+        "-b",
+        str(deduped_bam),
+    ]
+    return shlex.join(cmd)
+
+
+def cmd_expansion_hunter(
+    out_expansions: pathlib.Path,
+    input_alignments: pathlib.Path,
+    reference: pathlib.Path,
+    variant_catalog: pathlib.Path,
+    sex="female",
+    threads=1,
+) -> str:
+    cmd = [
+        "ExpansionHunter",
+        "--reads",
+        str(input_alignments),
+        "--reference",
+        str(reference),
+        "--variant-catalog",
+        str(variant_catalog),
+        "--sex",
+        sex,
+        "--threads",
+        str(threads),
+        "--output-prefix",
+        str(out_expansions),
+    ]
+    return shlex.join(cmd)
+
+
+def cmd_segdup_caller(
+    out_segdup: pathlib.Path,
+    sr_alignments: pathlib.Path,
+    reference: pathlib.Path,
+    sr_bundle: pathlib.Path,
+    genes="CFH,CFHR3,CYP11B1,CYP2D6,GBA,NCF1,PMS2,SMN1,STRC",
+) -> str:
+    cmd = [
+        "segdup-caller",
+        "--short",
+        str(sr_alignments),
+        "--reference",
+        str(reference),
+        "--sr_model",
+        str(sr_bundle),
+        "--genes",
+        genes,
+        "--outdir",
+        str(out_segdup),
+    ]
+    return shlex.join(cmd)
