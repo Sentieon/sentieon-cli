@@ -53,6 +53,7 @@ The `sentieon-cli` supports the following global arguments:
 - [**DNAscope**](docs/dnascope.md) - DNAscope pipeline implementation for germline SNV and indel calling from short read data.
 - [**DNAscope LongRead**](docs/dnascope-longread.md) - DNAscope LongRead pipeline implementations for germline SNV and indel calling from long read data.
 - [**DNAscope Hybrid**](docs/dnascope-hybrid.md) - DNAscope short-long-hybrid pipeline.
+- [**Pangenome**](docs/pangenome.md) - DNAscope short-read alignment and variant calling using pangenome graphs.
 
 ## License
 Unless otherwise indicated, files in this repository are licensed under a BSD 2-Clause License.
