@@ -130,7 +130,12 @@ class LocalExecutor(BaseExecutor):
                 end_time = time.monotonic_ns()
                 total_seconds = (end_time - start_time) / 1e9
                 if proc.returncode != 0 and not job.fail_ok:
-                    logger.error("Error running command, '%s'", job.shell)
+                    logger.error(
+                        f"Return code {proc.returncode} for command: "
+                        f"{job.shell}"
+                    )
+                    if proc.returncode == -9:
+                        logger.error("Command recieved SIGKILL. Possible OOM?")
                     self.jobs_with_errors.append(job)
                     self.start_new_jobs = False
                 else:
