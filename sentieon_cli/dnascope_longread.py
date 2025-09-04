@@ -347,7 +347,8 @@ class DNAscopeLRPipeline(BasePipeline):
 
             if not self.skip_cnv:
                 hificnv_job = self.hificnv(merged_bam)
-                dag.add_job(hificnv_job, {merge_job})
+                if hificnv_job:
+                    dag.add_job(hificnv_job, {merge_job})
 
         if not self.skip_small_variants:
             (
@@ -650,14 +651,19 @@ class DNAscopeLRPipeline(BasePipeline):
     def hificnv(
         self,
         merged_bam: pathlib.Path,
-    ) -> Job:
+    ) -> Optional[Job]:
         """
         Call CNVs with HiFiCNV
         """
         if not self.skip_version_check:
             for cmd, min_version in HIFICNV_MIN_VERSIONS.items():
                 if not check_version(cmd, min_version):
-                    sys.exit(2)
+                    self.logger.warning(
+                        "Skipping hificnv. hificnv version %s or later not "
+                        "found",
+                        HIFICNV_MIN_VERSIONS["hificnv"],
+                    )
+                    return None
 
         hifi_cnv_fn = str(self.output_vcf).replace(".vcf.gz", ".hificnv")
         cmd = (
