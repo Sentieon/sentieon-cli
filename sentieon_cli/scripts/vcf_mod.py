@@ -636,7 +636,7 @@ def join2(f0, f1, f2, v0, v1, v2, pos, bed):
                 d = [max(e) for e in zip(d0,d1,d2)]
                 if min(d) > 0:
                     v.info[k] = d
-                continue
+                    continue
         else:
             if k in ('STR', 'RU'):
                 d = None
@@ -645,8 +645,8 @@ def join2(f0, f1, f2, v0, v1, v2, pos, bed):
                 d = d and d or v0 and v0.info.get(k)
                 if d:
                     v.info[k] = d
-                continue
-            if k == 'DP':
+                    continue
+            elif k == 'DP':
                 d = -1
                 if d < 0 and v0:
                     d = v0.info.get(k, -1)
@@ -656,15 +656,15 @@ def join2(f0, f1, f2, v0, v1, v2, pos, bed):
                     d += v2 and v2.info.get(k, 0) or 0
                 if d >= 0:
                     v.info[k] = d
-                continue
-            if k == 'ML_PROB':
+                    continue
+            elif k == 'ML_PROB':
                 d = (u.info.get(k) for u in (v1,v2) if u)
                 d = [e for e in d if e is not None]
                 if d:
                     d = functools.reduce(operator.mul, d, 1)
                     v.info[k] = round(d, 2)
-                continue
-            if k not in ('QD',):
+                    continue
+            elif k not in ('QD',):
                 continue
         v.info.pop(k, None)
 
