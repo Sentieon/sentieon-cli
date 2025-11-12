@@ -58,7 +58,6 @@ sentieon-cli pangenome [-h] \
   --r2_fastq R2_FASTQ ... \
   --readgroups READGROUPS ... \
   [-d DBSNP] \
-  [--known_sites KNOWN_SITES ...] \
   [-t CORES] \
   [--kmer_memory KMER_MEMORY] \
   [--expansion_catalog EXPANSION_CATALOG] \
@@ -85,7 +84,6 @@ The Pangenome pipeline requires the following arguments:
 
 The Pangenome pipeline accepts the following optional arguments:
 - `-d DBSNP`: the location of the Single Nucleotide Polymorphism database (dbSNP) VCF used to label known variants. A VCF index file is required.
-- `--known_sites KNOWN_SITES`: known sites for indel realignment in VCF format. VCF index files are required.
 - `-t CORES`: number of computing threads/cores to use. Default is all available cores.
 - `--kmer_memory KMER_MEMORY`: memory limit for KMC k-mer counting in GB. Default is 128 GB.
 - `--expansion_catalog EXPANSION_CATALOG`: ExpansionHunter variant catalog for repeat expansion calling.

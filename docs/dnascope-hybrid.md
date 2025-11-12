@@ -48,8 +48,11 @@ sentieon-cli dnascope-hybrid \
   --sr_aln SR_ALN [SR_ALN ...] \
   --lr_aln LR_ALN [LR_ALN ...] \
   -m MODEL_BUNDLE \
-  [-d DBSNP] \
   [-b DIPLOID_BED] \
+  [-d DBSNP] \
+  [--dry_run] \
+  [--gvcf] \
+  [--sr_duplicate_marking MARKDUP] \
   [-t NUMBER_THREADS] \
   sample.vcf.gz
 ```
@@ -62,11 +65,13 @@ The DNAscope Hybrid pipeline requires the following arguments:
 - `sample.vcf.gz`: the location of the output VCF file for SNVs and indels. The pipeline requires the output file end with the suffix, ".vcf.gz".
 
 The DNAscope Hybrid pipeline accepts the following optional arguments:
-- `-d DBSNP`: the location of the Single Nucleotide Polymorphism database (dbSNP) used to label known variants in VCF (`.vcf`) or bgzip compressed VCF (`.vcf.gz`) format. Only one file is supported. Supplying this file will annotate variants with their dbSNP refSNP ID numbers. A VCF index file is required.
 - `-b DIPLOID_BED`: interval in the reference to restrict diploid variant calling, in BED file format. Supplying this file will limit diploid variant calling to the intervals inside the BED file.
+- `-d DBSNP`: the location of the Single Nucleotide Polymorphism database (dbSNP) used to label known variants in VCF (`.vcf`) or bgzip compressed VCF (`.vcf.gz`) format. Only one file is supported. Supplying this file will annotate variants with their dbSNP refSNP ID numbers. A VCF index file is required.
+- `--dry_run`: print the pipeline commands, but do not actually execute them.
+- `--gvcf`: generate a gVCF output file along with the VCF.
+- `--sr_duplicate_marking`: setting for duplicate marking. `markdup` will mark duplicate reads. `rmdup` will remove duplicate reads. `none` will skip duplicate marking. The default setting is `markdup`.
 - `-t NUMBER_THREADS`: number of computing threads that will be used by the software to run parallel processes. The argument is optional; if omitted, the pipeline will use as many threads as the server has.
 - `-h`: print the command-line help and exit.
-- `--dry_run`: print the pipeline commands, but do not actually execute them.
 
 ### Germline variant calling from unaligned short and long-read data
 
@@ -80,8 +85,12 @@ sentieon-cli dnascope-hybrid \
   --lr_aln LR_ALN [LR_ALN ...] \
   --lr_align_input \
   -m MODEL_BUNDLE \
-  [-d DBSNP] \
   [-b DIPLOID_BED] \
+  [--bam_format] \
+  [-d DBSNP] \
+  [--dry_run] \
+  [--gvcf] \
+  [--sr_duplicate_marking MARKDUP] \
   [-t NUMBER_THREADS] \
   sample.vcf.gz
 ```
@@ -94,9 +103,8 @@ The DNAscope Hybrid pipeline requires the following arguments:
 - `--lr_align_input`: directs the pipeline to align the input long-reads.
 
 The DNAscope Hybrid pipeline accepts the following optional arguments:
-- `--sr_duplicate_marking`: setting for duplicate marking. `markdup` will mark duplicate reads. `rmdup` will remove duplicate reads. `none` will skip duplicate marking. The default setting is `markdup`.
-- `--lr_input_ref`: a reference fasta used for decoding the input long-read file(s). Required with long-read uCRAM or CRAM input. Can be different from the fasta used with the `-r` argument.
 - `--bam_format`: use BAM format instead of CRAM for output aligned files.
+- `--lr_input_ref`: a reference fasta used for decoding the input long-read file(s). Required with long-read uCRAM or CRAM input. Can be different from the fasta used with the `-r` argument.
 
 ## Pipeline output
 
