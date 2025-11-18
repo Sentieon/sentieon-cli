@@ -1,12 +1,12 @@
 # Pangenome
 
-Sentieon Pangenome is a pipeline for alignment and variant calling from short-read DNA sequence data using pangenome graphs. The Pangenome pipeline leverages graph-based reference representations to improve alignment and variant calling accuracy, particularly in complex genomic regions with high sequence diversity.
+Pangenome is a pipeline for alignment and variant calling from short-read DNA sequence data using pangenome graphs. The Pangenome pipeline leverages graph-based reference representations to improve alignment and variant calling accuracy, particularly in complex genomic regions with high sequence diversity.
 
-The pipeline uses the vg toolkit for pangenome alignment and structural variant calling. Sentieon tools are used for small variant calling, CNV detection, segdup variant calling, preprocessing and metrics collection. Specialized tools are used for HLA/KIR genotyping and repeat expansion analysis.
+The pipeline uses the open-source vg toolkit for pangenome alignment and structural variant calling. Sentieon tools are used for small variant calling, CNV detection, segdup variant calling, preprocessing and metrics collection. Specialized tools are used for HLA/KIR genotyping and repeat expansion analysis.
 
 The pipeline accepts as input unaligned reads in FASTQ format and outputs variants in VCF format, aligned reads in BAM format, and comprehensive quality control metrics.
 
-Pangenome is implemented using the Sentieon software package, which requires a valid license for use. Please contact info@sentieon.com for access to the Sentieon software and an evaluation license.
+Pangenome is implemented using open-source tools and the Sentieon software package, which requires a valid license for use. Please contact info@sentieon.com for access to the Sentieon software and an evaluation license.
 
 ## Prerequisites
 
