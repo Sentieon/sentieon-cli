@@ -382,7 +382,7 @@ class DNAscopePipeline(BasePipeline):
 
         if (
             shm_free > total_input_size * 2.3
-            and total_mem > total_input_size + 40 * 1024**3 * n_alignment_jobs
+            and total_mem > total_input_size + 60 * 1024**3 * n_alignment_jobs
         ):
             self.logger.debug("Using /dev/shm for temporary files")
             return True
