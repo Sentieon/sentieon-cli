@@ -4,6 +4,7 @@ command strings.
 """
 
 import io
+import os
 import pathlib
 import shlex
 import subprocess as sp
@@ -323,7 +324,8 @@ def hybrid_stage1(
     stage1_driver: BaseDriver,
     bwa_model: pathlib.Path,
 ) -> Pipeline:
-    unset_cmd = Command("unset", "bwt_max_mem")
+    bwa_env = dict(os.environ)
+    _ = bwa_env.pop("bwt_max_mem", None)
 
     # Send the input of both fq commands to bwa with cat
     fq1_cmd = Command(*stage1_driver.build_cmd())
@@ -346,6 +348,7 @@ def hybrid_stage1(
         str(bwa_model),
         str(reference),
         "-",
+        exec_kwargs={"env": bwa_env},
     )
 
     sort_cmd = Command(
@@ -362,7 +365,6 @@ def hybrid_stage1(
     )
 
     return Pipeline(
-        unset_cmd,
         cat_cmd,
         bwa_cmd,
         sort_cmd,

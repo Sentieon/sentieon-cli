@@ -9,7 +9,7 @@ import tempfile
 import shlex
 import sys
 from abc import ABC, abstractmethod
-from typing import Any, IO, Iterable, List, Optional, Union
+from typing import Any, Dict, IO, Iterable, List, Optional, Union
 
 from .logging import get_logger
 
@@ -53,12 +53,17 @@ class Command(ShellNode):
     """Represents a single command (e.g., 'grep', 'cat')."""
 
     def __init__(
-        self, executable: str, *args: str | ProcSub, fail_ok=False
+        self,
+        executable: str,
+        *args: str | ProcSub,
+        fail_ok=False,
+        exec_kwargs: Optional[Dict] = None,
     ) -> None:
         self.executable = executable
         self.args = list(args)
         self.fail_ok = fail_ok
         self.proc: Union[asyncio.subprocess.Process, None] = None
+        self.exec_kwargs: Dict[str, Any] = exec_kwargs if exec_kwargs else {}
 
     async def run(
         self,
@@ -81,7 +86,11 @@ class Command(ShellNode):
         # 2. Run the process
         # We allow the caller to wait for this process
         self.proc = await asyncio.create_subprocess_exec(
-            *final_args, stdin=stdin, stdout=stdout, stderr=stderr
+            *final_args,
+            stdin=stdin,
+            stdout=stdout,
+            stderr=stderr,
+            **self.exec_kwargs,
         )
         context.commands.append(self)
         return self.proc
