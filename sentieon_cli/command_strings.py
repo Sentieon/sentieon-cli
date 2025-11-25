@@ -368,7 +368,6 @@ def hybrid_stage1(
         cat_cmd,
         bwa_cmd,
         sort_cmd,
-        skip_pipe=[0],
     )
 
 

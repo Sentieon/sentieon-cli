@@ -266,6 +266,7 @@ class DNAscopeLRPipeline(BasePipeline):
     def validate(self) -> None:
         # uniquify pipeline attributes
         self.lr_aln = self.sample_input
+        self.lr_input_ref = self.input_ref
         del self.sample_input
 
         # validate
@@ -487,7 +488,7 @@ class DNAscopeLRPipeline(BasePipeline):
                         self.cores,
                         rg_lines,
                         sample_name,
-                        self.input_ref,
+                        self.lr_input_ref,
                         self.fastq_taglist,
                         self.minimap2_args,
                         self.util_sort_args,
