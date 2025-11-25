@@ -2,12 +2,13 @@
 Job objects
 """
 
-import subprocess as sp
+import asyncio
 import sys
 import time
 from typing import Dict, Optional
 
 from .logging import get_logger
+from .shell_pipeline import Context, Pipeline
 
 logger = get_logger(__name__)
 
@@ -17,16 +18,14 @@ class Job:
 
     def __init__(
         self,
-        shell: str,
+        pipeline: Pipeline,
         name: str,
         threads: int = 1,
-        fail_ok: bool = False,
         resources: Optional[Dict[str, int]] = None,
     ):
-        self.shell = shell
+        self.shell = pipeline
         self.name = name
         self.threads = threads
-        self.fail_ok = fail_ok
         self.resources = {} if resources is None else resources
 
     def __hash__(self):
@@ -54,12 +53,20 @@ class Job:
 
         logger.info("running command: %s", self.shell)
         t0 = time.time()
-        sp.run(
-            self.shell,
-            shell=True,
-            check=False,
-            stdout=sys.stdout,
-            stderr=sys.stderr,
-            executable="/bin/bash",
-        )
+        context = Context()
+        try:
+            asyncio.run(
+                self.shell.run(context, stdout=sys.stdout, stderr=sys.stderr)
+            )
+            for subcommand in context.commands:
+                assert subcommand.proc
+                ret = asyncio.run(subcommand.proc.wait())
+                if ret != 0 and not subcommand.fail_ok:
+                    logger.error(
+                        f"subcommand failed with code {ret}: {subcommand}"
+                    )
+        except Exception as e:
+            logger.error(f"Failed to run command: {e}")
+        finally:
+            asyncio.run(context.cleanup())
         logger.info("finished in: %s seconds", f"{time.time() - t0:.1f}")

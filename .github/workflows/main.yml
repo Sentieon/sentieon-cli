@@ -14,20 +14,19 @@ jobs:
       fail-fast: true
       max-parallel: 1
       matrix:
-        python-version: ["3.8", "3.13"]
-        poetry-version: ["1.5.1"]
-        sentieon-version: ["202503"]
+        python-version: ["3.9", "3.13"]
+        sentieon-version: ["202503.01"]
         os: [ubuntu-22.04] #, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Run image
-        uses: abatilo/actions-poetry@v2
-        with:
-          poetry-version: ${{ matrix.poetry-version }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --upgrade poetry
       - name: Install the project dependencies
         run: |
           poetry config virtualenvs.in-project true
@@ -91,20 +90,19 @@ jobs:
       fail-fast: true
       max-parallel: 1
       matrix:
-        python-version: ["3.8", "3.13"]
-        poetry-version: ["1.5.1"]
-        sentieon-version: ["202503"]
+        python-version: ["3.9", "3.13"]
+        sentieon-version: ["202503.01"]
         os: [ubuntu-22.04] #, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Run image
-        uses: abatilo/actions-poetry@v2
-        with:
-          poetry-version: ${{ matrix.poetry-version }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --upgrade poetry
       - name: Install the project dependencies
         run: |
           poetry config virtualenvs.in-project true
@@ -204,20 +202,19 @@ jobs:
       fail-fast: true
       max-parallel: 1
       matrix:
-        python-version: ["3.8", "3.13"]
-        poetry-version: ["1.5.1"]
-        sentieon-version: ["202503.01.rc1"]
+        python-version: ["3.9", "3.13"]
+        sentieon-version: ["202503.01"]
         os: [ubuntu-22.04] #, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Run image
-        uses: abatilo/actions-poetry@v2
-        with:
-          poetry-version: ${{ matrix.poetry-version }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --upgrade poetry
       - name: Install the project dependencies
         run: |
           poetry config virtualenvs.in-project true

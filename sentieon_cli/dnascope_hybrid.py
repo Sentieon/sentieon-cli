@@ -7,7 +7,6 @@ import copy
 import multiprocessing as mp
 import json
 import pathlib
-import shlex
 import sys
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -30,6 +29,7 @@ from .driver import (
 from .dnascope import call_cnvs, DNAscopePipeline
 from .dnascope_longread import DNAscopeLRPipeline
 from .job import Job
+from .shell_pipeline import Command, Pipeline
 from .util import (
     __version__,
     check_version,
@@ -680,7 +680,9 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
                 emit_mode=emit_mode,
             )
         )
-        call_job = Job(shlex.join(driver.build_cmd()), "calling-1", self.cores)
+        call_job = Job(
+            Pipeline(Command(*driver.build_cmd())), "calling-1", self.cores
+        )
 
         # Region selection
         hybrid_select = pathlib.Path(
@@ -714,7 +716,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             )
         )
         mapq0_job = Job(
-            shlex.join(driver.build_cmd()),
+            Pipeline(Command(*driver.build_cmd())),
             "mapq0-bed",
             self.cores,
         )
@@ -742,7 +744,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             0,
         )
         rm_cmd = ["rm", str(selected_bed), str(mapq0_slop_bed)]
-        rm_job1 = Job(shlex.join(rm_cmd), "rm-tmp1", 0, True)
+        rm_job1 = Job(Pipeline(Command(*rm_cmd, fail_ok=True)), "rm-tmp1", 0)
 
         stage1_ins_fa = self.tmp_dir.joinpath("stage1_ins.fa")
         stage1_ins_bed = self.tmp_dir.joinpath("stage1_ins.bed")
@@ -803,7 +805,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             str(stage1_ins_bed),
             str(stage1_hap_vcf),
         ]
-        rm_job2 = Job(shlex.join(rm_cmd), "rm-tmp2", 0, True)
+        rm_job2 = Job(Pipeline(Command(*rm_cmd, fail_ok=True)), "rm-tmp2", 0)
 
         stage2_bed = self.tmp_dir.joinpath("hybrid_stage2.bed")
         stage2_unmap_bam = self.tmp_dir.joinpath("hybrid_stage2_unmap.bam")
@@ -823,13 +825,13 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             )
         )
         second_stage_job = Job(
-            shlex.join(driver.build_cmd()),
+            Pipeline(Command(*driver.build_cmd())),
             "second-stage",
             self.cores,
         )
 
         rm_cmd = ["rm", str(stage1_bam), str(stage1_hap_bam)]
-        rm_job3 = Job(shlex.join(rm_cmd), "rm-tmp3", 0, True)
+        rm_job3 = Job(Pipeline(Command(*rm_cmd, fail_ok=True)), "rm-tmp3", 0)
 
         stage3_bam = self.tmp_dir.joinpath("hybrid_stage3.bam")
         driver = Driver(
@@ -856,7 +858,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             self.cores,
         )
         rm_cmd = ["rm", str(stage2_unmap_bam), str(stage2_alt_bam)]
-        rm_job4 = Job(shlex.join(rm_cmd), "rm-tmp4", 0, True)
+        rm_job4 = Job(Pipeline(Command(*rm_cmd, fail_ok=True)), "rm-tmp4", 0)
 
         # pass 2 of variant calling
         pass2_vcf = self.tmp_dir.joinpath("hybrid_pass2.vcf.gz")
@@ -877,7 +879,9 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
                 emit_mode=emit_mode,
             )
         )
-        call2_job = Job(shlex.join(driver.build_cmd()), "call2", self.cores)
+        call2_job = Job(
+            Pipeline(Command(*driver.build_cmd())), "call2", self.cores
+        )
 
         # Merge and normalize the VCFs
         subset_vcf = self.tmp_dir.joinpath("mix_subset.vcf.gz")
@@ -900,7 +904,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             0,
         )
         rm_cmd = ["rm", str(combined_vcf), str(subset_vcf), str(pass2_vcf)]
-        rm_job5 = Job(shlex.join(rm_cmd), "rm-tmp5", 0, True)
+        rm_job5 = Job(Pipeline(Command(*rm_cmd, fail_ok=True)), "rm-tmp5", 0)
 
         # Annotate the output VCF
         hybrid_anno = pathlib.Path(
@@ -958,7 +962,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             )
         )
         apply_job = Job(
-            shlex.join(driver.build_cmd()), "model-apply", self.cores
+            Pipeline(Command(*driver.build_cmd())), "model-apply", self.cores
         )
 
         # Final normalize
