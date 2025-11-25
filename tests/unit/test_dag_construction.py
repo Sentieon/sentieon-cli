@@ -5,6 +5,7 @@ Unit tests for DAG construction logic
 import pathlib
 import pytest
 import tempfile
+import shlex
 import sys
 import os
 from unittest.mock import patch
@@ -16,6 +17,7 @@ from sentieon_cli.dnascope import DNAscopePipeline
 from sentieon_cli.dnascope_longread import DNAscopeLRPipeline
 from sentieon_cli.dag import DAG
 from sentieon_cli.job import Job
+from sentieon_cli.shell_pipeline import Pipeline, Command
 
 
 class TestDAGConstruction:
@@ -191,32 +193,57 @@ class TestDAGJobProperties:
     def test_job_thread_allocation(self):
         """Test that jobs have appropriate thread allocation"""
         # Test high-CPU jobs get multiple threads
-        job = Job("sentieon driver --algo DNAscope", "variant-calling", 8)
+        job = Job(
+            Pipeline(Command(*shlex.split("sentieon driver --algo DNAscope"))),
+            "variant-calling",
+            8,
+        )
         assert job.threads == 8
 
         # Test lightweight jobs get fewer threads
-        job = Job("rm temp_file.vcf", "cleanup", 0)
+        job = Job(
+            Pipeline(Command("rm", "temp_file.vcf")),
+            "cleanup",
+            0,
+        )
         assert job.threads == 0
 
     def test_job_resource_requirements(self):
         """Test that jobs specify resource requirements correctly"""
         # Test NUMA-aware job
-        job = Job("align-command", "alignment", 4, resources={"node0": 1})
+        job = Job(
+            Pipeline(Command("align-command")),
+            "alignment",
+            4,
+            resources={"node0": 1},
+        )
         assert job.resources == {"node0": 1}
 
         # Test job without special resources
-        job = Job("simple-command", "simple", 2)
+        job = Job(
+            Pipeline(Command("simple-command")),
+            "simple",
+            2,
+        )
         assert job.resources == {}
 
     def test_job_failure_tolerance(self):
         """Test that cleanup jobs are marked as failure-tolerant"""
         # Cleanup jobs should be failure tolerant
-        job = Job("rm temp_files", "cleanup", 0, fail_ok=True)
-        assert job.fail_ok is True
+        job = Job(
+            Pipeline(Command("rm", "temp_files", fail_ok=True)),
+            "cleanup",
+            0,
+        )
+        assert job.shell.nodes[0].fail_ok is True
 
         # Critical jobs should not be failure tolerant
-        job = Job("sentieon driver", "variant-calling", 4, fail_ok=False)
-        assert job.fail_ok is False
+        job = Job(
+            Pipeline(Command("sentieon", "driver")),
+            "variant-calling",
+            4,
+        )
+        assert job.shell.nodes[0].fail_ok is False
 
 
 class TestLongReadDAGConstruction:
@@ -312,9 +339,9 @@ class TestDAGValidation:
         dag = DAG()
 
         # Create test jobs
-        job1 = Job("command1", "job1")
-        job2 = Job("command2", "job2")
-        job3 = Job("command3", "job3")
+        job1 = Job(Pipeline(Command("command1")), "job1")
+        job2 = Job(Pipeline(Command("command2")), "job2")
+        job3 = Job(Pipeline(Command("command3")), "job3")
 
         # Add jobs with dependencies: job1 -> job2 -> job3
         dag.add_job(job1)
@@ -335,9 +362,9 @@ class TestDAGValidation:
         dag = DAG()
 
         # Create test jobs
-        job1 = Job("command1", "job1")
-        job2 = Job("command2", "job2")
-        job3 = Job("command3", "job3")
+        job1 = Job(Pipeline(Command("command1")), "job1")
+        job2 = Job(Pipeline(Command("command2")), "job2")
+        job3 = Job(Pipeline(Command("command3")), "job3")
 
         # Add jobs: job1 and job2 can run in parallel, then job3
         dag.add_job(job1)

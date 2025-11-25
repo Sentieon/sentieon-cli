@@ -4,14 +4,16 @@ command strings.
 """
 
 import io
+import os
 import pathlib
 import shlex
 import subprocess as sp
 import typing
-from typing import Any, Optional, List, Dict
+from typing import Any, Dict, List, Optional, Union
 
 from .driver import BaseDriver
 from .logging import get_logger
+from .shell_pipeline import Command, InputProcSub, Pipeline
 
 logger = get_logger(__name__)
 
@@ -19,16 +21,16 @@ logger = get_logger(__name__)
 def cmd_fai_to_bed(
     fai: pathlib.Path,
     bed: pathlib.Path,
-) -> str:
+) -> Pipeline:
     cmd = ["awk", "-v", "OFS=\t", "{print $1,0,$2}", str(fai)]
-    return shlex.join(cmd) + " > " + shlex.quote(str(bed))
+    return Pipeline(Command(*cmd), file_output=bed)
 
 
 def cmd_bedtools_subtract(
     regions_bed: pathlib.Path,
     phased_bed: pathlib.Path,
     unphased_bed: pathlib.Path,
-) -> str:
+) -> Pipeline:
     cmd = [
         "bedtools",
         "subtract",
@@ -37,14 +39,14 @@ def cmd_bedtools_subtract(
         "-b",
         str(phased_bed),
     ]
-    return shlex.join(cmd) + " > " + shlex.quote(str(unphased_bed))
+    return Pipeline(Command(*cmd), file_output=unphased_bed)
 
 
 def cmd_bedtools_merge(
     in_bed: pathlib.Path,
     out_bed: pathlib.Path,
     distance: int = 0,
-) -> str:
+) -> Pipeline:
     """Bedtools merge"""
     cmd = [
         "bedtools",
@@ -54,7 +56,7 @@ def cmd_bedtools_merge(
         "-i",
         str(in_bed),
     ]
-    return shlex.join(cmd) + " > " + shlex.quote(str(out_bed))
+    return Pipeline(Command(*cmd), file_output=out_bed)
 
 
 def cmd_bedtools_slop(
@@ -62,7 +64,7 @@ def cmd_bedtools_slop(
     out_bed: pathlib.Path,
     ref_fai: pathlib.Path,
     slop_size: int = 0,
-) -> str:
+) -> Pipeline:
     """Bedtools slop"""
     cmd = [
         "bedtools",
@@ -74,35 +76,19 @@ def cmd_bedtools_slop(
         "-i",
         str(in_bed),
     ]
-    return shlex.join(cmd) + " > " + shlex.quote(str(out_bed))
+    return Pipeline(Command(*cmd), file_output=out_bed)
 
 
 def cmd_bedtools_cat_sort_merge(
     out_bed: pathlib.Path,
     in_bed: List[pathlib.Path],
     ref_fai: pathlib.Path,
-) -> str:
+) -> Pipeline:
     """Concat, sort and merge multiple BEDs"""
-    cmds = []
-    cmds.append(["cat"] + [shlex.quote(str(x)) for x in in_bed])
-    cmds.append(
-        [
-            "bedtools",
-            "sort",
-            "-faidx",
-            str(ref_fai),
-            "-i",
-            "-",
-        ]
-    )
-    cmds.append(
-        [
-            "bedtools",
-            "merge",
-        ]
-    )
-    all_cmds = [shlex.join(x) for x in cmds]
-    return " | ".join(all_cmds) + " > " + shlex.quote(str(out_bed))
+    cat_cmd = Command("cat", *[str(x) for x in in_bed])
+    sort_cmd = Command("bedtools", "sort", "-faidx", str(ref_fai), "-i", "-")
+    merge_cmd = Command("bedtools", "merge")
+    return Pipeline(cat_cmd, sort_cmd, merge_cmd, file_output=out_bed)
 
 
 def name(path: typing.Union[str, io.TextIOWrapper, pathlib.Path]) -> str:
@@ -122,17 +108,9 @@ def cmd_pyexec_vcf_mod_haploid_patch(
     phased_vcf: str,
     cores: int,
     kwargs: Dict[str, Any],
-) -> str:
+) -> Pipeline:
     """
     merge dnascope and dnascope-hp variants
-
-    >>> assert '--hap1 ' in cmd_pyexec_vcf_mod_haploid_patch("h1.vcf.gz",
-    ... "h2.vcf.gz", "out_hap%d_%stmp.vcf.gz", "HiFi", "ph.vcf", 2,
-    ... {'vcf_mod_py': 'vcf_mod.py'})
-    >>> assert not "--hap1 " in cmd_pyexec_vcf_mod_haploid_patch("h1.vcf.gz",
-    ... "h2.vcf.gz", "out_hap%d_%stmp.vcf.gz", "ONT", "ph.vcf", 2,
-    ... {'vcf_mod_py': 'vcf_mod.py'})
-
     """
     assert tech.upper() in ("HIFI", "ONT")
 
@@ -146,7 +124,7 @@ def cmd_pyexec_vcf_mod_haploid_patch(
         cmd += f" --phased {phased_vcf}"
     cmd += " --hap1_hp " + hap_patt % (1, "")
     cmd += " --hap2_hp " + hap_patt % (2, "")
-    return cmd
+    return Pipeline(Command(*shlex.split(cmd)))
 
 
 def cmd_pyexec_vcf_mod_patch(
@@ -155,7 +133,7 @@ def cmd_pyexec_vcf_mod_patch(
     vcf_hp: str,
     cores: int,
     kwargs: Dict[str, Any],
-) -> str:
+) -> Pipeline:
     """Patch DNAscope and DNAscopeHP VCF files"""
 
     cmd = [
@@ -171,7 +149,7 @@ def cmd_pyexec_vcf_mod_patch(
         str(vcf_hp),
         str(out_vcf),
     ]
-    return shlex.join(cmd)
+    return Pipeline(Command(*cmd))
 
 
 def cmd_pyexec_gvcf_combine(
@@ -180,10 +158,10 @@ def cmd_pyexec_gvcf_combine(
     out_vcf: str,
     cores: int,
     kwargs: Dict[str, Any],
-) -> str:
+) -> Pipeline:
     """Combine gVCF files"""
 
-    cmd1 = [
+    cmd1 = Command(
         "sentieon",
         "pyexec",
         str(kwargs["gvcf_combine_py"]),
@@ -193,15 +171,15 @@ def cmd_pyexec_gvcf_combine(
         gvcf,
         out_vcf,
         "-",
-    ]
-    cmd2 = [
+    )
+    cmd2 = Command(
         "sentieon",
         "util",
         "vcfconvert",
         "-",
         out_vcf.replace(".vcf.gz", ".g.vcf.gz"),
-    ]
-    return shlex.join(cmd1) + "|" + shlex.join(cmd2)
+    )
+    return Pipeline(cmd1, cmd2)
 
 
 def cmd_pyexec_vcf_mod_merge(
@@ -213,7 +191,7 @@ def cmd_pyexec_vcf_mod_merge(
     out_vcf: str,
     cores: int,
     kwargs: Dict[str, Any],
-) -> str:
+) -> Pipeline:
     """Merge haploid VCF files"""
 
     cmd = [
@@ -235,7 +213,7 @@ def cmd_pyexec_vcf_mod_merge(
         phased_bed,
         out_vcf,
     ]
-    return shlex.join(cmd)
+    return Pipeline(Command(*cmd))
 
 
 def cmd_pyexec_vcf_mod_haploid_patch2(
@@ -244,7 +222,7 @@ def cmd_pyexec_vcf_mod_haploid_patch2(
     vcf_hp: str,
     cores: int,
     kwargs: Dict[str, Any],
-) -> str:
+) -> Pipeline:
     """Patch a single pair of haploid DNAscope and DNAscopeHP VCFs"""
 
     cmd = [
@@ -261,7 +239,7 @@ def cmd_pyexec_vcf_mod_haploid_patch2(
         "--patch_vcf",
         out_vcf,
     ]
-    return shlex.join(cmd)
+    return Pipeline(Command(*cmd))
 
 
 def cmd_pyexec_hybrid_select(
@@ -271,51 +249,48 @@ def cmd_pyexec_hybrid_select(
     hybrid_select: pathlib.Path,
     threads: int,
     slop_size: int = 1000,
-) -> str:
-    cmds = []
-    cmds.append(
-        [
-            "sentieon",
-            "pyexec",
-            str(hybrid_select),
-            "-v",
-            str(vcf),
-            "-t",
-            str(threads),
-            "-",
-        ]
+) -> Pipeline:
+    select_cmd = Command(
+        "sentieon",
+        "pyexec",
+        str(hybrid_select),
+        "-v",
+        str(vcf),
+        "-t",
+        str(threads),
+        "-",
     )
-    cmds.append(
-        [
-            "bcftools",
-            "view",
-            "-f",
-            "PASS,.",
-            "-",
-        ]
+    view_cmd = Command(
+        "bcftools",
+        "view",
+        "-f",
+        "PASS,.",
+        "-",
     )
-    cmds.append(
-        [
-            "bcftools",
-            "query",
-            "-f",
-            "%CHROM\\t%POS0\\t%END\\n",
-            "-",
-        ]
+    query_cmd = Command(
+        "bcftools",
+        "query",
+        "-f",
+        "%CHROM\\t%POS0\\t%END\\n",
+        "-",
     )
-    cmds.append(
-        [
-            "bedtools",
-            "slop",
-            "-b",
-            str(slop_size),
-            "-g",
-            str(ref_fai),
-            "-i",
-            "-",
-        ]
+    slop_cmd = Command(
+        "bedtools",
+        "slop",
+        "-b",
+        str(slop_size),
+        "-g",
+        str(ref_fai),
+        "-i",
+        "-",
     )
-    return " | ".join([shlex.join(x) for x in cmds]) + " > " + str(out_bed)
+    return Pipeline(
+        select_cmd,
+        view_cmd,
+        query_cmd,
+        slop_cmd,
+        file_output=out_bed,
+    )
 
 
 def cmd_pyexec_hybrid_anno(
@@ -324,7 +299,7 @@ def cmd_pyexec_hybrid_anno(
     bed: pathlib.Path,
     hybrid_anno: pathlib.Path,
     threads: int,
-) -> str:
+) -> Pipeline:
     cmd = [
         "sentieon",
         "pyexec",
@@ -337,7 +312,7 @@ def cmd_pyexec_hybrid_anno(
         str(threads),
         str(out_vcf),
     ]
-    return shlex.join(cmd)
+    return Pipeline(Command(*cmd))
 
 
 def hybrid_stage1(
@@ -348,49 +323,51 @@ def hybrid_stage1(
     ins_driver: BaseDriver,
     stage1_driver: BaseDriver,
     bwa_model: pathlib.Path,
-) -> str:
-    unset_cmd = ["unset", "bwt_max_mem"]
-    fq_cmds = []
-    fq_cmds.append(shlex.join(stage1_driver.build_cmd()))
-    fq_cmds.append(shlex.join(ins_driver.build_cmd()))
+) -> Pipeline:
+    bwa_env = dict(os.environ)
+    _ = bwa_env.pop("bwt_max_mem", None)
 
-    aln_cmds = []
-    aln_cmds.append(
-        [
-            "sentieon",
-            "bwa",
-            "mem",
-            "-R",
-            readgroup,
-            "-t",
-            str(cores),
-            "-x",
-            str(bwa_model),
-            str(reference),
-            "-",
-        ]
-    )
-    aln_cmds.append(
-        [
-            "sentieon",
-            "util",
-            "sort",
-            "-i",
-            "-",
-            "-t",
-            str(cores),
-            "-o",
-            str(out_aln),
-            "--sam2bam",
-        ]
+    # Send the input of both fq commands to bwa with cat
+    fq1_cmd = Command(*stage1_driver.build_cmd())
+    fq2_cmd = Command(*ins_driver.build_cmd())
+    cat_cmd = Command(
+        "cat",
+        InputProcSub(Pipeline(fq1_cmd)),
+        InputProcSub(Pipeline(fq2_cmd)),
     )
 
-    return (
-        shlex.join(unset_cmd)
-        + "; ("
-        + " || echo -n 'error'; ".join(fq_cmds)
-        + " || echo -n 'error') | "
-        + " | ".join(shlex.join(x) for x in aln_cmds)
+    bwa_cmd = Command(
+        "sentieon",
+        "bwa",
+        "mem",
+        "-R",
+        readgroup,
+        "-t",
+        str(cores),
+        "-x",
+        str(bwa_model),
+        str(reference),
+        "-",
+        exec_kwargs={"env": bwa_env},
+    )
+
+    sort_cmd = Command(
+        "sentieon",
+        "util",
+        "sort",
+        "-i",
+        "-",
+        "-t",
+        str(cores),
+        "-o",
+        str(out_aln),
+        "--sam2bam",
+    )
+
+    return Pipeline(
+        cat_cmd,
+        bwa_cmd,
+        sort_cmd,
     )
 
 
@@ -398,30 +375,26 @@ def hybrid_stage3(
     out_bam: pathlib.Path,
     driver: BaseDriver,
     cores: int,
-) -> str:
-    cmds = []
-    cmds.append(driver.build_cmd())
-    cmds.append(
-        [
-            "sentieon",
-            "util",
-            "sort",
-            "-i",
-            "-",
-            "-t",
-            str(cores),
-            "-o",
-            str(out_bam),
-        ]
+) -> Pipeline:
+    sort_cmd = Command(
+        "sentieon",
+        "util",
+        "sort",
+        "-i",
+        "-",
+        "-t",
+        str(cores),
+        "-o",
+        str(out_bam),
     )
-    return " | ".join([shlex.join(x) for x in cmds])
+    return Pipeline(Command(*driver.build_cmd()), sort_cmd)
 
 
 def bcftools_subset(
     out_vcf: pathlib.Path,
     mix_vcf: pathlib.Path,
     regions_bed: pathlib.Path,
-) -> str:
+) -> Pipeline:
     """Subset a vcf with bcftools"""
     bcftools_subset_cmd = shlex.join(
         [
@@ -450,7 +423,7 @@ def bcftools_subset(
             str(out_vcf),
         ]
     )
-    return (
+    shell_cmd = (
         f'if [ -s "{regions_bed}" ]; then   '  # noqa
         + bcftools_subset_cmd
         + " | "
@@ -459,32 +432,19 @@ def bcftools_subset(
         + cp_cmd
         + "; fi"
     )
+    return Pipeline(Command("sh", "-c", shell_cmd))
 
 
 def bcftools_concat(
     out_vcf: pathlib.Path,
     in_vcfs: List[pathlib.Path],
-) -> str:
+) -> Pipeline:
     """VCF processing through bcftools concat"""
-    cmds = []
-    cmds.append(
-        [
-            "bcftools",
-            "concat",
-            "-aD",
-        ]
-        + [str(x) for x in in_vcfs]
+    concat_cmd = Command(
+        "bcftools", "concat", "-aD", *[str(x) for x in in_vcfs]
     )
-    cmds.append(
-        [
-            "sentieon",
-            "util",
-            "vcfconvert",
-            "-",
-            str(out_vcf),
-        ]
-    )
-    return " | ".join([shlex.join(x) for x in cmds])
+    convert_cmd = Command("sentieon", "util", "vcfconvert", "-", str(out_vcf))
+    return Pipeline(concat_cmd, convert_cmd)
 
 
 def filter_norm(
@@ -492,41 +452,16 @@ def filter_norm(
     in_vcf: pathlib.Path,
     reference: pathlib.Path,
     exclude_homref: bool = True,
-) -> str:
+) -> Pipeline:
     """Trim and normalize"""
-    cmds = []
-    cmd = [
-        "bcftools",
-        "view",
-        "-a",
-    ]
+    view_args = ["-a"]
     if exclude_homref:
-        cmd.extend(
-            [
-                "-e",
-                'GT="0/0"',
-            ]
-        )
-    cmd.append(str(in_vcf))
-    cmds.append(cmd)
-    cmds.append(
-        [
-            "bcftools",
-            "norm",
-            "-f",
-            str(reference),
-        ]
-    )
-    cmds.append(
-        [
-            "sentieon",
-            "util",
-            "vcfconvert",
-            "-",
-            str(out_vcf),
-        ]
-    )
-    return " | ".join([shlex.join(x) for x in cmds])
+        view_args.extend(["-e", 'GT="0/0"'])
+    view_args.append(str(in_vcf))
+    view_cmd = Command("bcftools", "view", *view_args)
+    norm_cmd = Command("bcftools", "norm", "-f", str(reference))
+    convert_cmd = Command("sentieon", "util", "vcfconvert", "-", str(out_vcf))
+    return Pipeline(view_cmd, norm_cmd, convert_cmd)
 
 
 def get_rg_lines(
@@ -553,25 +488,6 @@ def get_rg_lines(
     return rg_lines
 
 
-def rehead_wgsmetrics(
-    orig_metrics: pathlib.Path, tmp_metrics: pathlib.Path
-) -> str:
-    """Rehead Sentieon WGS metrics so the file is recognized by MultiQC"""
-    cmd1 = shlex.join(["mv", str(orig_metrics), str(tmp_metrics)])
-    cmd2 = (
-        shlex.join(["echo", "'## METRICS CLASS WgsMetrics'"])
-        + ">"
-        + shlex.quote(str(orig_metrics))
-    )
-    cmd3 = (
-        shlex.join(["tail", "-n", "+2", str(tmp_metrics)])
-        + ">>"
-        + shlex.quote(str(orig_metrics))
-    )
-    cmd4 = shlex.join(["rm", str(tmp_metrics)])
-    return "; ".join((cmd1, cmd2, cmd3, cmd4))
-
-
 def cmd_samtools_fastq_minimap2(
     out_aln: pathlib.Path,
     input_aln: pathlib.Path,
@@ -584,62 +500,47 @@ def cmd_samtools_fastq_minimap2(
     fastq_taglist: str = "*",
     minimap2_args: str = "-Y",
     util_sort_args: str = "--cram_write_options version=3.0,compressor=rans",
-) -> str:
+) -> Pipeline:
     """Re-align an input BAM/CRAM/uBAM/uCRAM file with minimap2"""
 
     ref_cmd: List[str] = []
     if input_ref:
         ref_cmd = ["--reference", str(reference)]
-    cmd1 = (
-        [
+    cmd_list = [
+        Command(
             "samtools",
             "fastq",
-        ]
-        + ref_cmd
-        + [
+            *ref_cmd,
             "-@",
             str(cores),
             "-T",
             fastq_taglist,
             str(input_aln),
-        ]
-    )
-    cmd2 = [
-        "sentieon",
-        "minimap2",
-        "-y",
-        "-t",
-        str(cores),
-        "-a",
-        minimap2_args,
-        "-x",
-        f"{model_bundle}/minimap2.model",
-        str(reference),
-        "/dev/stdin",
+        )
     ]
-    cmd3 = [
-        "sentieon",
-        "util",
-        "sort",
-        "-i",
-        "-",
-        "-t",
-        str(cores),
-        "--reference",
-        str(reference),
-        "-o",
-        str(out_aln),
-        "--sam2bam",
-    ] + util_sort_args.split()
+    cmd_list.append(
+        Command(
+            "sentieon",
+            "minimap2",
+            "-y",
+            "-t",
+            str(cores),
+            "-a",
+            minimap2_args,
+            "-x",
+            f"{model_bundle}/minimap2.model",
+            str(reference),
+            "/dev/stdin",
+        )
+    )
 
     # Commands to replace the @RG lines in the header
-    rg_cmds: List[List[str]] = []
     for rg_line in rg_lines:
         # Add a SM value, if missing
         if "\tSM:" not in rg_line:
             rg_line += f"\tSM:{sample_name}"
-        rg_cmds.append(
-            [
+        cmd_list.append(
+            Command(
                 "samtools",
                 "addreplacerg",
                 "-r",
@@ -647,10 +548,26 @@ def cmd_samtools_fastq_minimap2(
                 "-m",
                 "orphan_only",
                 "-",
-            ]
+            )
         )
-
-    return " | ".join([shlex.join(x) for x in (cmd1, cmd2, *rg_cmds, cmd3)])
+    cmd_list.append(
+        Command(
+            "sentieon",
+            "util",
+            "sort",
+            "-i",
+            "-",
+            "-t",
+            str(cores),
+            "--reference",
+            str(reference),
+            "-o",
+            str(out_aln),
+            "--sam2bam",
+            *util_sort_args.split(),
+        )
+    )
+    return Pipeline(*cmd_list)
 
 
 def cmd_samtools_fastq_bwa(
@@ -666,30 +583,28 @@ def cmd_samtools_fastq_bwa(
     bwa_k: str = "100000000",
     fastq_taglist: str = "RG",
     util_sort_args: str = "--cram_write_options version=3.0,compressor=rans",
-) -> str:
+) -> Pipeline:
     """Re-align an input BAM/CRAM/uBAM/uCRAM file with bwa"""
     ref_cmd: List[str] = []
     if input_ref:
         ref_cmd = ["--reference", str(reference)]
 
-    cmd0 = ["perl", "-MFcntl", "-e", "fcntl(STDOUT, 1031, 268435456)"]
+    pipebuf_cmd = Command(
+        "perl", "-MFcntl", "-e", "fcntl(STDOUT, 1031, 268435456)"
+    )
     if collate:
-        cmd1 = (
-            [
-                "samtools",
-                "collate",
-            ]
-            + ref_cmd
-            + [
-                "-@",
-                str(cores),
-                "-O",
-                "-u",
-                "-f",
-                str(input_aln),
-            ]
+        collate_cmd = Command(
+            "samtools",
+            "collate",
+            *ref_cmd,
+            "-@",
+            str(cores),
+            "-O",
+            "-u",
+            "-f",
+            str(input_aln),
         )
-        cmd2 = [
+        fastq_cmd = Command(
             "samtools",
             "fastq",
             "-@",
@@ -697,42 +612,38 @@ def cmd_samtools_fastq_bwa(
             "-T",
             fastq_taglist,
             "-",
-        ]
-    else:
-        cmd1 = []
-        cmd2 = (
-            [
-                "samtools",
-                "fastq",
-            ]
-            + ref_cmd
-            + [
-                "-@",
-                str(cores),
-                "-T",
-                fastq_taglist,
-                str(input_aln),
-            ]
         )
-    cmd3 = (
-        [
-            "sentieon",
-            "bwa",
-            "mem",
-            "-p",
-            "-C",
-            "-H",
-            str(rg_header),
-            "-t",
+    else:
+        collate_cmd = None
+        fastq_cmd = Command(
+            "samtools",
+            "fastq",
+            *ref_cmd,
+            "-@",
             str(cores),
-            "-x",
-            f"{model_bundle}/bwa.model",
-        ]
-        + bwa_args.split()
-        + ["-K", bwa_k]
-        + [str(reference), "/dev/stdin"]
+            "-T",
+            fastq_taglist,
+            str(input_aln),
+        )
+    bwa_cmd = Command(
+        "sentieon",
+        "bwa",
+        "mem",
+        "-p",
+        "-C",
+        "-H",
+        str(rg_header),
+        "-t",
+        str(cores),
+        "-x",
+        f"{model_bundle}/bwa.model",
+        *bwa_args.split(),
+        "-K",
+        bwa_k,
+        str(reference),
+        "/dev/stdin",
     )
-    cmd4 = [
+    sort_cmd = Command(
         "sentieon",
         "util",
         "sort",
@@ -745,19 +656,24 @@ def cmd_samtools_fastq_bwa(
         "-o",
         str(out_aln),
         "--sam2bam",
-    ] + util_sort_args.split()
-
-    if cmd1:
-        return (
-            shlex.join(cmd0)
-            + ";"
-            + " | ".join([shlex.join(x) for x in (cmd1, cmd2, cmd3, cmd4)])
+        *util_sort_args.split(),
+    )
+    if collate_cmd:
+        return Pipeline(
+            pipebuf_cmd,
+            collate_cmd,
+            fastq_cmd,
+            bwa_cmd,
+            sort_cmd,
+            skip_pipe=(0,),
         )
     else:
-        return (
-            shlex.join(cmd0)
-            + ";"
-            + " | ".join([shlex.join(x) for x in (cmd2, cmd3, cmd4)])
+        return Pipeline(
+            pipebuf_cmd,
+            fastq_cmd,
+            bwa_cmd,
+            sort_cmd,
+            skip_pipe=(0,),
         )
 
 
@@ -771,15 +687,11 @@ def cmd_fastq_minimap2(
     unzip: str = "gzip",
     minimap2_args: str = "-Y",
     util_sort_args: str = "--cram_write_options version=3.0,compressor=rans",
-) -> str:
+) -> Pipeline:
     """Align an input fastq file with minimap2"""
 
-    cmd1 = [
-        unzip,
-        "-dc",
-        str(fastq),
-    ]
-    cmd2 = [
+    cmd1 = Command(unzip, "-dc", str(fastq))
+    cmd2 = Command(
         "sentieon",
         "minimap2",
         "-t",
@@ -792,8 +704,8 @@ def cmd_fastq_minimap2(
         readgroup,
         str(reference),
         "/dev/stdin",
-    ]
-    cmd3 = [
+    )
+    cmd3 = Command(
         "sentieon",
         "util",
         "sort",
@@ -806,8 +718,9 @@ def cmd_fastq_minimap2(
         "-o",
         str(out_aln),
         "--sam2bam",
-    ] + util_sort_args.split()
-    return " | ".join([shlex.join(x) for x in (cmd1, cmd2, cmd3)])
+        *util_sort_args.split(),
+    )
+    return Pipeline(cmd1, cmd2, cmd3)
 
 
 def cmd_fastq_bwa(
@@ -824,107 +737,90 @@ def cmd_fastq_bwa(
     util_sort_args: str = "--cram_write_options version=3.0,compressor=rans",
     numa: Optional[str] = None,
     split: Optional[str] = None,
-) -> str:
+) -> Pipeline:
     """Align an input fastq file with bwa"""
-    pipebuf_cmd = shlex.join(
-        ["perl", "-MFcntl", "-e", "fcntl(STDOUT, 1031, 268435456)"]
+    pipebuf_cmd = Command(
+        "perl", "-MFcntl", "-e", "fcntl(STDOUT, 1031, 268435456)"
     )
-    cmd1 = (
-        (["taskset", "-c", numa] if numa else [])
-        + [
-            "sentieon",
-            "bwa",
-            "mem",
-            "-R",
-            readgroup,
-            "-t",
-            str(cores),
-            "-x",
-            f"{model_bundle}/bwa.model",
-        ]
-        + bwa_args.split()
-        + ["-K", bwa_k]
-        + (["-p"] if (r2 and split) else [])
-        + [
-            str(reference),
-        ]
+    r1_unzip = Pipeline(
+        pipebuf_cmd,
+        Command(str(unzip), "-dc", str(r1)),
+        skip_pipe=(0,),
     )
-    cmd2 = [
-        str(unzip),
-        "-dc",
-        str(r1),
-    ]
-    cmd3 = []
+    r2_unzip = None
     if r2:
-        cmd3 = [
-            str(unzip),
-            "-dc",
-            str(r2),
-        ]
-    cmd4 = (
-        (["taskset", "-c", numa] if numa else [])
-        + [
-            "sentieon",
-            "util",
-            "sort",
-            "-i",
-            "-",
-            "-t",
-            str(cores),
-            "--reference",
-            str(reference),
-            "-o",
-            str(out_aln),
-            "--sam2bam",
-        ]
-        + util_sort_args.split()
-    )
-
-    cmds = [shlex.join(x) for x in (cmd1, cmd2, cmd3, cmd4)]
-    cmd_str = ""
+        r2_unzip = Pipeline(
+            pipebuf_cmd,
+            Command(str(unzip), "-dc", str(r2)),
+            skip_pipe=(0,),
+        )
+    bwa_cmd_args: List[Union[str, InputProcSub]] = [
+        *(["taskset", "-c", numa] if numa else []),
+        "sentieon",
+        "bwa",
+        "mem",
+        "-R",
+        readgroup,
+        "-t",
+        str(cores),
+        "-x",
+        f"{model_bundle}/bwa.model",
+        *bwa_args.split(),
+        "-K",
+        bwa_k,
+        *(["-p"] if (r2 and split) else []),
+        str(reference),
+    ]
     if split:
-        extract_cmd = shlex.join(
-            ["sentieon", "fqidx", "extract", "-F", str(split), "-K", bwa_k]
+        extract_cmd = Pipeline(
+            pipebuf_cmd,
+            Command(
+                "sentieon",
+                "fqidx",
+                "extract",
+                "-F",
+                str(split),
+                "-K",
+                bwa_k,
+                InputProcSub(r1_unzip),
+                *([InputProcSub(r2_unzip)] if r2_unzip else []),
+            ),
+            skip_pipe=(0,),
         )
-        cmd_str = (
-            pipebuf_cmd
-            + "; "
-            + cmds[0]
-            + " <("
-            + pipebuf_cmd
-            + "; "
-            + extract_cmd
-            + " <("
-            + pipebuf_cmd
-            + "; "
-            + cmds[1]
-            + ") "
-        )
-        if cmds[2]:
-            cmd_str += " <(" + pipebuf_cmd + "; " + cmds[2] + ") "
-        cmd_str += ") "
+        bwa_cmd_args.append(InputProcSub(extract_cmd))
     else:
-        cmd_str = (
-            pipebuf_cmd
-            + "; "
-            + cmds[0]
-            + " <("
-            + pipebuf_cmd
-            + "; "
-            + cmds[1]
-            + ") "
-        )
-        if cmds[2]:
-            cmd_str += " <(" + pipebuf_cmd + "; " + cmds[2] + ") "
-    cmd_str += " | " + cmds[3]
-    return cmd_str
+        bwa_cmd_args.append(InputProcSub(r1_unzip))
+        if r2_unzip:
+            bwa_cmd_args.append(InputProcSub(r2_unzip))
+    sort_cmd = Command(
+        *(["taskset", "-c", numa] if numa else []),
+        "sentieon",
+        "util",
+        "sort",
+        "-i",
+        "-",
+        "-t",
+        str(cores),
+        "--reference",
+        str(reference),
+        "-o",
+        str(out_aln),
+        "--sam2bam",
+        *util_sort_args.split(),
+    )
+    return Pipeline(
+        pipebuf_cmd,
+        Command(str(bwa_cmd_args[0]), *bwa_cmd_args[1:]),
+        sort_cmd,
+        skip_pipe=(0,),
+    )
 
 
 def cmd_multiqc(
     input_directory: pathlib.Path,
     output_directory: pathlib.Path,
     comment: Optional[str],
-) -> str:
+) -> Pipeline:
     """Run MultiQC"""
     cmd = [
         "multiqc",
@@ -943,7 +839,7 @@ def cmd_multiqc(
             str(input_directory),
         ]
     )
-    return shlex.join(cmd)
+    return Pipeline(Command(*cmd))
 
 
 def cmd_mosdepth(
@@ -954,7 +850,7 @@ def cmd_mosdepth(
     xargs: str = (
         "--by 500 --no-per-base --use-median -T 1,3,5,10,15,20,30,40,50"
     ),
-) -> str:
+) -> Pipeline:
     cmd = [
         "mosdepth",
         "--fasta",
@@ -965,7 +861,7 @@ def cmd_mosdepth(
     cmd.extend(shlex.split(xargs))
     cmd.append(str(output_directory))
     cmd.append(str(sample_input))
-    return shlex.join(cmd)
+    return Pipeline(Command(*cmd))
 
 
 def cmd_kmc(
@@ -975,7 +871,7 @@ def cmd_kmc(
     k=29,
     memory=128,
     threads=1,
-) -> str:
+) -> Pipeline:
     cmd = [
         "kmc",
         f"-k{k}",
@@ -987,7 +883,7 @@ def cmd_kmc(
         str(output_prefix),
         str(tmp_dir),
     ]
-    return shlex.join(cmd)
+    return Pipeline(Command(*cmd))
 
 
 def cmd_vg_haplotypes(
@@ -998,7 +894,7 @@ def cmd_vg_haplotypes(
     threads=1,
     verbosity=1,
     xargs: List[str] = ["--include-reference", "--diploid-sampling"],
-) -> str:
+) -> Pipeline:
     cmd = [
         "vg",
         "haplotypes",
@@ -1015,7 +911,7 @@ def cmd_vg_haplotypes(
         str(gbz),
     ]
     cmd.extend(xargs)
-    return shlex.join(cmd)
+    return Pipeline(Command(*cmd))
 
 
 def cmd_vg_giraffe(
@@ -1027,7 +923,7 @@ def cmd_vg_giraffe(
     sample="sample",
     threads=1,
     max_fragment_length=3000,
-) -> str:
+) -> Pipeline:
     vg_cmd = [
         "vg",
         "giraffe",
@@ -1048,7 +944,7 @@ def cmd_vg_giraffe(
     if fastq2:
         vg_cmd.extend(["-f", str(fastq2)])
 
-    return shlex.join(vg_cmd) + " > " + str(sample_gam)
+    return Pipeline(Command(*vg_cmd), file_output=sample_gam)
 
 
 def cmd_vg_pack(
@@ -1057,10 +953,9 @@ def cmd_vg_pack(
     gbz: pathlib.Path,
     min_mapq=5,
     threads=1,
-) -> str:
-    cat_cmd = ["cat"]
-    cat_cmd.extend([str(x) for x in sample_gams])
-    vg_cmd = [
+) -> Pipeline:
+    cat_cmd = Command("cat", *[str(x) for x in sample_gams])
+    vg_cmd = Command(
         "vg",
         "pack",
         "-x",
@@ -1073,9 +968,9 @@ def cmd_vg_pack(
         str(min_mapq),
         "--threads",
         str(threads),
-    ]
+    )
 
-    return shlex.join(cat_cmd) + " | " + shlex.join(vg_cmd)
+    return Pipeline(cat_cmd, vg_cmd)
 
 
 def cmd_sv_call(
@@ -1087,74 +982,56 @@ def cmd_sv_call(
     sample_name="",
     ref_path="GRCh38",
     min_indel_size=34,
-) -> str:
-    cmds = []
-    cmds.append(
-        [
-            "cat",
-            str(sv_header),
-        ]
-    )
-
-    cmds.append(
-        [
-            "vg",
-            "call",
-            "-r",
-            str(snarls),
-            "-k",
-            str(sample_pack),
-            "-s",
-            sample_name,
-            "-z",
-            "--ref-sample",
-            ref_path,
-            "--progress",
-            str(gbz),
-        ]
+) -> Pipeline:
+    # Call SVs with vg call
+    vg_call_cmd = Command(
+        "vg",
+        "call",
+        "-r",
+        str(snarls),
+        "-k",
+        str(sample_pack),
+        "-s",
+        sample_name,
+        "-z",
+        "--ref-sample",
+        ref_path,
+        "--progress",
+        str(gbz),
     )
 
     # Use bcftools to remove smaller variants
-    cmds.append(
-        [
-            "bcftools",
-            "view",
-            "-i",
-            f"ABS(ILEN) > {min_indel_size}",
-            "-H",
-            "-",
-        ]
+    view_cmd = Command(
+        "bcftools",
+        "view",
+        "-i",
+        f"ABS(ILEN) > {min_indel_size}",
+        "-H",
+        "-",
     )
 
-    # Sort the VCF
-    cmds.append(
-        [
-            "bcftools",
-            "sort",
-            "-O",
-            "v",
-        ]
+    # Rehead the vg call output
+    cat_cmd = Command(
+        "cat",
+        str(sv_header),
+        InputProcSub(Pipeline(vg_call_cmd, view_cmd)),
     )
 
-    cmds.append(
-        [
-            "sentieon",
-            "util",
-            "vcfconvert",
-            "-",
-            str(out_svs),
-        ]
+    # Sort and compress the output
+    sort_cmd = Command(
+        "bcftools",
+        "sort",
+        "-O",
+        "v",
     )
-
-    all_cmds = [shlex.join(x) for x in cmds]
-    return (
-        "("
-        + all_cmds[0]
-        + "; "
-        + " | ".join(all_cmds[1:3])
-        + ") | "
-        + " | ".join(all_cmds[3:])
+    convert_cmd = Command(
+        "sentieon",
+        "util",
+        "vcfconvert",
+        "-",
+        str(out_svs),
     )
+    return Pipeline(cat_cmd, sort_cmd, convert_cmd)
 
 
 def cmd_vg_surject(
@@ -1167,74 +1044,59 @@ def cmd_vg_surject(
         "--interleaved",
         "--progress",
     ],
-) -> str:
-    cmds = []
-    cmds.append(
-        [
-            "vg",
-            "surject",
-            "--sam-output",
-            "-t",
-            str(threads),
-            "-x",
-            str(xg),
-            "--into-paths",
-            shlex.quote(str(surject_paths_dict)),
-        ]
-    )
-    cmds[-1].extend(surject_xargs)
-    cmds[-1].append(str(sample_gam))
+) -> Pipeline:
+    surject_cmd_list = [
+        "vg",
+        "surject",
+        "--sam-output",
+        "-t",
+        str(threads),
+        "-x",
+        str(xg),
+        "--into-paths",
+        shlex.quote(str(surject_paths_dict)),
+    ]
+    surject_cmd_list.extend(surject_xargs)
+    surject_cmd_list.append(str(sample_gam))
 
-    cmds.append(
-        [
-            "sentieon",
-            "util",
-            "sort",
-            "--sam2bam",
-            "-i",
-            "-",
-            "-o",
-            str(out_bam),
-        ]
+    sort_cmd = Command(
+        "sentieon",
+        "util",
+        "sort",
+        "--sam2bam",
+        "-i",
+        "-",
+        "-o",
+        str(out_bam),
     )
 
-    all_cmds = [shlex.join(x) for x in cmds]
-    return " | ".join(all_cmds)
+    return Pipeline(Command(*surject_cmd_list), sort_cmd)
 
 
 def strip_ctg_prefix(
     output_header: pathlib.Path,
     bam: pathlib.Path,
     prefix: str,
-) -> str:
+) -> Pipeline:
     # Also remove the M5 tag
-    cmds = []
-    cmds.append(["samtools", "view", "-H", shlex.quote(str(bam))])
-
-    cmds.append(
-        [
-            "sed",
-            "-e",
-            f"s/\tSN:{prefix}/\tSN:/",
-            "-e",
-            "s/\tM5:[0-9a-zA-Z]*\t/\t/",
-            "-e",
-            "s/\tM5:[0-9a-zA-Z]*$//",
-        ]
+    samtools_cmd = Command("samtools", "view", "-H", str(bam))
+    sed_cmd = Command(
+        "sed",
+        "-e",
+        f"s/\tSN:{prefix}/\tSN:/",
+        "-e",
+        "s/\tM5:[0-9a-zA-Z]*\t/\t/",
+        "-e",
+        "s/\tM5:[0-9a-zA-Z]*$//",
     )
-
-    return (
-        " | ".join([shlex.join(x) for x in cmds])
-        + " > "
-        + shlex.quote(str(output_header))
-    )
+    return Pipeline(samtools_cmd, sed_cmd, file_output=output_header)
 
 
 def cmd_estimate_ploidy(
     output_json: pathlib.Path,
     aln_files: List[pathlib.Path],
     ploidy_script: pathlib.Path,
-) -> str:
+) -> Pipeline:
     cmd = (
         [
             "python3",
@@ -1247,7 +1109,7 @@ def cmd_estimate_ploidy(
             str(output_json),
         ]
     )
-    return shlex.join(cmd)
+    return Pipeline(Command(*cmd))
 
 
 def cmd_t1k(
@@ -1257,7 +1119,7 @@ def cmd_t1k(
     gene_coord: pathlib.Path,
     preset: str,
     threads=1,
-) -> str:
+) -> Pipeline:
     cmd = [
         "run-t1k",
         "--abnormalUnmapFlag",
@@ -1274,7 +1136,7 @@ def cmd_t1k(
         "-b",
         str(deduped_bam),
     ]
-    return shlex.join(cmd)
+    return Pipeline(Command(*cmd))
 
 
 def cmd_expansion_hunter(
@@ -1284,7 +1146,7 @@ def cmd_expansion_hunter(
     variant_catalog: pathlib.Path,
     sex="female",
     threads=1,
-) -> str:
+) -> Pipeline:
     cmd = [
         "ExpansionHunter",
         "--reads",
@@ -1300,7 +1162,7 @@ def cmd_expansion_hunter(
         "--output-prefix",
         str(out_expansions),
     ]
-    return shlex.join(cmd)
+    return Pipeline(Command(*cmd))
 
 
 def cmd_segdup_caller(
@@ -1309,7 +1171,7 @@ def cmd_segdup_caller(
     reference: pathlib.Path,
     sr_bundle: pathlib.Path,
     genes="CFH,CFHR3,CYP11B1,CYP2D6,GBA,NCF1,PMS2,SMN1,STRC",
-) -> str:
+) -> Pipeline:
     cmd = [
         "segdup-caller",
         "--short",
@@ -1323,4 +1185,4 @@ def cmd_segdup_caller(
         "--outdir",
         str(out_segdup),
     ]
-    return shlex.join(cmd)
+    return Pipeline(Command(*cmd))

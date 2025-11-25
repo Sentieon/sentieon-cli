@@ -5,7 +5,6 @@ Functionality for the DNAscope LongRead pipeline
 import argparse
 import multiprocessing as mp
 import pathlib
-import shlex
 import shutil
 import sys
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -28,6 +27,7 @@ from .driver import (
 )
 from .job import Job
 from .pipeline import BasePipeline
+from .shell_pipeline import Command, Pipeline
 from .util import (
     check_version,
     path_arg,
@@ -266,6 +266,7 @@ class DNAscopeLRPipeline(BasePipeline):
     def validate(self) -> None:
         # uniquify pipeline attributes
         self.lr_aln = self.sample_input
+        self.lr_input_ref = self.input_ref
         del self.sample_input
 
         # validate
@@ -487,7 +488,7 @@ class DNAscopeLRPipeline(BasePipeline):
                         self.cores,
                         rg_lines,
                         sample_name,
-                        self.input_ref,
+                        self.lr_input_ref,
                         self.fastq_taglist,
                         self.minimap2_args,
                         self.util_sort_args,
@@ -606,7 +607,7 @@ class DNAscopeLRPipeline(BasePipeline):
         )
         driver.add_algo(ReadWriter(merged_bam))
         merge_job = Job(
-            shlex.join(driver.build_cmd()),
+            Pipeline(Command(*driver.build_cmd())),
             "merge-bam",
             0,
         )
@@ -630,19 +631,32 @@ class DNAscopeLRPipeline(BasePipeline):
             ".pbsv_discover.svsig.gz",
         )
         pbsv_discover = Job(
-            f"pbsv discover --hifi {merged_bam} {pbsv_discover_fn}",
+            Pipeline(
+                Command(
+                    "pbsv",
+                    "discover",
+                    "--hifi",
+                    str(merged_bam),
+                    pbsv_discover_fn,
+                )
+            ),
             "pbsv-discover",
             0,
         )
 
         # pbsv call
         pbsv_call_fn = str(self.output_vcf).replace(".vcf.gz", ".pbsv.vcf")
-        cmd = (
-            f"pbsv call -j {self.cores} {self.reference} {pbsv_discover_fn} "
-            f"{pbsv_call_fn}"
-        )
+        call_cmd = [
+            "pbsv",
+            "call",
+            "-j",
+            str(self.cores),
+            str(self.reference),
+            pbsv_discover_fn,
+            pbsv_call_fn,
+        ]
         pbsv_call = Job(
-            cmd,
+            Pipeline(Command(*call_cmd)),
             "pbsv-call",
             self.cores,
         )
@@ -666,14 +680,22 @@ class DNAscopeLRPipeline(BasePipeline):
                     return None
 
         hifi_cnv_fn = str(self.output_vcf).replace(".vcf.gz", ".hificnv")
-        cmd = (
-            f"hificnv --bam {merged_bam} --ref {self.reference} "
-            f"--threads {self.cores} "
-            f"--output-prefix {hifi_cnv_fn}"
-        )
+        hificnv_cmd = [
+            "hificnv",
+            "--bam",
+            str(merged_bam),
+            "--ref",
+            str(self.reference),
+            "--threads",
+            str(self.cores),
+            "--output-prefix",
+            hifi_cnv_fn,
+        ]
         if self.cnv_excluded_regions:
-            cmd += f" --exclude {self.cnv_excluded_regions}"
-        hificnv_job = Job(cmd, "hificnv", self.cores)
+            hificnv_cmd.extend(["--exclude", str(self.cnv_excluded_regions)])
+        hificnv_job = Job(
+            Pipeline(Command(*hificnv_cmd)), "hificnv", self.cores
+        )
         return hificnv_job
 
     def lr_call_variants(
@@ -709,8 +731,8 @@ class DNAscopeLRPipeline(BasePipeline):
         assert self.reference
         assert self.output_vcf
         if not self.skip_version_check:
-            for cmd, min_version in TOOL_MIN_VERSIONS.items():
-                if not check_version(cmd, min_version):
+            for check_cmd, min_version in TOOL_MIN_VERSIONS.items():
+                if not check_version(check_cmd, min_version):
                     sys.exit(2)
 
         # First pass - diploid calling
@@ -739,7 +761,7 @@ class DNAscopeLRPipeline(BasePipeline):
             )
         )
         first_calling_job = Job(
-            shlex.join(driver.build_cmd()), "first-pass", self.cores
+            Pipeline(Command(*driver.build_cmd())), "first-pass", self.cores
         )
 
         diploid_vcf = self.tmp_dir.joinpath("out_diploid.vcf.gz")
@@ -755,7 +777,9 @@ class DNAscopeLRPipeline(BasePipeline):
             )
         )
         first_modelapply_job = Job(
-            shlex.join(driver.build_cmd()), "first-modelapply", self.cores
+            Pipeline(Command(*driver.build_cmd())),
+            "first-modelapply",
+            self.cores,
         )
 
         # Phasing and RepeatModel
@@ -784,14 +808,28 @@ class DNAscopeLRPipeline(BasePipeline):
             )
         )
         phaser_job = Job(
-            shlex.join(driver.build_cmd()), "variantphaser", self.cores
+            Pipeline(Command(*driver.build_cmd())), "variantphaser", self.cores
         )
 
         bcftools_subset_phased_job = None
         if self.tech.upper() == "ONT":
             bcftools_subset_phased_job = Job(
-                f"bcftools view -T {phased_bed} {phased_vcf} \
-                | sentieon util vcfconvert - {phased_phased}",
+                Pipeline(
+                    Command(
+                        "bcftools",
+                        "view",
+                        "-T",
+                        str(phased_bed),
+                        str(phased_vcf),
+                    ),
+                    Command(
+                        "sentieon",
+                        "util",
+                        "vcfconvert",
+                        "-",
+                        str(phased_phased),
+                    ),
+                ),
                 "bcftools-subset-phased",
                 0,
             )
@@ -837,12 +875,24 @@ class DNAscopeLRPipeline(BasePipeline):
                 )
             )
             repeatmodel_job = Job(
-                shlex.join(driver.build_cmd()), "repeatmodel", self.cores
+                Pipeline(Command(*driver.build_cmd())),
+                "repeatmodel",
+                self.cores,
             )
 
         bcftools_subset_unphased_job = Job(
-            f"bcftools view -T {unphased_bed} {phased_vcf} \
-            | sentieon util vcfconvert - {phased_unphased}",
+            Pipeline(
+                Command(
+                    "bcftools",
+                    "view",
+                    "-T",
+                    str(unphased_bed),
+                    str(phased_vcf),
+                ),
+                Command(
+                    "sentieon", "util", "vcfconvert", "-", str(phased_unphased)
+                ),
+            ),
             "bcftools-subset-unphased",
             0,
         )
@@ -883,7 +933,11 @@ class DNAscopeLRPipeline(BasePipeline):
                 )
             )
             second_calling_job.add(
-                Job(shlex.join(driver.build_cmd()), "second-pass", self.cores)
+                Job(
+                    Pipeline(Command(*driver.build_cmd())),
+                    "second-pass",
+                    self.cores,
+                )
             )
 
         kwargs: Dict[str, str] = dict()
@@ -930,7 +984,7 @@ class DNAscopeLRPipeline(BasePipeline):
             )
             second_modelapply_job.add(
                 Job(
-                    shlex.join(driver.build_cmd()),
+                    Pipeline(Command(*driver.build_cmd())),
                     "second-modelapply",
                     self.cores,
                 )
@@ -955,7 +1009,9 @@ class DNAscopeLRPipeline(BasePipeline):
             )
         )
         calling_unphased_job = Job(
-            shlex.join(driver.build_cmd()), "calling-unphased", self.cores
+            Pipeline(Command(*driver.build_cmd())),
+            "calling-unphased",
+            self.cores,
         )
 
         # Patch DNA and DNAHP variants
@@ -983,7 +1039,9 @@ class DNAscopeLRPipeline(BasePipeline):
             )
         )
         modelapply_unphased_job = Job(
-            shlex.join(driver.build_cmd()), "modelapply-unphased", self.cores
+            Pipeline(Command(*driver.build_cmd())),
+            "modelapply-unphased",
+            self.cores,
         )
 
         # merge calls to create the output
@@ -1063,7 +1121,9 @@ class DNAscopeLRPipeline(BasePipeline):
                     )
                 )
             haploid_calling_job = Job(
-                shlex.join(driver.build_cmd()), "haploid-calling", self.cores
+                Pipeline(Command(*driver.build_cmd())),
+                "haploid-calling",
+                self.cores,
             )
 
             haploid_patch2_job = Job(
@@ -1168,6 +1228,6 @@ class DNAscopeLRPipeline(BasePipeline):
             )
         )
         longreadsv_job = Job(
-            shlex.join(driver.build_cmd()), "LongReadSV", self.cores
+            Pipeline(Command(*driver.build_cmd())), "LongReadSV", self.cores
         )
         return longreadsv_job

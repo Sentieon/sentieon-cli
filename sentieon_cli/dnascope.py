@@ -8,12 +8,13 @@ import itertools
 import multiprocessing as mp
 import os
 import pathlib
-import shlex
 import shutil
 import sys
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import packaging.version
+
+from importlib_resources import files
 
 from . import command_strings as cmds
 from .dag import DAG
@@ -39,6 +40,7 @@ from .driver import (
 )
 from .job import Job
 from .pipeline import BasePipeline
+from .shell_pipeline import Command, Pipeline
 from .util import (
     __version__,
     check_version,
@@ -300,7 +302,7 @@ class DNAscopePipeline(BasePipeline):
         del self.readgroups
         del self.duplicate_marking
 
-        # vaidate
+        # validate
         if not self.sample_input and not (
             self.sr_r1_fastq and self.sr_readgroups
         ):
@@ -545,10 +547,11 @@ class DNAscopePipeline(BasePipeline):
 
         # Create an unscheduled job to remove the aligned inputs
         rm_job = Job(
-            shlex.join(["rm"] + [str(x) for x in align_outputs]),
+            Pipeline(
+                Command("rm", *[str(x) for x in align_outputs], fail_ok=True)
+            ),
             "rm-bam-aln",
             0,
-            True,
         )
 
         return (res, jobs, rm_job)
@@ -636,10 +639,11 @@ class DNAscopePipeline(BasePipeline):
 
         # Create an unscheduled job to remove the aligned inputs
         rm_job = Job(
-            shlex.join(["rm"] + [str(x) for x in align_outputs]),
+            Pipeline(
+                Command("rm", *[str(x) for x in align_outputs], fail_ok=True)
+            ),
             "rm-fq-aln",
             0,
-            True,
         )
 
         return (res, jobs, rm_job)
@@ -689,7 +693,6 @@ class DNAscopePipeline(BasePipeline):
 
         # WGS metrics
         wgs_metrics = metrics_dir.joinpath(metric_base + ".wgs.txt")
-        wgs_metrics_tmp = metrics_dir.joinpath(metric_base + ".wgs.txt.tmp")
         gc_metrics = metrics_dir.joinpath(metric_base + ".gc_bias.txt")
         gc_summary = metrics_dir.joinpath(metric_base + ".gc_bias_summary.txt")
 
@@ -724,7 +727,9 @@ class DNAscopePipeline(BasePipeline):
 
         if not (self.sr_duplicate_marking == "none" and self.skip_metrics):
             lc_job = Job(
-                shlex.join(driver.build_cmd()), "locuscollector", self.cores
+                Pipeline(Command(*driver.build_cmd())),
+                "locuscollector",
+                self.cores,
             )
 
         if self.sr_duplicate_marking == "none":
@@ -751,7 +756,9 @@ class DNAscopePipeline(BasePipeline):
                 rmdup=(self.sr_duplicate_marking == "rmdup"),
             )
         )
-        dedup_job = Job(shlex.join(driver.build_cmd()), "dedup", self.cores)
+        dedup_job = Job(
+            Pipeline(Command(*driver.build_cmd())), "dedup", self.cores
+        )
 
         if self.skip_metrics:
             return ([deduped], lc_job, dedup_job, None, None)
@@ -774,7 +781,7 @@ class DNAscopePipeline(BasePipeline):
             driver.add_algo(HsMetricAlgo(hs_metrics, self.bed, self.bed))
             driver.add_algo(InsertSizeMetricAlgo(is_metrics))
             metrics_job = Job(
-                shlex.join(driver.build_cmd()), "metrics", 0
+                Pipeline(Command(*driver.build_cmd())), "metrics", 0
             )  # Run metrics in the background
 
         # Run WgsMetricsAlgo after duplicate marking to account for
@@ -786,12 +793,27 @@ class DNAscopePipeline(BasePipeline):
             )
             driver.add_algo(CoverageMetrics(coverage_metrics))
             metrics_job = Job(
-                shlex.join(driver.build_cmd()), "metrics", 0
+                Pipeline(Command(*driver.build_cmd())), "metrics", 0
             )  # Run metrics in the background
 
             # Rehead WGS metrics so they are recognized by MultiQC
+            rehead_script = pathlib.Path(
+                str(
+                    files("sentieon_cli.scripts").joinpath(
+                        "rehead_wgs_metrics.py"
+                    )
+                )
+            )
             rehead_job = Job(
-                cmds.rehead_wgsmetrics(wgs_metrics, wgs_metrics_tmp),
+                Pipeline(
+                    Command(
+                        "sentieon",
+                        "pyexec",
+                        str(rehead_script),
+                        "--metrics_file",
+                        str(wgs_metrics),
+                    )
+                ),
                 "Rehead metrics",
                 0,
             )
@@ -860,7 +882,9 @@ class DNAscopePipeline(BasePipeline):
                 )
             )
         call_job = Job(
-            shlex.join(driver.build_cmd()), "variant-calling", self.cores
+            Pipeline(Command(*driver.build_cmd())),
+            "variant-calling",
+            self.cores,
         )
 
         # Genotyping and filtering with DNAModelApply
@@ -876,12 +900,12 @@ class DNAscopePipeline(BasePipeline):
             )
         )
         apply_job = Job(
-            shlex.join(driver.build_cmd()), "model-apply", self.cores
+            Pipeline(Command(*driver.build_cmd())), "model-apply", self.cores
         )
 
         # Remove the tmp_vcf
         rm_cmd = ["rm", str(tmp_vcf), str(tmp_vcf) + ".tbi"]
-        rm_job = Job(shlex.join(rm_cmd), "rm-tmp-vcf", 0, True)
+        rm_job = Job(Pipeline(Command(*rm_cmd, fail_ok=True)), "rm-tmp-vcf", 0)
 
         # Genotype gVCFs
         gvcftyper_job = None
@@ -898,7 +922,7 @@ class DNAscopePipeline(BasePipeline):
                 )
             )
             gvcftyper_job = Job(
-                shlex.join(driver.build_cmd()), "gvcftyper", self.cores
+                Pipeline(Command(*driver.build_cmd())), "gvcftyper", self.cores
             )
 
         # Call SVs
@@ -916,14 +940,20 @@ class DNAscopePipeline(BasePipeline):
                     vcf=out_svs_tmp,
                 )
             )
-            svsolver_job = Job(shlex.join(driver.build_cmd()), "svsolver")
+            svsolver_job = Job(
+                Pipeline(Command(*driver.build_cmd())), "svsolver"
+            )
             sv_rm_job = Job(
-                shlex.join(
-                    ["rm", str(out_svs_tmp), str(out_svs_tmp) + ".tbi"]
+                Pipeline(
+                    Command(
+                        "rm",
+                        str(out_svs_tmp),
+                        str(out_svs_tmp) + ".tbi",
+                        fail_ok=True,
+                    )
                 ),
                 "rm-tmp-sv",
                 0,
-                True,
             )
 
         return (
@@ -999,7 +1029,9 @@ def call_cnvs(
             model_bundle.joinpath("cnv.model"),
         )
     )
-    cnvscope_job = Job(shlex.join(driver.build_cmd()), "CNVscope", cores)
+    cnvscope_job = Job(
+        Pipeline(Command(*driver.build_cmd())), "CNVscope", cores
+    )
 
     driver = Driver(
         reference=reference,
@@ -1013,7 +1045,7 @@ def call_cnvs(
         )
     )
     cnvmodelapply_job = Job(
-        shlex.join(driver.build_cmd()),
+        Pipeline(Command(*driver.build_cmd())),
         "CNVModelApply",
         cores,
     )

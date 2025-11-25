@@ -224,26 +224,6 @@ class PipelineTestHelper:
         self.fs.cleanup()
 
 
-class CommandValidator:
-    """Helper for validating generated commands"""
-
-    @staticmethod
-    def validate_sentieon_command(command: str) -> bool:
-        """Validate that a sentieon command is well-formed"""
-        if not command.startswith("sentieon"):
-            return False
-
-        parts = command.split()
-        if len(parts) < 2:
-            return False
-
-        # Should have driver or util as second argument
-        if parts[1] not in ["driver", "util"]:
-            return False
-
-        return True
-
-
 class DAGAnalyzer:
     """Helper for analyzing DAG structure in tests"""
 

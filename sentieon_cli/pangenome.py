@@ -9,7 +9,6 @@ import json
 import multiprocessing as mp
 import os
 import pathlib
-import shlex
 import shutil
 import sys
 from typing import Any, Dict, List, Optional, Tuple
@@ -40,6 +39,7 @@ from .driver import (
 )
 from .job import Job
 from .pipeline import BasePipeline
+from .shell_pipeline import Command, Pipeline
 from .util import __version__, check_version, parse_rg_line, path_arg, tmp
 
 
@@ -929,7 +929,7 @@ class PangenomePipeline(BasePipeline):
         driver.add_algo(GCBias(gc_metrics, summary=gc_summary))
 
         lc_job = Job(
-            shlex.join(driver.build_cmd()),
+            Pipeline(Command(*driver.build_cmd())),
             "locuscollector",
             self.cores,
         )
@@ -949,7 +949,9 @@ class PangenomePipeline(BasePipeline):
                 metrics=dedup_metrics,
             )
         )
-        dedup_job = Job(shlex.join(driver.build_cmd()), "dedup", self.cores)
+        dedup_job = Job(
+            Pipeline(Command(*driver.build_cmd())), "dedup", self.cores
+        )
 
         return (hdr_jobs, lc_job, dedup_job)
 
@@ -970,7 +972,6 @@ class PangenomePipeline(BasePipeline):
         # - Run some metrics after duplicate marking
         is_metrics = metrics_dir.joinpath(metric_base + ".insert_size.txt")
         wgs_metrics = metrics_dir.joinpath(metric_base + ".wgs.txt")
-        wgs_metrics_tmp = metrics_dir.joinpath(metric_base + ".wgs.txt.tmp")
 
         driver = Driver(
             reference=self.reference,
@@ -981,14 +982,27 @@ class PangenomePipeline(BasePipeline):
         driver.add_algo(InsertSizeMetricAlgo(is_metrics))
         driver.add_algo(WgsMetricsAlgo(wgs_metrics, include_unpaired="true"))
         metrics_job = Job(
-            shlex.join(driver.build_cmd()),
+            Pipeline(Command(*driver.build_cmd())),
             "metrics",
             self.cores,
         )
 
         # Rehead WGS metrics so they are recognized by MultiQC
+        rehead_script = pathlib.Path(
+            str(
+                files("sentieon_cli.scripts").joinpath("rehead_wgs_metrics.py")
+            )
+        )
         rehead_job = Job(
-            cmds.rehead_wgsmetrics(wgs_metrics, wgs_metrics_tmp),
+            Pipeline(
+                Command(
+                    "sentieon",
+                    "pyexec",
+                    str(rehead_script),
+                    "--metrics_file",
+                    str(wgs_metrics),
+                )
+            ),
             "Rehead metrics",
             0,
         )
@@ -1053,7 +1067,7 @@ class PangenomePipeline(BasePipeline):
             )
         )
         dnascope_job = Job(
-            shlex.join(driver.build_cmd()), "dnascope", self.cores
+            Pipeline(Command(*driver.build_cmd())), "dnascope", self.cores
         )
 
         driver = Driver(
@@ -1068,7 +1082,7 @@ class PangenomePipeline(BasePipeline):
             )
         )
         dnamodelapply_job = Job(
-            shlex.join(driver.build_cmd()), "model-apply", self.cores
+            Pipeline(Command(*driver.build_cmd())), "model-apply", self.cores
         )
 
         return (dnascope_job, dnamodelapply_job)
@@ -1246,7 +1260,9 @@ class PangenomePipeline(BasePipeline):
             )
         )
         cnvscope_job = Job(
-            shlex.join(driver.build_cmd()), "cnvscope-autosomes", self.cores
+            Pipeline(Command(*driver.build_cmd())),
+            "cnvscope-autosomes",
+            self.cores,
         )
 
         # Autosome model apply
@@ -1267,7 +1283,7 @@ class PangenomePipeline(BasePipeline):
             )
         )
         cnvapply_job = Job(
-            shlex.join(driver.build_cmd()),
+            Pipeline(Command(*driver.build_cmd())),
             "cnvmodelapply-autosomes",
             self.cores,
         )
@@ -1289,7 +1305,9 @@ class PangenomePipeline(BasePipeline):
             )
         )
         haploid_cnv_job = Job(
-            shlex.join(driver.build_cmd()), "cnvscope-haploid", self.cores
+            Pipeline(Command(*driver.build_cmd())),
+            "cnvscope-haploid",
+            self.cores,
         )
 
         # Sex chrom CNVModelApply
@@ -1305,7 +1323,9 @@ class PangenomePipeline(BasePipeline):
             )
         )
         haploid_apply_job = Job(
-            shlex.join(driver.build_cmd()), "cnvmodelapply-haploid", self.cores
+            Pipeline(Command(*driver.build_cmd())),
+            "cnvmodelapply-haploid",
+            self.cores,
         )
 
         # Concate autosome and sex chromsome VCFs
