@@ -1005,6 +1005,7 @@ def call_cnvs(
     bed: Optional[pathlib.Path] = None,
     cores: int = mp.cpu_count(),
     skip_version_check: bool = False,
+    replace_rg: Optional[List[List[str]]] = None,
     **_kwargs: Any,
 ) -> Tuple[Job, Job]:
     """
@@ -1020,6 +1021,7 @@ def call_cnvs(
     driver = Driver(
         reference=reference,
         thread_count=cores,
+        replace_rg=replace_rg,
         input=sample_input,
         interval=bed,
     )

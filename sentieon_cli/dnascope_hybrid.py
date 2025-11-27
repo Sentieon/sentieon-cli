@@ -52,6 +52,61 @@ MIN_BUNDLE_VERSION = {
 }
 
 
+class RgInfo:
+    """A container class for short and long-read readgroups"""
+
+    def __init__(
+        self,
+        lr_aln_readgroups: List[List[Dict[str, str]]],
+        sr_aln_readgroups: List[List[Dict[str, str]]],
+        lr_read_filter: Optional[str],
+        sr_read_filter: Optional[str],
+        hybrid_set_rg: bool,
+        hybrid_rg_sm: str,
+        shortread_tech: str,
+    ):
+        # readgroup handling for long-reads
+        self.lr_rg_read_filter: List[str] = []
+        self.replace_rg_args: Tuple[List[List[str]], List[List[str]]] = (
+            [],
+            [],
+        )
+        for aln_rgs in lr_aln_readgroups:
+            self.replace_rg_args[0].append([])
+            for rg_line_d in aln_rgs:
+                id = rg_line_d.get("ID")
+                new_sm = hybrid_rg_sm if hybrid_set_rg else rg_line_d.get("SM")
+                self.replace_rg_args[0][-1].append(
+                    f"{id}=ID:{id}\\tSM:{new_sm}\\tLR:1"
+                )
+                if lr_read_filter:
+                    self.lr_rg_read_filter.append(
+                        f"{lr_read_filter},rgid={id}"
+                    )
+
+        # readgroup handling for short-reads
+        self.sr_rg_read_filter: List[str] = []
+        self.ultima_read_filter: List[str] = []
+        for aln_rgs in sr_aln_readgroups:
+            if hybrid_set_rg:
+                self.replace_rg_args[1].append([])
+            for rg_line_d in aln_rgs:
+                id = rg_line_d.get("ID")
+                new_sm = hybrid_rg_sm if hybrid_set_rg else rg_line_d.get("SM")
+                if hybrid_set_rg:
+                    self.replace_rg_args[1][-1].append(
+                        f"{id}=ID:{id}\\tSM:{new_sm}"
+                    )
+                if sr_read_filter:
+                    self.sr_rg_read_filter.append(
+                        f"{sr_read_filter},rgid={id}"
+                    )
+                if shortread_tech.upper() == "ULTIMA":
+                    self.ultima_read_filter.append(
+                        f"UltimaReadFilter,rgid={id}"
+                    )
+
+
 class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
     """The DNAscope Hybrid pipeline"""
 
@@ -444,6 +499,16 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         assert self.reference
         assert self.model_bundle
 
+        rg_info = RgInfo(
+            self.lr_aln_readgroups,
+            self.sr_aln_readgroups,
+            self.lr_read_filter,
+            self.sr_read_filter,
+            self.hybrid_set_rg,
+            self.hybrid_rg_sm,
+            self.shortread_tech,
+        )
+
         # Short-read alignment
         sr_aln = self.sr_aln
         (
@@ -504,7 +569,9 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
                 dag.add_job(multiqc_job, multiqc_dependencies)
 
         if not self.skip_svs:
-            longreadsv_job = self.call_svs(lr_aln)
+            longreadsv_job = self.call_svs(
+                lr_aln, replace_rg=rg_info.replace_rg_args[0]
+            )
             dag.add_job(longreadsv_job, realign_jobs)
 
         sr_preprocessing_jobs: Set[Job] = set()
@@ -521,6 +588,11 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
                 self.bed,
                 self.cores,
                 self.skip_version_check,
+                replace_rg=(
+                    rg_info.replace_rg_args[1]
+                    if rg_info.replace_rg_args[1]
+                    else None
+                ),
             )
             dag.add_job(cnvscope_job, sr_preprocessing_jobs)
             dag.add_job(cnvmodelapply_job, {cnvscope_job})
@@ -545,7 +617,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             anno_job,
             apply_job,
             norm_job,
-        ) = self.call_variants(sr_aln, lr_aln)
+        ) = self.call_variants(sr_aln, lr_aln, rg_info)
         dag.add_job(call_job, realign_jobs | sr_preprocessing_jobs)
         dag.add_job(select_job, {call_job})
         dag.add_job(mapq0_job, realign_jobs | sr_preprocessing_jobs)
@@ -577,6 +649,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         self,
         sr_aln: List[pathlib.Path],
         lr_aln: List[pathlib.Path],
+        rg_info: RgInfo,
         **_kwargs: Any,
     ) -> Tuple[
         Job,
@@ -613,50 +686,6 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
                 if not check_version(cmd, min_version):
                     sys.exit(2)
 
-        # readgroup handling for long-reads
-        lr_rg_read_filter: List[str] = []
-        replace_rg_args: Tuple[List[List[str]], List[List[str]]] = ([], [])
-        for aln_rgs in self.lr_aln_readgroups:
-            replace_rg_args[0].append([])
-            for rg_line_d in aln_rgs:
-                id = rg_line_d.get("ID")
-                new_sm = (
-                    self.hybrid_rg_sm
-                    if self.hybrid_set_rg
-                    else rg_line_d.get("SM")
-                )
-                replace_rg_args[0][-1].append(
-                    f"{id}=ID:{id}\\tSM:{new_sm}\\tLR:1"
-                )
-                if self.lr_read_filter:
-                    lr_rg_read_filter.append(
-                        f"{self.lr_read_filter},rgid={id}"
-                    )
-
-        # readgroup handling for short-reads
-        sr_rg_read_filter: List[str] = []
-        ultima_read_filter: List[str] = []
-        for aln_rgs in self.sr_aln_readgroups:
-            if self.hybrid_set_rg:
-                replace_rg_args[1].append([])
-            for rg_line_d in aln_rgs:
-                id = rg_line_d.get("ID")
-                new_sm = (
-                    self.hybrid_rg_sm
-                    if self.hybrid_set_rg
-                    else rg_line_d.get("SM")
-                )
-                if self.hybrid_set_rg:
-                    replace_rg_args[1][-1].append(
-                        f"{id}=ID:{id}\\tSM:{new_sm}"
-                    )
-                if self.sr_read_filter:
-                    sr_rg_read_filter.append(
-                        f"{self.sr_read_filter},rgid={id}"
-                    )
-                if self.shortread_tech.upper() == "ULTIMA":
-                    ultima_read_filter.append(f"UltimaReadFilter,rgid={id}")
-
         # First pass - combined variant calling
         vcf_suffix = ".g.vcf.gz" if self.gvcf else ".vcf.gz"
         combined_vcf = self.tmp_dir.joinpath("initial" + vcf_suffix)
@@ -664,12 +693,12 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         driver: BaseDriver = Driver(
             reference=self.reference,
             thread_count=self.cores,
-            replace_rg=replace_rg_args[0] + replace_rg_args[1],
+            replace_rg=rg_info.replace_rg_args[0] + rg_info.replace_rg_args[1],
             input=lr_aln + sr_aln,
             interval=self.bed,
-            read_filter=ultima_read_filter
-            + lr_rg_read_filter
-            + sr_rg_read_filter,
+            read_filter=rg_info.ultima_read_filter
+            + rg_info.lr_rg_read_filter
+            + rg_info.sr_rg_read_filter,
         )
         driver.add_algo(
             DNAscope(
@@ -705,9 +734,9 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         driver = Driver(
             reference=self.reference,
             thread_count=self.cores,
-            replace_rg=replace_rg_args[0] + replace_rg_args[1],
+            replace_rg=rg_info.replace_rg_args[0] + rg_info.replace_rg_args[1],
             input=lr_aln + sr_aln,
-            read_filter=lr_rg_read_filter + sr_rg_read_filter,
+            read_filter=rg_info.lr_rg_read_filter + rg_info.sr_rg_read_filter,
         )
         driver.add_algo(
             HybridStage2(
@@ -751,9 +780,9 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         ins_driver = Driver(
             reference=self.reference,
             thread_count=self.cores,
-            replace_rg=replace_rg_args[0],
+            replace_rg=rg_info.replace_rg_args[0],
             input=lr_aln,
-            read_filter=lr_rg_read_filter,
+            read_filter=rg_info.lr_rg_read_filter,
         )
         ins_driver.add_algo(
             HybridStage1(
@@ -770,10 +799,10 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         stage1_driver = Driver(
             reference=self.reference,
             thread_count=self.cores,
-            replace_rg=replace_rg_args[0],
+            replace_rg=rg_info.replace_rg_args[0],
             input=lr_aln,
             interval=diff_bed,
-            read_filter=lr_rg_read_filter,
+            read_filter=rg_info.lr_rg_read_filter,
         )
         stage1_driver.add_algo(
             HybridStage1(
@@ -837,10 +866,10 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         driver = Driver(
             reference=self.reference,
             thread_count=self.cores,
-            replace_rg=replace_rg_args[0] + replace_rg_args[1],
+            replace_rg=rg_info.replace_rg_args[0] + rg_info.replace_rg_args[1],
             input=lr_aln + sr_aln + [stage2_unmap_bam, stage2_alt_bam],
             interval=stage2_bed,
-            read_filter=lr_rg_read_filter + sr_rg_read_filter,
+            read_filter=rg_info.lr_rg_read_filter + rg_info.sr_rg_read_filter,
         )
         driver.add_algo(
             HybridStage3(
@@ -865,10 +894,10 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         driver = Driver(
             reference=self.reference,
             thread_count=self.cores,
-            replace_rg=replace_rg_args[0],
+            replace_rg=rg_info.replace_rg_args[0],
             input=lr_aln + [stage3_bam],
             interval=stage2_bed,
-            read_filter=ultima_read_filter + lr_rg_read_filter,
+            read_filter=rg_info.ultima_read_filter + rg_info.lr_rg_read_filter,
         )
         driver.add_algo(
             DNAscope(

@@ -41,9 +41,16 @@ jobs:
           pip install multiqc
       - name: Install sentieon
         run: |
-          curl -L https://s3.amazonaws.com/sentieon-release/software/sentieon-genomics-$SENTIEON_VERSION.tar.gz | tar -zxf -
+          url="https://s3.amazonaws.com/sentieon-release/software/sentieon-genomics-$SENTIEON_VERSION.tar.gz"
+          bin_dir=$(pwd)/sentieon-genomics-$SENTIEON_VERSION/bin
+          machine_arch=$(uname -m)
+          if [[ "$machine_arch" == "arm64" || "$machine_arch" == "aarch64" || "$machine_arch" == "armv7l" ]]; then
+            url="https://s3.amazonaws.com/sentieon-release/software/arm-sentieon-genomics-$SENTIEON_VERSION.tar.gz"
+            bin_dir=$(pwd)/arm-sentieon-genomics-$SENTIEON_VERSION/bin
+          fi
+          curl -L "$url" | tar -zxf -
           echo "SENTIEON_VERSION=$SENTIEON_VERSION" >> $GITHUB_ENV
-          echo "PATH=$(pwd)/sentieon-genomics-$SENTIEON_VERSION/bin:$PATH" >> $GITHUB_ENV
+          echo "PATH=$bin_dir:$PATH" >> $GITHUB_ENV
         env:
           SENTIEON_VERSION: ${{ matrix.sentieon-version }}
       - name: Download short-read model
@@ -126,9 +133,16 @@ jobs:
           sudo chmod ugo+x /usr/local/bin/mosdepth
       - name: Install sentieon
         run: |
-          curl -L https://s3.amazonaws.com/sentieon-release/software/sentieon-genomics-$SENTIEON_VERSION.tar.gz | tar -zxf -
+          url="https://s3.amazonaws.com/sentieon-release/software/sentieon-genomics-$SENTIEON_VERSION.tar.gz"
+          bin_dir=$(pwd)/sentieon-genomics-$SENTIEON_VERSION/bin
+          machine_arch=$(uname -m)
+          if [[ "$machine_arch" == "arm64" || "$machine_arch" == "aarch64" || "$machine_arch" == "armv7l" ]]; then
+            url="https://s3.amazonaws.com/sentieon-release/software/arm-sentieon-genomics-$SENTIEON_VERSION.tar.gz"
+            bin_dir=$(pwd)/arm-sentieon-genomics-$SENTIEON_VERSION/bin
+          fi
+          curl -L "$url" | tar -zxf -
           echo "SENTIEON_VERSION=$SENTIEON_VERSION" >> $GITHUB_ENV
-          echo "PATH=$(pwd)/sentieon-genomics-$SENTIEON_VERSION/bin:$PATH" >> $GITHUB_ENV
+          echo "PATH=$bin_dir:$PATH" >> $GITHUB_ENV
         env:
           SENTIEON_VERSION: ${{ matrix.sentieon-version }}
       - name: Download long-read model
@@ -241,9 +255,16 @@ jobs:
           pip install multiqc
       - name: Install sentieon
         run: |
-          curl -L https://s3.amazonaws.com/sentieon-release/software/sentieon-genomics-$SENTIEON_VERSION.tar.gz | tar -zxf -
+          url="https://s3.amazonaws.com/sentieon-release/software/sentieon-genomics-$SENTIEON_VERSION.tar.gz"
+          bin_dir=$(pwd)/sentieon-genomics-$SENTIEON_VERSION/bin
+          machine_arch=$(uname -m)
+          if [[ "$machine_arch" == "arm64" || "$machine_arch" == "aarch64" || "$machine_arch" == "armv7l" ]]; then
+            url="https://s3.amazonaws.com/sentieon-release/software/arm-sentieon-genomics-$SENTIEON_VERSION.tar.gz"
+            bin_dir=$(pwd)/arm-sentieon-genomics-$SENTIEON_VERSION/bin
+          fi
+          curl -L "$url" | tar -zxf -
           echo "SENTIEON_VERSION=$SENTIEON_VERSION" >> $GITHUB_ENV
-          echo "PATH=$(pwd)/sentieon-genomics-$SENTIEON_VERSION/bin:$PATH" >> $GITHUB_ENV
+          echo "PATH=$bin_dir:$PATH" >> $GITHUB_ENV
         env:
           SENTIEON_VERSION: ${{ matrix.sentieon-version }}
       - name: Download hybrid model
@@ -289,5 +310,23 @@ jobs:
             -m "DNAscope hybrid IlmnPB1.1.bundle" \
             "output_hybrid2.vcf.gz"
           if [ ! -f "output_hybrid2.vcf.gz" ]; then
+            exit 1
+          fi
+      - name: Smoke test - readgroups
+        run: |
+          . .venv/bin/activate
+          samtools addreplacerg -m overwrite_all \
+            -o "tests/smoke/illumina_2.bam" \
+            -r '@RG\tID:HG002-2\tSM:HG003\tPL:ILLUMINA' -O BAM \
+            --reference "tests/smoke/r ef.fa" "tests/smoke/illumina.cram"
+          samtools index -b "tests/smoke/illumina_2.bam"
+          sentieon-cli -v dnascope-hybrid -t 1 -r "tests/smoke/r ef.fa" \
+            --rgsm "HG001" \
+            --sr_aln "tests/smoke/illumina.cram" "tests/smoke/illumina_2.bam" \
+            --lr_aln "tests/smoke/sam ple.cram" \
+            -m "DNAscope hybrid IlmnPB1.1.bundle" \
+            --sr_duplicate_marking none \
+            "output_hybrid3.vcf.gz"
+          if [ ! -f "output_hybrid3.vcf.gz" ]; then
             exit 1
           fi

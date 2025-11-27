@@ -1202,6 +1202,7 @@ class DNAscopeLRPipeline(BasePipeline):
     def call_svs(
         self,
         sample_input: List[pathlib.Path],
+        replace_rg: Optional[List[List[str]]] = None,
     ) -> Job:
         """
         Call SVs using Sentieon LongReadSV
@@ -1218,6 +1219,7 @@ class DNAscopeLRPipeline(BasePipeline):
         driver = Driver(
             reference=self.reference,
             thread_count=self.cores,
+            replace_rg=replace_rg,
             input=sample_input,
             interval=self.bed,
         )

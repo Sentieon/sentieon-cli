@@ -96,6 +96,48 @@ class TestPipelineDryRunExecution:
             hybrid_stages = [name for name in job_names if "stage" in name.lower()]
             assert len(hybrid_stages) > 0, "Should have hybrid staging jobs"
 
+    def test_hybrid_dry_run_execution_rgsm(self):
+        """Test hybrid pipeline dry-run execution with --rgsm"""
+        pipeline = self.helper.create_hybrid_pipeline()
+        pipeline.rgsm = "HG001"
+
+        # Mock the archive loading and readgroup functions
+        with patch('sentieon_cli.dnascope_hybrid.ar_load') as mock_ar_load, \
+             patch('sentieon_cli.command_strings.get_rg_lines') as mock_get_rg:
+
+            # Mock bundle info
+            import json
+            bundle_info = {
+                "longReadPlatform": "HiFi",
+                "shortReadPlatform": "Illumina",
+                "minScriptVersion": "1.0.0",
+                "pipeline": "DNAscope Hybrid"
+            }
+            mock_ar_load.side_effect = [
+                json.dumps(bundle_info).encode(),  # First call for bundle_info.json
+                ["longreadsv.model", "cnv.model", "bwa.model"]  # Second call for bundle members
+            ]
+
+            # Mock readgroup lines
+            mock_get_rg.return_value = ["@RG\tID:test\tSM:sample"]
+
+            pipeline.validate()
+            pipeline.configure()
+
+            dag = pipeline.build_dag()
+            all_jobs = [job for job in list(dag.waiting_jobs.keys()) + list(dag.ready_jobs.keys())]
+
+            # with --rgsm should use replace_rg during first pass
+            first_pass_job = [job for job in all_jobs if job.name == "calling-1"][0]
+            assert "--replace_rg" in first_pass_job.shell.nodes[0].args
+
+            # should use replace_rg in CNV calling
+            cnv_job = [job for job in all_jobs if job.name == "CNVscope"][0]
+            assert "--replace_rg" in cnv_job.shell.nodes[0].args
+
+            # should use replace_rg in SV calling
+            sv_job = [job for job in all_jobs if job.name == "LongReadSV"][0]
+            assert "--replace_rg" in sv_job.shell.nodes[0].args
 
 class TestPipelineCommandGeneration:
     """Test command generation for different pipeline configurations"""
