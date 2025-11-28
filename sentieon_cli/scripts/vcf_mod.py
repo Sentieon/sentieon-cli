@@ -623,27 +623,28 @@ def join2(f0, f1, f2, v0, v1, v2, pos, bed):
                 continue
         elif t == 'R':
             if k == 'RPA':
-                d0 = d1 = d2 = [-1] * (len(v.alt)+1)
-                if v0 and v0.info.get(k):
-                    s = v0.info.get(k)
-                    d0 = [i >= 0 and s[i] or -1 for i in m0]
-                if v1 and v1.info.get(k):
+                d1 = d2 = [-1] * (len(v.alt)+1)
+                if i1 > 0 and v1.info.get(k):
                     s = v1.info.get(k)
                     d1 = [i >= 0 and s[i] or -1 for i in m1]
-                if v2 and v2.info.get(k):
+                if i2 > 0 and v2.info.get(k):
                     s = v2.info.get(k)
                     d2 = [i >= 0 and s[i] or -1 for i in m2]
-                d = [max(e) for e in zip(d0,d1,d2)]
+                d = [max(e) for e in zip(d1,d2)]
                 if min(d) > 0:
                     v.info[k] = d
                     continue
         else:
             if k in ('STR', 'RU'):
-                d = None
-                d = d and d or v1 and v1.info.get(k)
-                d = d and d or v2 and v2.info.get(k)
-                d = d and d or v0 and v0.info.get(k)
-                if d:
+                if i1 > 0 and i2 > 0 and v1.info.get(k) == v2.info.get(k):
+                    d = v1.info.get(k)
+                elif i1 > 0:
+                    d = v1.info.get(k)
+                elif i2 > 0:
+                    d = v2.info.get(k)
+                else:
+                    d = None
+                if d is not None:
                     v.info[k] = d
                     continue
             elif k == 'DP':
