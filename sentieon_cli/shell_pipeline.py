@@ -131,7 +131,7 @@ class Pipeline(ShellNode):
     ):
         self.nodes = list(nodes)
         assert self.nodes  # Nodes cannot be empty
-        self.skip_pipe = skip_pipe
+        self.skip_pipe = set(skip_pipe) if skip_pipe else set()
         self.file_input = file_input
         self.file_output = file_output
 
@@ -162,7 +162,6 @@ class Pipeline(ShellNode):
         # We need to close these FDs in the parent after passing them to
         # children
         fds_to_close = []
-        skip_pipe = set(self.skip_pipe) if self.skip_pipe else set()
 
         # pass the file handle as input to the pipeline
         current_stdin = stdin
@@ -175,7 +174,7 @@ class Pipeline(ShellNode):
             for i in range(len(self.nodes) - 1):
                 read_fd = None
                 write_fd = None
-                if i not in skip_pipe:
+                if i not in self.skip_pipe:
                     # Create OS pipe
                     read_fd, write_fd = os.pipe()
                     fds_to_close.extend([read_fd, write_fd])
@@ -223,7 +222,19 @@ class Pipeline(ShellNode):
         return processes[-1]  # Return the last process handle
 
     def __str__(self) -> str:
-        return " | ".join(str(x) for x in self.nodes)
+        res = []
+        if self.file_input:
+            res.append(f"<'{self.file_input}' ")
+        res.append(str(self.nodes[0]))
+        for i, node in enumerate(self.nodes[1:]):
+            if i in self.skip_pipe:
+                res.append('; ')
+            else:
+                res.append(' | ')
+            res.append(str(node))
+        if self.file_output:
+            res.append(f" >'{self.file_output}'")
+        return "".join(res)
 
     def __repr__(self) -> str:
         return (
