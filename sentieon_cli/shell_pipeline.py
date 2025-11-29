@@ -228,9 +228,9 @@ class Pipeline(ShellNode):
         res.append(str(self.nodes[0]))
         for i, node in enumerate(self.nodes[1:]):
             if i in self.skip_pipe:
-                res.append('; ')
+                res.append("; ")
             else:
-                res.append(' | ')
+                res.append(" | ")
             res.append(str(node))
         if self.file_output:
             res.append(f" >'{self.file_output}'")
