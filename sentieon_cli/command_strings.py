@@ -1186,3 +1186,135 @@ def cmd_segdup_caller(
         str(out_segdup),
     ]
     return Pipeline(Command(*cmd))
+
+
+def cmd_bwa_extract(
+    out_bam: pathlib.Path,
+    out_fastq: pathlib.Path,
+    reference: pathlib.Path,
+    fastq1: pathlib.Path,
+    fastq2: Optional[pathlib.Path],
+    readgroup: str,
+    extract_model: pathlib.Path,
+    bwa_model: pathlib.Path,
+    threads=1,
+) -> Pipeline:
+    """BWA alignment with pgutil extract"""
+    fq_args = [str(fastq1)]
+    if fastq2:
+        fq_args.append(str(fastq2))
+    bwa_cmd = Command(
+        "sentieon",
+        "bwa",
+        "mem",
+        "-R",
+        readgroup,
+        "-t",
+        str(threads),
+        "-x",
+        str(bwa_model),
+        "-K",
+        "10000000",
+        str(reference),
+        *fq_args,
+    )
+
+    extract_cmd = Command(
+        "pgutil",
+        "extract",
+        "-t",
+        str(threads),
+        "-S",
+        "-PG",
+        "-m",
+        str(extract_model),
+        "-O",
+        "fastq_compression=1",
+        "-b",
+        str(out_bam),
+        "-o",
+        str(out_fastq),
+    )
+
+    return Pipeline(bwa_cmd, extract_cmd)
+
+
+def cmd_vg_convert_gfa(
+    output_gfa: pathlib.Path,
+    input_gbz: pathlib.Path,
+    reference_name="GRCh38",
+    threads=1,
+) -> Pipeline:
+    """Convert GBZ to GFA"""
+    cmd = [
+        "vg",
+        "convert",
+        "-t",
+        str(threads),
+        "-f",
+        "-Q",
+        reference_name,
+        str(input_gbz),
+    ]
+    return Pipeline(Command(*cmd), file_output=output_gfa)
+
+
+def cmd_vg_paths_fasta(
+    output_fasta: pathlib.Path,
+    input_gbz: pathlib.Path,
+) -> Pipeline:
+    """Extract haplotype sequences as FASTA"""
+    cmd = [
+        "vg",
+        "paths",
+        "-x",
+        str(input_gbz),
+        "-H",
+        "-F",
+    ]
+    return Pipeline(Command(*cmd), file_output=output_fasta)
+
+
+def cmd_minimap2_lift(
+    out_bam: pathlib.Path,
+    reference_fasta: pathlib.Path,
+    input_fastq: pathlib.Path,
+    gfa_file: pathlib.Path,
+    ref_fai: pathlib.Path,
+    readgroup: str,
+    minimap2_model: pathlib.Path,
+    minimap2_i: str = "16G",
+    threads=1,
+) -> Pipeline:
+    """Minimap2 alignment with pgutil lift"""
+    mm2_cmd = Command(
+        "sentieon",
+        "minimap2",
+        "-t",
+        str(threads),
+        "-R",
+        readgroup,
+        "-a",
+        "-y",
+        "-I",
+        minimap2_i,
+        "-x",
+        str(minimap2_model),
+        str(reference_fasta),
+        str(input_fastq),
+    )
+
+    lift_cmd = Command(
+        "pgutil",
+        "lift",
+        "-t",
+        str(threads),
+        "-F",
+        str(ref_fai),
+        "-g",
+        str(gfa_file),
+        "-o",
+        str(out_bam),
+    )
+
+    return Pipeline(mm2_cmd, lift_cmd)

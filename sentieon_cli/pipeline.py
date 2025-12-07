@@ -5,22 +5,59 @@ A pipeline class
 from abc import ABC, abstractmethod
 import argparse
 import multiprocessing as mp
+import os
 import pathlib
 import shutil
-from typing import Any, Dict, List
+import sys
+from typing import Any, Dict, List, Optional
 
 from .dag import DAG
 from .executor import BaseExecutor, DryRunExecutor, LocalExecutor
 from .logging import get_logger
 from .scheduler import ThreadScheduler
-from .util import __version__, tmp
+from .util import __version__, path_arg, tmp
 
 
 class BasePipeline(ABC):
     """A pipeline base class"""
 
-    params: Dict[str, Dict[str, Any]] = {}
-    positionals: Dict[str, Dict[str, Any]] = {}
+    params: Dict[str, Dict[str, Any]] = {
+        # Required arguments
+        "reference": {
+            "flags": ["-r", "--reference"],
+            "required": True,
+            "help": "fasta for reference genome.",
+            "type": path_arg(exists=True, is_file=True),
+        },
+        # Additional arguments
+        "cores": {
+            "flags": ["-t", "--cores"],
+            "help": (
+                "Number of threads/processes to use. Defaults to all "
+                "available."
+            ),
+            "default": mp.cpu_count(),
+        },
+        "dry_run": {
+            "help": "Print the commands without running them.",
+            "action": "store_true",
+        },
+        # Hidden arguments
+        "retain_tmpdir": {
+            "help": argparse.SUPPRESS,
+            "action": "store_true",
+        },
+        "skip_version_check": {
+            "help": argparse.SUPPRESS,
+            "action": "store_true",
+        },
+    }
+    positionals: Dict[str, Dict[str, Any]] = {
+        "output_vcf": {
+            "help": "Output VCF file. The file name must end in .vcf.gz",
+            "type": path_arg(),
+        },
+    }
 
     @classmethod
     def add_arguments(cls, parser: argparse.ArgumentParser):
@@ -56,10 +93,13 @@ class BasePipeline(ABC):
         self.logger.info("Starting sentieon-cli version: %s", __version__)
 
     def __init__(self) -> None:
+        self.reference: Optional[pathlib.Path] = None
         self.cores = mp.cpu_count()
         self.numa_nodes: List[str] = []
         self.dry_run = False
         self.retain_tmpdir = False
+        self.skip_version_check = False
+        self.output_vcf: Optional[pathlib.Path] = None
 
     def main(self, args: argparse.Namespace) -> None:
         """Run the DNAscope pipeline"""
@@ -98,6 +138,22 @@ class BasePipeline(ABC):
     @abstractmethod
     def validate(self) -> None:
         pass
+
+    def validate_output_vcf(self) -> None:
+        if not str(self.output_vcf).endswith(".vcf.gz"):
+            self.logger.error("The output file should end with '.vcf.gz'")
+            sys.exit(2)
+
+    def validate_ref(self) -> None:
+        # Confirm the presence of the reference index file
+        fai_file = str(self.reference) + ".fai"
+        if not os.path.isfile(fai_file):
+            self.logger.error(
+                "Fasta index file %s does not exist. Please index the "
+                "reference genome with 'samtools faidx'",
+                fai_file,
+            )
+            sys.exit(2)
 
     @abstractmethod
     def configure(self) -> None:
