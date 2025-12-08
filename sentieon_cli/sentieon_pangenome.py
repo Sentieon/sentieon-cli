@@ -182,6 +182,9 @@ class SentieonPangenome(BasePangenome):
         """Configure pipeline parameters"""
         pass
 
+    def build_dag(self) -> DAG:
+        return DAG()
+
     def build_first_dag(self) -> DAG:
         """Build the main DAG for the Sentieon pangenome pipeline"""
         assert self.reference
