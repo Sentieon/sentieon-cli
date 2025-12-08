@@ -9,7 +9,7 @@ import json
 import pathlib
 import shutil
 import sys
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple, Union
 
 import packaging.version
 
@@ -406,7 +406,7 @@ class SentieonPangenome(BasePangenome):
             rg2["ID"] = rg2["ID"] + "-mm2"
             rg2["LR"] = "1"
 
-            mm2_model: str | pathlib.Path = self.model_bundle.joinpath(
+            mm2_model: Union[str, pathlib.Path] = self.model_bundle.joinpath(
                 "minimap2.model"
             )
             mm2_xargs = []

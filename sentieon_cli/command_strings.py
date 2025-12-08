@@ -1345,7 +1345,7 @@ def cmd_minimap2_lift(
     gfa_file: pathlib.Path,
     ref_fai: pathlib.Path,
     readgroup: str,
-    minimap2_model: pathlib.Path | str,
+    minimap2_model: Union[pathlib.Path, str],
     minimap2_i: str = "16G",
     threads=1,
     mm2_xargs: List[str] = [],
