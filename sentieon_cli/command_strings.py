@@ -886,6 +886,69 @@ def cmd_kmc(
     return Pipeline(Command(*cmd))
 
 
+def cmd_extract_kmc(
+    output_prefix: pathlib.Path,
+    out_fastq: pathlib.Path,
+    input_aln: List[pathlib.Path],
+    reference: pathlib.Path,
+    extract_model: pathlib.Path,
+    tmp_dir: pathlib.Path,
+    threads=1,
+) -> Pipeline:
+    merge_cmd = Command(
+        "samtools",
+        "merge",
+        "-@",
+        str(threads),
+        "-u",
+        "--reference",
+        str(reference),
+        "-o",
+        "/dev/stdout",
+        *[str(x) for x in input_aln],
+    )
+    view_cmd = Command(
+        "samtools",
+        "view",
+        "-@",
+        str(threads),
+        "-ub",
+        "-F",
+        "0xf00",
+        "-",
+    )
+    extract_cmd = Command(
+        "pgutil",
+        "extract",
+        "-t",
+        str(threads),
+        "-T",
+        "tp,t0",
+        "-S",
+        "-PG",
+        "-m",
+        str(extract_model),
+        "-O",
+        "fastq_compression=1",
+        "-o",
+        str(out_fastq),
+        "-a",
+        "-",
+    )
+    kmc_cmd = Command(
+        "kmc",
+        "-k29",
+        "-m32",
+        "-okff",
+        f"-t{threads}",
+        "-fa",
+        "/dev/stdin",
+        str(output_prefix),
+        str(tmp_dir),
+    )
+    return Pipeline(merge_cmd, view_cmd, extract_cmd, kmc_cmd)
+
+
 def cmd_vg_haplotypes(
     output_gbz: pathlib.Path,
     kmer_file: pathlib.Path,
@@ -1282,9 +1345,10 @@ def cmd_minimap2_lift(
     gfa_file: pathlib.Path,
     ref_fai: pathlib.Path,
     readgroup: str,
-    minimap2_model: pathlib.Path,
+    minimap2_model: pathlib.Path | str,
     minimap2_i: str = "16G",
     threads=1,
+    mm2_xargs: List[str] = [],
 ) -> Pipeline:
     """Minimap2 alignment with pgutil lift"""
     mm2_cmd = Command(
@@ -1300,6 +1364,7 @@ def cmd_minimap2_lift(
         minimap2_i,
         "-x",
         str(minimap2_model),
+        *mm2_xargs,
         str(reference_fasta),
         str(input_fastq),
     )

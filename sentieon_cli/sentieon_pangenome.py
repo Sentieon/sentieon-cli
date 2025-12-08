@@ -5,14 +5,16 @@ Sentieon's pangenome alignment and variant calling pipeline
 import argparse
 import copy
 import itertools
+import json
 import pathlib
 import shutil
 import sys
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import packaging.version
 
 from . import command_strings as cmds
+from .archive import ar_load
 from .base_pangenome import BasePangenome
 from .dag import DAG
 from .driver import (
@@ -24,7 +26,7 @@ from .driver import (
 )
 from .job import Job
 from .shell_pipeline import Command, Pipeline
-from .util import check_version, parse_rg_line, path_arg, tmp
+from .util import __version__, check_version, parse_rg_line, path_arg, tmp
 
 SENT_PANGENOME_MIN_VERSIONS = {
     "kmc": None,
@@ -39,6 +41,13 @@ class SentieonPangenome(BasePangenome):
     params = BasePangenome.params
     params.update(
         {
+            # Required arguments
+            "sample_input": {
+                "flags": ["-i", "--sample_input"],
+                "nargs": "*",
+                "help": "sample BAM or CRAM file.",
+                "type": path_arg(exists=True, is_file=True),
+            },
             # Additional arguments
             "bed": {
                 "flags": ["-b", "--bed"],
@@ -55,6 +64,7 @@ class SentieonPangenome(BasePangenome):
 
     def __init__(self) -> None:
         super().__init__()
+        self.sample_input: List[pathlib.Path] = []
         self.bed: Optional[pathlib.Path] = None
 
     def main(self, args: argparse.Namespace) -> None:
@@ -76,10 +86,24 @@ class SentieonPangenome(BasePangenome):
     def validate(self) -> None:
         """Validate pipeline inputs"""
         self.validate_bundle()
-        self.validate_fastq_rg(r1_required=True)
+        self.validate_fastq_rg()
         self.validate_output_vcf()
         self.validate_ref()
         self.collect_readgroups()
+
+        if not self.sample_input and not self.r1_fastq:
+            self.logger.error(
+                "Please supply either the `--sample_input` or `--r1_fastq` "
+                "and `--readgroups` arguments"
+            )
+            sys.exit(2)
+
+        if self.sample_input and self.r1_fastq:
+            self.logger.error(
+                "Supplying both `--r1_fastq` and `--sample_input` is not "
+                "supported"
+            )
+            sys.exit(2)
 
         if not self.skip_version_check:
             for cmd, min_version in SENT_PANGENOME_MIN_VERSIONS.items():
@@ -93,8 +117,44 @@ class SentieonPangenome(BasePangenome):
             )
 
     def validate_bundle(self) -> None:
-        # TODO
-        pass
+        bundle_info_bytes = ar_load(
+            str(self.model_bundle) + "/bundle_info.json"
+        )
+        if isinstance(bundle_info_bytes, list):
+            bundle_info_bytes = b"{}"
+
+        bundle_info = json.loads(bundle_info_bytes.decode())
+        try:
+            req_version = packaging.version.Version(
+                bundle_info["minScriptVersion"]
+            )
+            bundle_pipeline = bundle_info["pipeline"]
+            self.tech: str = bundle_info["platform"].upper()
+        except KeyError:
+            self.logger.error(
+                "The model bundle does not have the expected attributes"
+            )
+            sys.exit(2)
+        if req_version > packaging.version.Version(__version__):
+            self.logger.error(
+                "The model bundle requires version %s or later of the "
+                "sentieon-cli.",
+                req_version,
+            )
+            sys.exit(2)
+        if bundle_pipeline != "Sentieon pangenome":
+            self.logger.error("The model bundle is for a different pipeline.")
+            sys.exit(2)
+
+        bundle_members = set(ar_load(str(self.model_bundle)))
+        if (
+            "dnascope.model" not in bundle_members
+            or "extract.model" not in bundle_members
+        ):
+            self.logger.error(
+                "Expected model files not found in the model bundle file"
+            )
+            sys.exit(2)
 
     def collect_readgroups(self) -> None:
         """Collect readgroup tags from all input files"""
@@ -124,6 +184,9 @@ class SentieonPangenome(BasePangenome):
 
     def build_first_dag(self) -> DAG:
         """Build the main DAG for the Sentieon pangenome pipeline"""
+        assert self.reference
+        assert self.model_bundle
+
         self.logger.info("Building the Sentieon pangenome DAG")
         dag = DAG()
 
@@ -143,13 +206,47 @@ class SentieonPangenome(BasePangenome):
         sample_gfa = self.tmp_dir.joinpath("sample-hap.gfa")
         sample_fasta = self.tmp_dir.joinpath("sample-hap.fa")
 
-        # KMC k-mer counting
-        kmc_job = self.build_kmc_job(kmer_prefix, 0)  # run in background
-        dag.add_job(kmc_job)
+        haplotype_dependencies: Set[Job] = set()
+        mm2_dependencies: Set[Job] = set()
+        bwa_bams: List[pathlib.Path] = []
+        lmr_fastqs: List[pathlib.Path] = []
+        bwa_jobs: List[Job] = []
+        dnascope_bams: List[pathlib.Path] = []
+        if self.r1_fastq:
+            # KMC k-mer counting
+            kmc_job = self.build_kmc_job(kmer_prefix, 0)  # run in background
+            dag.add_job(kmc_job)
+            haplotype_dependencies.add(kmc_job)
+
+            # BWA alignment and extraction
+            bwa_bams, lmr_fastqs, bwa_jobs = self.build_alignment_jobs()
+            for bwa_job in bwa_jobs:
+                dag.add_job(bwa_job)
+                mm2_dependencies.add(bwa_job)
+        else:
+            lmr_fq = self.tmp_dir.joinpath("sample_lmr.fq.gz")
+            dnascope_bams = copy.deepcopy(self.sample_input)
+            extract_kmc_job = Job(
+                cmds.cmd_extract_kmc(
+                    kmer_prefix,
+                    lmr_fq,
+                    self.sample_input,
+                    self.reference,
+                    self.model_bundle.joinpath("extract.model"),
+                    self.tmp_dir,
+                    threads=self.cores,
+                ),
+                "extract-kmc",
+                self.cores,
+            )
+            dag.add_job(extract_kmc_job)
+            haplotype_dependencies.add(extract_kmc_job)
+            mm2_dependencies.add(extract_kmc_job)
+            lmr_fastqs.append(lmr_fq)
 
         # vg haplotypes - create a sample-specific pangenome
         haplotypes_job = self.build_haplotypes_job(sample_pangenome, kmer_file)
-        dag.add_job(haplotypes_job, {kmc_job})
+        dag.add_job(haplotypes_job, haplotype_dependencies)
 
         # convert the sample pangenome
         gfa_job = self.build_gfa_job(sample_gfa, sample_pangenome)
@@ -157,37 +254,39 @@ class SentieonPangenome(BasePangenome):
         dag.add_job(gfa_job, {haplotypes_job})
         dag.add_job(fasta_job, {haplotypes_job})
 
-        # BWA alignment and extraction
-        bwa_bams, lmr_fastqs, bwa_jobs = self.build_alignment_jobs()
-        for bwa_job in bwa_jobs:
-            dag.add_job(bwa_job)
-
         # minimap2 alignment of the extracted fastq
+        dnascope_dependencies = set()
         mm2_bams, mm2_jobs = self.build_minimap2_lift_job(
             lmr_fastqs,
             sample_fasta,
             sample_gfa,
         )
         for mm2_job in mm2_jobs:
-            dag.add_job(mm2_job, set(bwa_jobs) | {gfa_job, fasta_job})
+            dag.add_job(mm2_job, mm2_dependencies | {gfa_job, fasta_job})
+            dnascope_dependencies.add(mm2_job)
 
-        # Deduplication for both BWA and MM2
-        bwa_lc_job, bwa_dedup_job = self.build_dedup_job(
-            out_bwa_aln, bwa_bams, "bwa"
-        )
-        mm2_lc_job, mm2_dedup_job = self.build_dedup_job(
-            out_mm2_aln, mm2_bams, "mm2"
-        )
-        dag.add_job(bwa_lc_job, set(bwa_jobs))
-        dag.add_job(bwa_dedup_job, {bwa_lc_job})
-        dag.add_job(mm2_lc_job, set(mm2_jobs))
-        dag.add_job(mm2_dedup_job, {mm2_lc_job})
+        # With fastq input, perform dedup
+        if self.r1_fastq:
+            dnascope_bams.append(out_bwa_aln)
+            dnascope_bams.append(out_mm2_aln)
+            bwa_lc_job, bwa_dedup_job = self.build_dedup_job(
+                out_bwa_aln, bwa_bams, "bwa"
+            )
+            mm2_lc_job, mm2_dedup_job = self.build_dedup_job(
+                out_mm2_aln, mm2_bams, "mm2"
+            )
+            dag.add_job(bwa_lc_job, set(bwa_jobs))
+            dag.add_job(bwa_dedup_job, {bwa_lc_job})
+            dnascope_dependencies.add(bwa_dedup_job)
+            dag.add_job(mm2_lc_job, set(mm2_jobs))
+            dag.add_job(mm2_dedup_job, {mm2_lc_job})
+            dnascope_dependencies.add(mm2_dedup_job)
 
         # Variant Calling
         dnascope_job, apply_job = self.build_variant_calling_jobs(
-            [out_bwa_aln, out_mm2_aln]
+            dnascope_bams
         )
-        dag.add_job(dnascope_job, {bwa_dedup_job, mm2_dedup_job})
+        dag.add_job(dnascope_job, dnascope_dependencies)
         dag.add_job(apply_job, {dnascope_job})
 
         return dag
@@ -305,7 +404,15 @@ class SentieonPangenome(BasePangenome):
             mm2_bam = self.tmp_dir.joinpath(f"sample_mm2_{i}.bam")
             rg2 = copy.deepcopy(rg)
             rg2["ID"] = rg2["ID"] + "-mm2"
+            rg2["LR"] = "1"
 
+            mm2_model: str | pathlib.Path = self.model_bundle.joinpath(
+                "minimap2.model"
+            )
+            mm2_xargs = []
+            if self.tech.upper() == "ULTIMA":
+                mm2_model = "sr"
+                mm2_xargs = ["-2", "--secondary=yes"]
             mm2_job = Job(
                 cmds.cmd_minimap2_lift(
                     mm2_bam,
@@ -315,8 +422,9 @@ class SentieonPangenome(BasePangenome):
                     pathlib.Path(str(self.reference) + ".fai"),
                     "@RG\\t"
                     + "\\t".join([f"{x[0]}:{x[1]}" for x in rg2.items()]),
-                    self.model_bundle.joinpath("minimap2.model"),
+                    mm2_model,
                     threads=self.cores,
+                    mm2_xargs=mm2_xargs,
                 ),
                 f"mm2-lift-{i}",
                 self.cores,
@@ -379,6 +487,8 @@ class SentieonPangenome(BasePangenome):
             read_filters.append(
                 f"IndelLeftAlignReadTransform,rgid={rg["ID"]}-mm2"
             )
+        if self.tech.upper() == "ULTIMA":
+            read_filters.append("UltimaReadFilter")
 
         # DNAscope raw calling with mixed inputs
         driver = Driver(
