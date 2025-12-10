@@ -1378,8 +1378,20 @@ def cmd_minimap2_lift(
         str(ref_fai),
         "-g",
         str(gfa_file),
+    )
+
+    sort_cmd = Command(
+        "sentieon",
+        "util",
+        "sort",
+        "-i",
+        "-",
+        "-r",
+        str(reference_fasta),
+        "-t",
+        str(threads),
         "-o",
         str(out_bam),
     )
 
-    return Pipeline(mm2_cmd, lift_cmd)
+    return Pipeline(mm2_cmd, lift_cmd, sort_cmd)

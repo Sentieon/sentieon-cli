@@ -488,7 +488,7 @@ class SentieonPangenome(BasePangenome):
         read_filters = []
         for rg in self.parsed_readgroups:
             read_filters.append(
-                f"IndelLeftAlignReadTransform,rgid={rg["ID"]}-mm2"
+                f"IndelLeftAlignReadTransform,rgid={rg['ID']}-mm2"
             )
         if self.tech.upper() == "ULTIMA":
             read_filters.append("UltimaReadFilter")
