@@ -3,6 +3,7 @@ Pangenome alignment and variant calling pipeline
 """
 
 import argparse
+import copy
 from enum import Enum
 import itertools
 import json
@@ -172,7 +173,7 @@ class SampleSex(Enum):
 class PangenomePipeline(BasePangenome):
     """The Pangenome pipeline"""
 
-    params = BasePangenome.params
+    params = copy.deepcopy(BasePangenome.params)
     params.update(
         {
             # Required arguments

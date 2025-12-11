@@ -2,6 +2,7 @@
 A base class for pangenome pipelines
 """
 
+import copy
 import pathlib
 import sys
 from typing import List, Optional
@@ -15,7 +16,7 @@ from .util import parse_rg_line, path_arg
 class BasePangenome(BasePipeline):
     """A pipeline base class for short reads"""
 
-    params = BasePipeline.params
+    params = copy.deepcopy(BasePipeline.params)
     params.update(
         {
             # Required arguments

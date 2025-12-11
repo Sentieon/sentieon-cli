@@ -81,7 +81,7 @@ def determine_shards_from_fai(
 class SentieonPangenome(BasePangenome):
     """The Sentieon pangenome pipeline"""
 
-    params = BasePangenome.params
+    params = copy.deepcopy(BasePangenome.params)
     params.update(
         {
             # Required arguments
@@ -100,6 +100,13 @@ class SentieonPangenome(BasePangenome):
                 ),
                 "type": path_arg(exists=True, is_file=True),
             },
+            "pop_vcf": {
+                "flags": ["--pop_vcf"],
+                "help": (
+                    "A VCF containing annotations for use with DNAModelApply."
+                ),
+                "type": path_arg(exists=True, is_file=True),
+            }
         }
     )
 
@@ -109,6 +116,7 @@ class SentieonPangenome(BasePangenome):
         super().__init__()
         self.sample_input: List[pathlib.Path] = []
         self.bed: Optional[pathlib.Path] = None
+        self.pop_vcf: Optional[pathlib.Path] = None
 
     def main(self, args: argparse.Namespace) -> None:
         """Run the pipeline"""
@@ -255,7 +263,6 @@ class SentieonPangenome(BasePangenome):
         sample_gfa = self.tmp_dir.joinpath("sample-hap.gfa")
         sample_fasta = self.tmp_dir.joinpath("sample-hap.fa")
         raw_vcf = self.tmp_dir.joinpath("sample-dnascope.vcf.gz")
-        pop_vcf = self.tmp_dir.joinpath("sample_pop.vcf.gz")
         transfer_vcf = self.tmp_dir.joinpath("sample-dnascope_transfer.vcf.gz")
 
         haplotype_dependencies: Set[Job] = set()
@@ -342,17 +349,10 @@ class SentieonPangenome(BasePangenome):
         dag.add_job(dnascope_job, dnascope_dependencies)
         apply_dependencies.add(dnascope_job)
 
-        # transfer annotations from the bundle vcf
-        pop_vcf_data = ar_load(
-            str(self.model_bundle) + "/dnascope.model.vcf.gz"
-        )
-        if pop_vcf_data:  # the pop vcf is present in the bundle
-            assert type(pop_vcf_data) is bytes
-            if not self.dry_run:
-                with open(pop_vcf, "rb") as fh:
-                    fh.write(pop_vcf_data)
+        # transfer annotations from the pop_vcf
+        if self.pop_vcf:
             transfer_jobs, concat_job = self.build_transfer_jobs(
-                transfer_vcf, raw_vcf, pop_vcf
+                transfer_vcf, raw_vcf
             )
             for job in transfer_jobs:
                 dag.add_job(job, {dnascope_job})
@@ -589,15 +589,16 @@ class SentieonPangenome(BasePangenome):
         )
 
     def build_transfer_jobs(
-        self, out_vcf, raw_vcf, pop_vcf
+        self, out_vcf: pathlib.Path, raw_vcf: pathlib.Path
     ) -> Tuple[List[Job], Job]:
         """Transfer annotations from the pop_vcf to the raw_vcf"""
+        assert self.pop_vcf
 
         # Generate merge rules from the population VCF
         merge_rules = "AC_v20:sum,AF_v20:sum,AC_genomes:sum,AF_genomes:sum"
         if not self.dry_run:
             kvpat = re.compile(r'(.*?)=(".*?"|.*?)(?:,|$)')
-            cmd = ["bcftools", "view", "-h", str(pop_vcf)]
+            cmd = ["bcftools", "view", "-h", str(self.pop_vcf)]
             p = sp.run(cmd, capture_output=True, text=True)
             id_fields: List[str] = []
             for line in p.stdout.split("\n"):
@@ -625,7 +626,7 @@ class SentieonPangenome(BasePangenome):
                 cmds.cmd_bcftools_merge_trim(
                     shard_vcf,
                     raw_vcf,
-                    pop_vcf,
+                    self.pop_vcf,
                     trim_script,
                     str(shard),
                     merge_rules=merge_rules,
