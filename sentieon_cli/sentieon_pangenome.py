@@ -348,8 +348,9 @@ class SentieonPangenome(BasePangenome):
         )
         if pop_vcf_data:  # the pop vcf is present in the bundle
             assert type(pop_vcf_data) is bytes
-            with open(pop_vcf, "rb") as fh:
-                fh.write(pop_vcf_data)
+            if not self.dry_run:
+                with open(pop_vcf, "rb") as fh:
+                    fh.write(pop_vcf_data)
             transfer_jobs, concat_job = self.build_transfer_jobs(
                 transfer_vcf, raw_vcf, pop_vcf
             )
@@ -593,20 +594,22 @@ class SentieonPangenome(BasePangenome):
         """Transfer annotations from the pop_vcf to the raw_vcf"""
 
         # Generate merge rules from the population VCF
-        kvpat = re.compile(r'(.*?)=(".*?"|.*?)(?:,|$)')
-        cmd = ["bcftools", "view", "-h", str(pop_vcf)]
-        p = sp.run(cmd, capture_output=True, text=True)
-        id_fields: List[str] = []
-        for line in p.stdout.split("\n"):
-            if not line.startswith("##INFO"):
-                continue
-            if ",Number=A" not in line:
-                continue
-            s = line.index("<")
-            e = line.index(">")
-            d = dict(kvpat.findall(line[s + 1 : e]))  # noqa: E203
-            id_fields.append(d["ID"])
-        merge_rules = ",".join([x + ":sum" for x in id_fields])
+        merge_rules = "AC_v20:sum,AF_v20:sum,AC_genomes:sum,AF_genomes:sum"
+        if not self.dry_run:
+            kvpat = re.compile(r'(.*?)=(".*?"|.*?)(?:,|$)')
+            cmd = ["bcftools", "view", "-h", str(pop_vcf)]
+            p = sp.run(cmd, capture_output=True, text=True)
+            id_fields: List[str] = []
+            for line in p.stdout.split("\n"):
+                if not line.startswith("##INFO"):
+                    continue
+                if ",Number=A" not in line:
+                    continue
+                s = line.index("<")
+                e = line.index(">")
+                d = dict(kvpat.findall(line[s + 1 : e]))  # noqa: E203
+                id_fields.append(d["ID"])
+            merge_rules = ",".join([x + ":sum" for x in id_fields])
 
         # Merge VCFs by shards
         sharded_vcfs: List[pathlib.Path] = []
