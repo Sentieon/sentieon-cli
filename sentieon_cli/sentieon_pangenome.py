@@ -7,11 +7,15 @@ import copy
 import itertools
 import json
 import pathlib
+import re
 import shutil
+import subprocess as sp
 import sys
-from typing import Dict, List, Optional, Set, Tuple, Union
+from typing import Dict, List, NamedTuple, Optional, Set, Tuple, Union
 
 import packaging.version
+
+from importlib_resources import files
 
 from . import command_strings as cmds
 from .archive import ar_load
@@ -25,6 +29,7 @@ from .driver import (
     LocusCollector,
 )
 from .job import Job
+from .logging import get_logger
 from .shell_pipeline import Command, Pipeline
 from .util import __version__, check_version, parse_rg_line, path_arg, tmp
 
@@ -32,7 +37,45 @@ SENT_PANGENOME_MIN_VERSIONS = {
     "kmc": None,
     "sentieon driver": packaging.version.Version("202503.02"),
     "vg": None,
+    "bcftools": packaging.version.Version("1.20"),
 }
+
+logger = get_logger(__name__)
+
+
+class Shard(NamedTuple):
+    contig: str
+    start: int
+    stop: int
+
+    def __str__(self) -> str:
+        return f"{self.contig}:{self.start}-{self.stop}"
+
+
+def determine_shards_from_fai(
+    ref_fai: pathlib.Path, step: int
+) -> List[Union[Shard, str]]:
+    """Generate shards of the genome from the fasta index"""
+    shards: List[Union[Shard, str]] = []
+    with open(ref_fai) as fh:
+        for line in fh:
+            pos = 1
+            try:
+                chrom, length, _offset, _ll, _lb = line.rstrip().split()
+            except ValueError:
+                logger.error(
+                    "Reference fasta index (.fai) does not have the expected "
+                    "format"
+                )
+                raise
+
+            length_i = int(length)
+            while pos <= length_i:
+                end = pos + step - 1
+                end = end if end < length_i else length_i
+                shards.append(Shard(chrom, pos, end))
+                pos = end + 1
+    return shards
 
 
 class SentieonPangenome(BasePangenome):
@@ -72,6 +115,9 @@ class SentieonPangenome(BasePangenome):
         self.handle_arguments(args)
         self.setup_logging(args)
         self.validate()
+        self.shards = determine_shards_from_fai(
+            pathlib.Path(str(self.reference) + ".fai"), 10 * 1000 * 1000
+        )
 
         tmp_dir_str = tmp()
         self.tmp_dir = pathlib.Path(tmp_dir_str)
@@ -208,6 +254,9 @@ class SentieonPangenome(BasePangenome):
         sample_pangenome = self.tmp_dir.joinpath("sample_pangenome.gbz")
         sample_gfa = self.tmp_dir.joinpath("sample-hap.gfa")
         sample_fasta = self.tmp_dir.joinpath("sample-hap.fa")
+        raw_vcf = self.tmp_dir.joinpath("sample-dnascope.vcf.gz")
+        pop_vcf = self.tmp_dir.joinpath("sample_pop.vcf.gz")
+        transfer_vcf = self.tmp_dir.joinpath("sample-dnascope_transfer.vcf.gz")
 
         haplotype_dependencies: Set[Job] = set()
         mm2_dependencies: Set[Job] = set()
@@ -276,7 +325,7 @@ class SentieonPangenome(BasePangenome):
                 out_bwa_aln, bwa_bams, "bwa"
             )
             mm2_lc_job, mm2_dedup_job = self.build_dedup_job(
-                out_mm2_aln, mm2_bams, "mm2"
+                out_mm2_aln, mm2_bams, "mm2", left_align=True
             )
             dag.add_job(bwa_lc_job, set(bwa_jobs))
             dag.add_job(bwa_dedup_job, {bwa_lc_job})
@@ -284,13 +333,34 @@ class SentieonPangenome(BasePangenome):
             dag.add_job(mm2_lc_job, set(mm2_jobs))
             dag.add_job(mm2_dedup_job, {mm2_lc_job})
             dnascope_dependencies.add(mm2_dedup_job)
+        else:
+            dnascope_bams.extend(mm2_bams)
 
-        # Variant Calling
-        dnascope_job, apply_job = self.build_variant_calling_jobs(
-            dnascope_bams
-        )
+        # DNAscope calling with bwa and mm2 input
+        apply_dependencies = set()
+        dnascope_job = self.build_dnascope_job(raw_vcf, dnascope_bams)
         dag.add_job(dnascope_job, dnascope_dependencies)
-        dag.add_job(apply_job, {dnascope_job})
+        apply_dependencies.add(dnascope_job)
+
+        # transfer annotations from the bundle vcf
+        pop_vcf_data = ar_load(
+            str(self.model_bundle) + "/dnascope.model.vcf.gz"
+        )
+        if pop_vcf_data:  # the pop vcf is present in the bundle
+            assert type(pop_vcf_data) is bytes
+            with open(pop_vcf, "rb") as fh:
+                fh.write(pop_vcf_data)
+            transfer_jobs, concat_job = self.build_transfer_jobs(
+                transfer_vcf, raw_vcf, pop_vcf
+            )
+            for job in transfer_jobs:
+                dag.add_job(job, {dnascope_job})
+            dag.add_job(concat_job, set(transfer_jobs))
+            apply_dependencies.add(concat_job)
+
+        # DNAModelApply
+        apply_job = self.build_dnamodelapply_job(transfer_vcf)
+        dag.add_job(apply_job, apply_dependencies)
 
         return dag
 
@@ -442,15 +512,24 @@ class SentieonPangenome(BasePangenome):
         output_bam,
         input_bam: List[pathlib.Path],
         tag: str,
+        left_align=False,
     ) -> Tuple[Job, Job]:
         """Build deduplication job"""
         score_file = self.tmp_dir.joinpath(f"sample-{tag}-score.txt.gz")
+
+        read_filters = []
+        if left_align:
+            for rg in self.parsed_readgroups:
+                read_filters.append(
+                    f"IndelLeftAlignReadTransform,rgid={rg['ID']}-mm2"
+                )
 
         # LocusCollector + Dedup
         driver = Driver(
             reference=self.reference,
             thread_count=self.cores,
             input=input_bam,
+            read_filter=read_filters,
         )
         driver.add_algo(LocusCollector(score_file))
 
@@ -464,6 +543,7 @@ class SentieonPangenome(BasePangenome):
             reference=self.reference,
             thread_count=self.cores,
             input=input_bam,
+            read_filter=read_filters,
         )
         driver2.add_algo(Dedup(output_bam, score_file))
 
@@ -475,25 +555,17 @@ class SentieonPangenome(BasePangenome):
 
         return lc_job, dedup_job
 
-    def build_variant_calling_jobs(
+    def build_dnascope_job(
         self,
+        out_vcf: pathlib.Path,
         input_bams: List[pathlib.Path],
-    ) -> Tuple[Job, Job]:
-        """Build DNAscope raw calling and model apply jobs"""
+    ) -> Job:
         assert self.model_bundle
-        assert self.output_vcf
-
-        raw_vcf = self.tmp_dir.joinpath("sample-dnascope.vcf.gz")
 
         read_filters = []
-        for rg in self.parsed_readgroups:
-            read_filters.append(
-                f"IndelLeftAlignReadTransform,rgid={rg['ID']}-mm2"
-            )
         if self.tech.upper() == "ULTIMA":
             read_filters.append("UltimaReadFilter")
 
-        # DNAscope raw calling with mixed inputs
         driver = Driver(
             reference=self.reference,
             thread_count=self.cores,
@@ -501,39 +573,103 @@ class SentieonPangenome(BasePangenome):
             interval=self.bed,
             read_filter=read_filters,
         )
-
         driver.add_algo(
             DNAscope(
-                raw_vcf,
+                out_vcf,
                 model=self.model_bundle.joinpath("dnascope.model"),
                 pcr_indel_model="NONE",
                 dbsnp=self.dbsnp,
             )
         )
-
-        dnascope_job = Job(
+        return Job(
             Pipeline(Command(*driver.build_cmd())),
             "dnascope-raw",
             self.cores,
         )
 
-        # Model application
-        driver2 = Driver(
+    def build_transfer_jobs(
+        self, out_vcf, raw_vcf, pop_vcf
+    ) -> Tuple[List[Job], Job]:
+        """Transfer annotations from the pop_vcf to the raw_vcf"""
+
+        # Generate merge rules from the population VCF
+        kvpat = re.compile(r'(.*?)=(".*?"|.*?)(?:,|$)')
+        cmd = ["bcftools", "view", "-h", str(pop_vcf)]
+        p = sp.run(cmd, capture_output=True, text=True)
+        id_fields: List[str] = []
+        for line in p.stdout.split("\n"):
+            if not line.startswith("##INFO"):
+                continue
+            if ",Number=A" not in line:
+                continue
+            s = line.index("<")
+            e = line.index(">")
+            d = dict(kvpat.findall(line[s + 1 : e]))  # noqa: E203
+            id_fields.append(d["ID"])
+        merge_rules = ",".join([x + ":sum" for x in id_fields])
+
+        # Merge VCFs by shards
+        sharded_vcfs: List[pathlib.Path] = []
+        sharded_merge_jobs: List[Job] = []
+        trim_script = pathlib.Path(
+            str(files("sentieon_cli.scripts").joinpath("trimalt.py"))
+        ).resolve()
+        for i, shard in enumerate(self.shards):
+            shard_vcf = self.tmp_dir.joinpath(
+                f"sample-dnascope_transfer-shard{i}.vcf.gz"
+            )
+            merge_job = Job(
+                cmds.cmd_bcftools_merge_trim(
+                    shard_vcf,
+                    raw_vcf,
+                    pop_vcf,
+                    trim_script,
+                    str(shard),
+                    merge_rules=merge_rules,
+                    merge_xargs=[
+                        "--no-version",
+                        "--regions-overlap",
+                        "pos",
+                        "-m",
+                        "all",
+                    ],
+                    view_xargs=["--no-version"],
+                ),
+                f"merge-trim-{i}",
+                1,
+            )
+            sharded_merge_jobs.append(merge_job)
+            sharded_vcfs.append(shard_vcf)
+
+        # Concat all shards
+        concat_job = Job(
+            cmds.bcftools_concat(
+                out_vcf,
+                sharded_vcfs,
+                xargs=["--no-version", "--threads", str(self.cores)],
+            ),
+            "merge-trim-concat",
+            self.cores,
+        )
+        return (sharded_merge_jobs, concat_job)
+
+    def build_dnamodelapply_job(self, in_vcf) -> Job:
+        assert self.output_vcf
+        assert self.model_bundle
+
+        driver = Driver(
             reference=self.reference,
             thread_count=self.cores,
         )
-        driver2.add_algo(
+        driver.add_algo(
             DNAModelApply(
                 model=self.model_bundle.joinpath("dnascope.model"),
-                vcf=raw_vcf,
+                vcf=in_vcf,
                 output=self.output_vcf,
             )
         )
-
-        apply_job = Job(
-            Pipeline(Command(*driver2.build_cmd())),
+        return Job(
+            Pipeline(Command(*driver.build_cmd())),
             "model-apply",
             self.cores,
         )
-
-        return dnascope_job, apply_job

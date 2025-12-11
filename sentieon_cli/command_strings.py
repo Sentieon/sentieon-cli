@@ -438,13 +438,19 @@ def bcftools_subset(
 def bcftools_concat(
     out_vcf: pathlib.Path,
     in_vcfs: List[pathlib.Path],
+    xargs: List[str] = ["-aD"],
 ) -> Pipeline:
     """VCF processing through bcftools concat"""
     concat_cmd = Command(
-        "bcftools", "concat", "-aD", *[str(x) for x in in_vcfs]
+        "bcftools",
+        "concat",
+        "-W=tbi",
+        "--output",
+        str(out_vcf),
+        *xargs,
+        *[str(x) for x in in_vcfs],
     )
-    convert_cmd = Command("sentieon", "util", "vcfconvert", "-", str(out_vcf))
-    return Pipeline(concat_cmd, convert_cmd)
+    return Pipeline(concat_cmd)
 
 
 def filter_norm(
@@ -1395,3 +1401,43 @@ def cmd_minimap2_lift(
     )
 
     return Pipeline(mm2_cmd, lift_cmd, sort_cmd)
+
+
+def cmd_bcftools_merge_trim(
+    shard_vcf: pathlib.Path,
+    raw_vcf: pathlib.Path,
+    pop_vcf: pathlib.Path,
+    trim_script: pathlib.Path,
+    shard: str,
+    merge_rules: str,
+    merge_xargs: List[str] = [],
+    view_xargs: List[str] = [],
+):
+    """Merge and trim variants"""
+    merge_cmd = Command(
+        "bcftools",
+        "merge",
+        "-r",
+        shard,
+        *merge_xargs,
+        "-i",
+        merge_rules,
+        str(raw_vcf),
+        str(pop_vcf),
+    )
+
+    trim_cmd = Command(
+        "python3",
+        str(trim_script),
+    )
+
+    view_cmd = Command(
+        "bcftools",
+        "view",
+        *view_xargs,
+        "-W=tbi",
+        "-o",
+        str(shard_vcf),
+    )
+
+    return Pipeline(merge_cmd, trim_cmd, view_cmd)
