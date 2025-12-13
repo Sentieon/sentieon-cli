@@ -40,6 +40,11 @@ SENT_PANGENOME_MIN_VERSIONS = {
     "bcftools": packaging.version.Version("1.20"),
 }
 
+# With multiple aligned input files, require kff-tools
+MULTI_INPUT_MIN_VERSIONS = {
+    "kff-tools": None,
+}
+
 logger = get_logger(__name__)
 
 
@@ -106,7 +111,7 @@ class SentieonPangenome(BasePangenome):
                     "A VCF containing annotations for use with DNAModelApply."
                 ),
                 "type": path_arg(exists=True, is_file=True),
-            }
+            },
         }
     )
 
@@ -163,6 +168,10 @@ class SentieonPangenome(BasePangenome):
             for cmd, min_version in SENT_PANGENOME_MIN_VERSIONS.items():
                 if not check_version(cmd, min_version):
                     sys.exit(2)
+            if self.sample_input and len(self.sample_input) > 1:
+                for cmd, min_version in MULTI_INPUT_MIN_VERSIONS.items():
+                    if not check_version(cmd, min_version):
+                        sys.exit(2)
 
         if self.bed is None:
             self.logger.info(
@@ -212,7 +221,7 @@ class SentieonPangenome(BasePangenome):
 
     def collect_readgroups(self) -> None:
         """Collect readgroup tags from all input files"""
-        self.parsed_readgroups: List[Dict[str, str]] = []
+        self.fastq_readgroups: List[Dict[str, str]] = []
         sample_sm = None
         for rg in self.readgroups:
             parsed_rg = parse_rg_line(rg.replace(r"\t", "\t"))
@@ -230,7 +239,14 @@ class SentieonPangenome(BasePangenome):
                         rg,
                     )
                     sys.exit(2)
-            self.parsed_readgroups.append(parsed_rg)
+            self.fastq_readgroups.append(parsed_rg)
+
+        self.bam_readgroups: List[Dict[str, str]] = []
+        for aln in self.sample_input:
+            aln_rgs = cmds.get_rg_lines(aln, self.dry_run)
+            for rg_line in aln_rgs:
+                self.bam_readgroups.append(parse_rg_line(rg_line))
+                break  # currently just the first RG line for each input
 
     def configure(self) -> None:
         """Configure pipeline parameters"""
@@ -283,25 +299,47 @@ class SentieonPangenome(BasePangenome):
                 dag.add_job(bwa_job)
                 mm2_dependencies.add(bwa_job)
         else:
-            lmr_fq = self.tmp_dir.joinpath("sample_lmr.fq.gz")
             dnascope_bams = copy.deepcopy(self.sample_input)
-            extract_kmc_job = Job(
-                cmds.cmd_extract_kmc(
-                    kmer_prefix,
-                    lmr_fq,
-                    self.sample_input,
-                    self.reference,
-                    self.model_bundle.joinpath("extract.model"),
-                    self.tmp_dir,
-                    threads=self.cores,
-                ),
-                "extract-kmc",
-                self.cores,
-            )
-            dag.add_job(extract_kmc_job)
-            haplotype_dependencies.add(extract_kmc_job)
-            mm2_dependencies.add(extract_kmc_job)
-            lmr_fastqs.append(lmr_fq)
+            all_kmer_files: List[pathlib.Path] = []
+            all_extract_jobs: Set = set()
+            for i, aln in enumerate(self.sample_input):
+                kmer_prefix_i = self.tmp_dir.joinpath(f"sample.fq.kmer-{i}")
+                kmer_file_i = pathlib.Path(str(kmer_prefix_i) + ".kff")
+                lmr_fq = self.tmp_dir.joinpath(f"sample_lmr-{i}.fq.gz")
+                extract_kmc_job = Job(
+                    cmds.cmd_extract_kmc(
+                        kmer_prefix_i,
+                        lmr_fq,
+                        aln,
+                        self.reference,
+                        self.model_bundle.joinpath("extract.model"),
+                        self.tmp_dir,
+                        threads=self.cores,
+                    ),
+                    "extract-kmc-{i}",
+                    self.cores,
+                )
+                dag.add_job(extract_kmc_job)
+                haplotype_dependencies.add(extract_kmc_job)
+                mm2_dependencies.add(extract_kmc_job)
+                lmr_fastqs.append(lmr_fq)
+                all_kmer_files.append(kmer_file_i)
+                all_extract_jobs.add(extract_kmc_job)
+
+            if len(all_kmer_files) > 1:
+                # Merge kff files
+                merge_kff_job = Job(
+                    cmds.cmd_merge_kff(
+                        kmer_file,
+                        all_kmer_files,
+                    ),
+                    "merge-kff",
+                    self.cores,
+                )
+                dag.add_job(merge_kff_job, all_extract_jobs)
+                haplotype_dependencies.add(merge_kff_job)
+            else:
+                kmer_file = all_kmer_files[0]
 
         # vg haplotypes - create a sample-specific pangenome
         haplotypes_job = self.build_haplotypes_job(sample_pangenome, kmer_file)
@@ -378,7 +416,7 @@ class SentieonPangenome(BasePangenome):
         bwa_jobs: List[Job] = []
         for i, (r1, r2, rg) in enumerate(
             itertools.zip_longest(
-                self.r1_fastq, self.r2_fastq, self.parsed_readgroups
+                self.r1_fastq, self.r2_fastq, self.fastq_readgroups
             )
         ):
             sample_bam = self.tmp_dir.joinpath(f"sample_aligned_{i}.bam")
@@ -471,10 +509,13 @@ class SentieonPangenome(BasePangenome):
     ) -> Tuple[List[pathlib.Path], List[Job]]:
         """Build minimap2 alignment with pgutil lift job"""
         assert self.model_bundle
+        assert self.reference
 
         mm2_bams: List[pathlib.Path] = []
         mm2_jobs: List[Job] = []
-        for i, (fq, rg) in enumerate(zip(lmr_fastqs, self.parsed_readgroups)):
+        for i, (fq, rg) in enumerate(
+            zip(lmr_fastqs, self.fastq_readgroups + self.bam_readgroups)
+        ):
             mm2_bam = self.tmp_dir.joinpath(f"sample_mm2_{i}.bam")
             rg2 = copy.deepcopy(rg)
             rg2["ID"] = rg2["ID"] + "-mm2"
@@ -493,7 +534,7 @@ class SentieonPangenome(BasePangenome):
                     sample_fasta,
                     fq,
                     sample_gfa,
-                    pathlib.Path(str(self.reference) + ".fai"),
+                    self.reference,
                     "@RG\\t"
                     + "\\t".join([f"{x[0]}:{x[1]}" for x in rg2.items()]),
                     mm2_model,
@@ -520,7 +561,7 @@ class SentieonPangenome(BasePangenome):
 
         read_filters = []
         if left_align:
-            for rg in self.parsed_readgroups:
+            for rg in self.fastq_readgroups:
                 read_filters.append(
                     f"IndelLeftAlignReadTransform,rgid={rg['ID']}-mm2"
                 )

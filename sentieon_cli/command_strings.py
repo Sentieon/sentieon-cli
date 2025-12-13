@@ -895,35 +895,26 @@ def cmd_kmc(
 def cmd_extract_kmc(
     output_prefix: pathlib.Path,
     out_fastq: pathlib.Path,
-    input_aln: List[pathlib.Path],
+    input_aln: pathlib.Path,
     reference: pathlib.Path,
     extract_model: pathlib.Path,
     tmp_dir: pathlib.Path,
     threads=1,
 ) -> Pipeline:
-    merge_cmd = Command(
-        "samtools",
-        "merge",
-        "-@",
-        str(threads),
-        "-u",
-        "--reference",
-        str(reference),
-        "-o",
-        "/dev/stdout",
-        *[str(x) for x in input_aln],
-    )
     view_cmd = Command(
         "samtools",
         "view",
+        "--reference",
+        str(reference),
         "-@",
         str(threads),
         "-ub",
         "-F",
         "0xf00",
-        "-",
+        str(input_aln),
     )
     extract_cmd = Command(
+        "sentieon",
         "pgutil",
         "extract",
         "-t",
@@ -952,7 +943,23 @@ def cmd_extract_kmc(
         str(output_prefix),
         str(tmp_dir),
     )
-    return Pipeline(merge_cmd, view_cmd, extract_cmd, kmc_cmd)
+    return Pipeline(view_cmd, extract_cmd, kmc_cmd)
+
+
+def cmd_merge_kff(
+    output_kff: pathlib.Path,
+    input_kff: List[pathlib.Path],
+) -> Pipeline:
+    return Pipeline(
+        Command(
+            "kff-tools",
+            "merge",
+            "-o",
+            str(output_kff),
+            "-i",
+            *[str(x) for x in input_kff],
+        )
+    )
 
 
 def cmd_vg_haplotypes(
@@ -1289,6 +1296,7 @@ def cmd_bwa_extract(
     )
 
     extract_cmd = Command(
+        "sentieon",
         "pgutil",
         "extract",
         "-t",
@@ -1346,10 +1354,10 @@ def cmd_vg_paths_fasta(
 
 def cmd_minimap2_lift(
     out_bam: pathlib.Path,
-    reference_fasta: pathlib.Path,
+    sample_fasta: pathlib.Path,
     input_fastq: pathlib.Path,
     gfa_file: pathlib.Path,
-    ref_fai: pathlib.Path,
+    reference_fasta: pathlib.Path,
     readgroup: str,
     minimap2_model: Union[pathlib.Path, str],
     minimap2_i: str = "16G",
@@ -1371,17 +1379,18 @@ def cmd_minimap2_lift(
         "-x",
         str(minimap2_model),
         *mm2_xargs,
-        str(reference_fasta),
+        str(sample_fasta),
         str(input_fastq),
     )
 
     lift_cmd = Command(
+        "sentieon",
         "pgutil",
         "lift",
         "-t",
         str(threads),
         "-F",
-        str(ref_fai),
+        str(reference_fasta) + ".fai",
         "-g",
         str(gfa_file),
     )
