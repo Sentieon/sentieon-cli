@@ -1450,3 +1450,24 @@ def cmd_bcftools_merge_trim(
     )
 
     return Pipeline(merge_cmd, trim_cmd, view_cmd)
+
+
+def cmd_bcftools_view_regions(
+    out_vcf: pathlib.Path,
+    in_vcf: pathlib.Path,
+    regions: str,
+):
+    return Pipeline(
+        Command(
+            "bcftools",
+            "view",
+            "-W=tbi",
+            "-O",
+            "z",
+            "-o",
+            str(out_vcf),
+            "--regions",
+            regions,
+            str(in_vcf),
+        )
+    )

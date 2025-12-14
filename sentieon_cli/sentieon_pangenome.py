@@ -57,11 +57,9 @@ class Shard(NamedTuple):
         return f"{self.contig}:{self.start}-{self.stop}"
 
 
-def determine_shards_from_fai(
-    ref_fai: pathlib.Path, step: int
-) -> List[Union[Shard, str]]:
+def determine_shards_from_fai(ref_fai: pathlib.Path, step: int) -> List[Shard]:
     """Generate shards of the genome from the fasta index"""
-    shards: List[Union[Shard, str]] = []
+    shards: List[Shard] = []
     with open(ref_fai) as fh:
         for line in fh:
             pos = 1
@@ -81,6 +79,32 @@ def determine_shards_from_fai(
                 shards.append(Shard(chrom, pos, end))
                 pos = end + 1
     return shards
+
+
+def vcf_contigs(
+    in_vcf: pathlib.Path, dry_run=False
+) -> Dict[str, Optional[int]]:
+    """Report the contigs in the input VCF"""
+    if dry_run:
+        return {
+            "chr1": 100,
+            "chr2": 200,
+            "chr3": 300,
+        }
+    kvpat = re.compile(r'(.*?)=(".*?"|.*?)(?:,|$)')
+    cmd = ["bcftools", "view", "-h", str(in_vcf)]
+    p = sp.run(cmd, capture_output=True, text=True)
+    contigs: Dict[str, Optional[int]] = {}
+    for line in p.stdout.split("\n"):
+        if not line.startswith("##contig"):
+            continue
+        s = line.index("<")
+        e = line.index(">")
+        d = dict(kvpat.findall(line[s + 1 : e]))  # noqa: E203
+        ctg: str = d["ID"]
+        length: Optional[str] = d.get("length", None)
+        contigs[ctg] = int(length) if length else None
+    return contigs
 
 
 class SentieonPangenome(BasePangenome):
@@ -131,6 +155,8 @@ class SentieonPangenome(BasePangenome):
         self.shards = determine_shards_from_fai(
             pathlib.Path(str(self.reference) + ".fai"), 10 * 1000 * 1000
         )
+        if self.pop_vcf:
+            self.pop_vcf_contigs = vcf_contigs(self.pop_vcf, self.dry_run)
 
         tmp_dir_str = tmp()
         self.tmp_dir = pathlib.Path(tmp_dir_str)
@@ -659,32 +685,53 @@ class SentieonPangenome(BasePangenome):
         trim_script = pathlib.Path(
             str(files("sentieon_cli.scripts").joinpath("trimalt.py"))
         ).resolve()
+        seen_contigs: Set[str] = set()
         for i, shard in enumerate(self.shards):
-            shard_vcf = self.tmp_dir.joinpath(
-                f"sample-dnascope_transfer-shard{i}.vcf.gz"
-            )
-            merge_job = Job(
-                cmds.cmd_bcftools_merge_trim(
-                    shard_vcf,
-                    raw_vcf,
-                    self.pop_vcf,
-                    trim_script,
-                    str(shard),
-                    merge_rules=merge_rules,
-                    merge_xargs=[
-                        "--no-version",
-                        "--regions-overlap",
-                        "pos",
-                        "-m",
-                        "all",
-                    ],
-                    view_xargs=["--no-version"],
-                ),
-                f"merge-trim-{i}",
-                1,
-            )
-            sharded_merge_jobs.append(merge_job)
-            sharded_vcfs.append(shard_vcf)
+            # Extract contigs not in the pop vcf as merge will fail
+            if shard.contig not in self.pop_vcf_contigs:
+                if shard.contig in seen_contigs:
+                    continue
+                seen_contigs.add(shard.contig)
+                subset_vcf = self.tmp_dir.joinpath(
+                    f"sample-dnascope_transfer-subset{i}.vcf.gz"
+                )
+                view_job = Job(
+                    cmds.cmd_bcftools_view_regions(
+                        subset_vcf,
+                        raw_vcf,
+                        regions=shard.contig,
+                    ),
+                    "merge-trim-extra",
+                    1,
+                )
+                sharded_merge_jobs.append(view_job)
+                sharded_vcfs.append(subset_vcf)
+            else:
+                shard_vcf = self.tmp_dir.joinpath(
+                    f"sample-dnascope_transfer-shard{i}.vcf.gz"
+                )
+                merge_job = Job(
+                    cmds.cmd_bcftools_merge_trim(
+                        shard_vcf,
+                        raw_vcf,
+                        self.pop_vcf,
+                        trim_script,
+                        str(shard),
+                        merge_rules=merge_rules,
+                        merge_xargs=[
+                            "--no-version",
+                            "--regions-overlap",
+                            "pos",
+                            "-m",
+                            "all",
+                        ],
+                        view_xargs=["--no-version"],
+                    ),
+                    f"merge-trim-{i}",
+                    1,
+                )
+                sharded_merge_jobs.append(merge_job)
+                sharded_vcfs.append(shard_vcf)
 
         # Concat all shards
         concat_job = Job(
