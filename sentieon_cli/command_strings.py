@@ -1455,8 +1455,14 @@ def cmd_bcftools_merge_trim(
 def cmd_bcftools_view_regions(
     out_vcf: pathlib.Path,
     in_vcf: pathlib.Path,
-    regions: str,
+    regions: Optional[str] = None,
+    regions_file: Optional[pathlib.Path] = None,
 ):
+    xargs = []
+    if regions:
+        xargs.extend(["--regions", regions])
+    if regions_file:
+        xargs.extend(["--regions_file", str(regions_file)])
     return Pipeline(
         Command(
             "bcftools",
@@ -1466,8 +1472,7 @@ def cmd_bcftools_view_regions(
             "z",
             "-o",
             str(out_vcf),
-            "--regions",
-            regions,
+            *xargs,
             str(in_vcf),
         )
     )

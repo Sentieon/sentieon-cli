@@ -57,27 +57,41 @@ class Shard(NamedTuple):
         return f"{self.contig}:{self.start}-{self.stop}"
 
 
-def determine_shards_from_fai(ref_fai: pathlib.Path, step: int) -> List[Shard]:
-    """Generate shards of the genome from the fasta index"""
-    shards: List[Shard] = []
+def parse_fai(ref_fai: pathlib.Path) -> Dict[str, Dict[str, int]]:
+    """Parse a faidx index"""
+    contigs: Dict[str, Dict[str, int]] = {}
     with open(ref_fai) as fh:
         for line in fh:
-            pos = 1
             try:
-                chrom, length, _offset, _ll, _lb = line.rstrip().split()
-            except ValueError:
+                chrom, length, offset, lb, lw = line.rstrip().split()
+            except ValueError as err:
                 logger.error(
                     "Reference fasta index (.fai) does not have the expected "
                     "format"
                 )
-                raise
+                raise err
+            contigs[chrom] = {
+                "length": int(length),
+                "offset": int(offset),
+                "linebases": int(lb),
+                "linewidth": int(lw),
+            }
+    return contigs
 
-            length_i = int(length)
-            while pos <= length_i:
-                end = pos + step - 1
-                end = end if end < length_i else length_i
-                shards.append(Shard(chrom, pos, end))
-                pos = end + 1
+
+def determine_shards_from_fai(
+    fai_data: Dict[str, Dict[str, int]], step: int
+) -> List[Shard]:
+    """Generate shards of the genome from the fasta index"""
+    shards: List[Shard] = []
+    for ctg, d in fai_data.items():
+        pos = 1
+        length = d["length"]
+        while pos <= length:
+            end = pos + step - 1
+            end = end if end < length else length
+            shards.append(Shard(ctg, pos, end))
+            pos = end + 1
     return shards
 
 
@@ -152,11 +166,13 @@ class SentieonPangenome(BasePangenome):
         self.handle_arguments(args)
         self.setup_logging(args)
         self.validate()
+        self.fai_data = parse_fai(pathlib.Path(str(self.reference) + ".fai"))
         self.shards = determine_shards_from_fai(
-            pathlib.Path(str(self.reference) + ".fai"), 10 * 1000 * 1000
+            self.fai_data, 10 * 1000 * 1000
         )
         if self.pop_vcf:
             self.pop_vcf_contigs = vcf_contigs(self.pop_vcf, self.dry_run)
+            self.logger.debug("VCF contigs are: %s", self.pop_vcf_contigs)
 
         tmp_dir_str = tmp()
         self.tmp_dir = pathlib.Path(tmp_dir_str)
@@ -691,15 +707,27 @@ class SentieonPangenome(BasePangenome):
             if shard.contig not in self.pop_vcf_contigs:
                 if shard.contig in seen_contigs:
                     continue
+                self.logger.info(
+                    "Skipping transfer for contig: %s", shard.contig
+                )
                 seen_contigs.add(shard.contig)
                 subset_vcf = self.tmp_dir.joinpath(
                     f"sample-dnascope_transfer-subset{i}.vcf.gz"
                 )
+
+                # Use a BED file for unusual contig names
+                subset_bed = self.tmp_dir.joinpath(
+                    f"sample-dnascope_transfer-subset{i}.bed"
+                )
+                ctg_len = self.fai_data[shard.contig]["length"]
+                with open(subset_bed, "w") as fh:
+                    print(f"{shard.contig}\t0\t{ctg_len}", file=fh)
+
                 view_job = Job(
                     cmds.cmd_bcftools_view_regions(
                         subset_vcf,
                         raw_vcf,
-                        regions=shard.contig,
+                        regions_file=subset_bed,
                     ),
                     "merge-trim-extra",
                     1,
@@ -707,6 +735,7 @@ class SentieonPangenome(BasePangenome):
                 sharded_merge_jobs.append(view_job)
                 sharded_vcfs.append(subset_vcf)
             else:
+                self.logger.debug("Transferring shard: %s", shard)
                 shard_vcf = self.tmp_dir.joinpath(
                     f"sample-dnascope_transfer-shard{i}.vcf.gz"
                 )
