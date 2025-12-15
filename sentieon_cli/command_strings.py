@@ -1462,11 +1462,12 @@ def cmd_bcftools_view_regions(
     if regions:
         xargs.extend(["--regions", regions])
     if regions_file:
-        xargs.extend(["--regions_file", str(regions_file)])
+        xargs.extend(["--regions-file", str(regions_file)])
     return Pipeline(
         Command(
             "bcftools",
             "view",
+            "--no-version",
             "-W=tbi",
             "-O",
             "z",

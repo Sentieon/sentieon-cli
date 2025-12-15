@@ -720,8 +720,9 @@ class SentieonPangenome(BasePangenome):
                     f"sample-dnascope_transfer-subset{i}.bed"
                 )
                 ctg_len = self.fai_data[shard.contig]["length"]
-                with open(subset_bed, "w") as fh:
-                    print(f"{shard.contig}\t0\t{ctg_len}", file=fh)
+                if not self.dry_run:
+                    with open(subset_bed, "w") as fh:
+                        print(f"{shard.contig}\t0\t{ctg_len}", file=fh)
 
                 view_job = Job(
                     cmds.cmd_bcftools_view_regions(
