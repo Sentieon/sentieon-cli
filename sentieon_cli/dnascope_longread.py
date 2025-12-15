@@ -186,7 +186,7 @@ class DNAscopeLRPipeline(BasePipeline):
             "minimap2_args": {
                 # "help": "Extra arguments for sentieon minimap2.",
                 "help": argparse.SUPPRESS,
-                "default": "-Y",
+                "default": "-YL",
             },
             "repeat_model": {
                 "help": argparse.SUPPRESS,
@@ -224,7 +224,7 @@ class DNAscopeLRPipeline(BasePipeline):
         self.input_ref: Optional[pathlib.Path] = None
         self.fastq_taglist = "*"
         self.bam_format = False
-        self.minimap2_args = "-Y"
+        self.minimap2_args = "-YL"
         self.util_sort_args = (
             "--cram_write_options version=3.0,compressor=rans"
         )
