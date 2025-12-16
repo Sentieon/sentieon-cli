@@ -116,6 +116,8 @@ jobs:
           poetry install
       - name: Install bcftools
         run: |
+          sudo apt-get update
+          sudo apt-get install libcurl4-gnutls-dev
           curl -L https://github.com/samtools/bcftools/releases/download/1.22/bcftools-1.22.tar.bz2 | tar -jxf -
           cd bcftools-1.22
           ./configure && sudo make install
@@ -236,6 +238,8 @@ jobs:
           poetry install
       - name: Install bcftools
         run: |
+          sudo apt-get update
+          sudo apt-get install libcurl4-gnutls-dev
           curl -L https://github.com/samtools/bcftools/releases/download/1.22/bcftools-1.22.tar.bz2 | tar -jxf -
           cd bcftools-1.22
           ./configure && sudo make install
