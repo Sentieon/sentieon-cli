@@ -117,7 +117,10 @@ jobs:
       - name: Install bcftools
         run: |
           sudo apt-get update
-          sudo apt-get install -y bcftools
+          sudo apt-get install libcurl4-gnutls-dev
+          curl -L https://github.com/samtools/bcftools/releases/download/1.22/bcftools-1.22.tar.bz2 | tar -jxf -
+          cd bcftools-1.22
+          ./configure && sudo make install
       - name: Install samtools
         run: |
           curl -L https://github.com/samtools/samtools/releases/download/1.19.2/samtools-1.19.2.tar.bz2 | tar -jxf -
@@ -236,7 +239,10 @@ jobs:
       - name: Install bcftools
         run: |
           sudo apt-get update
-          sudo apt-get install -y bcftools
+          sudo apt-get install libcurl4-gnutls-dev
+          curl -L https://github.com/samtools/bcftools/releases/download/1.22/bcftools-1.22.tar.bz2 | tar -jxf -
+          cd bcftools-1.22
+          ./configure && sudo make install
       - name: Install samtools
         run: |
           curl -L https://github.com/samtools/samtools/releases/download/1.19.2/samtools-1.19.2.tar.bz2 | tar -jxf -

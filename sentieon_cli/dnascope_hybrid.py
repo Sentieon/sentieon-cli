@@ -4,7 +4,6 @@ Functionality for the DNAscope hybrid pipeline
 
 import argparse
 import copy
-import multiprocessing as mp
 import json
 import pathlib
 import sys
@@ -29,6 +28,7 @@ from .driver import (
 from .dnascope import call_cnvs, DNAscopePipeline
 from .dnascope_longread import DNAscopeLRPipeline
 from .job import Job
+from .pipeline import BasePipeline
 from .shell_pipeline import Command, Pipeline
 from .util import (
     __version__,
@@ -43,7 +43,7 @@ from .util import (
 CALLING_MIN_VERSIONS = {
     "sentieon driver": packaging.version.Version("202503.01"),
     "bedtools": None,
-    "bcftools": packaging.version.Version("1.10"),
+    "bcftools": packaging.version.Version("1.20"),
     "samtools": packaging.version.Version("1.16"),
 }
 
@@ -110,191 +110,162 @@ class RgInfo:
 class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
     """The DNAscope Hybrid pipeline"""
 
-    params: Dict[str, Dict[str, Any]] = {
-        "lr_aln": {
-            "nargs": "*",
-            "help": "Long-read BAM or CRAM files.",
-            "type": path_arg(exists=True, is_file=True),
-            "required": True,
-        },
-        "model_bundle": {
-            "flags": ["-m", "--model_bundle"],
-            "help": "The model bundle file.",
-            "required": True,
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "reference": {
-            "flags": ["-r", "--reference"],
-            "required": True,
-            "help": "fasta for reference genome.",
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "sr_aln": {
-            "nargs": "*",
-            "help": "Short-read BAM or CRAM files",
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "sr_r1_fastq": {
-            "nargs": "*",
-            "help": "Short-read R1 fastq files",
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "sr_r2_fastq": {
-            "nargs": "*",
-            "help": "Short-read R2 fastq files",
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "sr_readgroups": {
-            "nargs": "*",
-            "help": "Readgroup information for the short-read fastq files",
-        },
-        "bam_format": {
-            "help": (
-                "Use the BAM format instead of CRAM for output aligned files"
-            ),
-            "action": "store_true",
-        },
-        "bed": {
-            "flags": ["-b", "--bed"],
-            "help": (
-                "Region BED file. Supplying this file will limit variant "
-                "calling to the intervals inside the BED file."
-            ),
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "cores": {
-            "flags": ["-t", "--cores"],
-            "help": (
-                "Number of threads/processes to use. Defaults to all "
-                "available."
-            ),
-            "default": mp.cpu_count(),
-        },
-        "dbsnp": {
-            "flags": ["-d", "--dbsnp"],
-            "help": (
-                "dbSNP vcf file Supplying this file will annotate variants "
-                "with their dbSNP refSNP ID numbers."
-            ),
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "dry_run": {
-            "help": "Print the commands without running them.",
-            "action": "store_true",
-        },
-        "gvcf": {
-            "flags": ["-g", "--gvcf"],
-            "help": (
-                "Generate a gVCF output file along with the VCF."
-                " (default generates only the VCF)"
-            ),
-            "action": "store_true",
-        },
-        "lr_align_input": {
-            "help": (
-                "Align the input long-read BAM/CRAM/uBAM file to the "
-                "reference genome"
-            ),
-            "action": "store_true",
-        },
-        "lr_input_ref": {
-            "help": (
-                "Used to decode the input long-read alignment file. Required "
-                "if the input file is in the CRAM/uCRAM formats."
-            ),
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "rgsm": {
-            "help": (
-                "Overwrite the SM tag of the input readgroups for "
-                "compatibility"
-            )
-        },
-        "skip_cnv": {
-            "help": "Skip CNV calling.",
-            "action": "store_true",
-        },
-        "skip_metrics": {
-            "help": "Skip all metrics collection and multiQC",
-            "action": "store_true",
-        },
-        "skip_mosdepth": {
-            "help": "Skip QC with mosdepth.",
-            "action": "store_true",
-        },
-        "skip_multiqc": {
-            "help": "Skip multiQC report generation.",
-            "action": "store_true",
-        },
-        "skip_svs": {
-            "help": "Skip SV calling",
-            "action": "store_true",
-        },
-        "sr_duplicate_marking": {
-            "help": "Options for duplicate marking.",
-            "choices": ["markdup", "rmdup", "none"],
-            "default": "markdup",
-        },
-        "bwa_args": {
-            # help="Extra arguments for sentieon bwa",
-            "help": argparse.SUPPRESS,
-            "default": "",
-        },
-        "bwa_k": {
-            # help="The '-K' argument in bwa",
-            "help": argparse.SUPPRESS,
-            "default": 100000000,
-        },
-        "bwt_max_mem": {
-            # Manually set `bwt_max_mem`
-            "help": argparse.SUPPRESS,
-        },
-        "lr_fastq_taglist": {
-            # help="A comma-separated list of tags to retain. Defaults to "
-            # "'%(default)s' and the 'RG' tag is required",
-            "help": argparse.SUPPRESS,
-            "default": "*",
-        },
-        "lr_read_filter": {
-            "help": argparse.SUPPRESS,
-        },
-        "minimap2_args": {
-            # help="Extra arguments for sentieon minimap2",
-            "help": argparse.SUPPRESS,
-            "default": "-Y",
-        },
-        "no_split_alignment": {
-            "help": argparse.SUPPRESS,
-            "action": "store_true",
-        },
-        "retain_tmpdir": {
-            "help": argparse.SUPPRESS,
-            "action": "store_true",
-        },
-        "skip_version_check": {
-            "help": argparse.SUPPRESS,
-            "action": "store_true",
-        },
-        "skip_model_apply": {
-            "help": argparse.SUPPRESS,
-            "action": "store_true",
-        },
-        "sr_read_filter": {
-            "help": argparse.SUPPRESS,
-        },
-        "util_sort_args": {
-            # help="Extra arguments for sentieon util sort",
-            "help": argparse.SUPPRESS,
-            "default": "--cram_write_options version=3.0,compressor=rans",
-        },
-    }
-
-    positionals: Dict[str, Dict[str, Any]] = {
-        "output_vcf": {
-            "help": "Output VCF File. The file name must end in .vcf.gz",
-            "type": path_arg(),
-        },
-    }
+    params = copy.deepcopy(BasePipeline.params)
+    params.update(
+        {
+            "lr_aln": {
+                "nargs": "*",
+                "help": "Long-read BAM or CRAM files.",
+                "type": path_arg(exists=True, is_file=True),
+                "required": True,
+            },
+            "model_bundle": {
+                "flags": ["-m", "--model_bundle"],
+                "help": "The model bundle file.",
+                "required": True,
+                "type": path_arg(exists=True, is_file=True),
+            },
+            "sr_aln": {
+                "nargs": "*",
+                "help": "Short-read BAM or CRAM files",
+                "type": path_arg(exists=True, is_file=True),
+            },
+            "sr_r1_fastq": {
+                "nargs": "*",
+                "help": "Short-read R1 fastq files",
+                "type": path_arg(exists=True, is_file=True),
+            },
+            "sr_r2_fastq": {
+                "nargs": "*",
+                "help": "Short-read R2 fastq files",
+                "type": path_arg(exists=True, is_file=True),
+            },
+            "sr_readgroups": {
+                "nargs": "*",
+                "help": "Readgroup information for the short-read fastq files",
+            },
+            "bam_format": {
+                "help": (
+                    "Use the BAM format instead of CRAM for output aligned "
+                    "files."
+                ),
+                "action": "store_true",
+            },
+            "bed": {
+                "flags": ["-b", "--bed"],
+                "help": (
+                    "Region BED file. Supplying this file will limit variant "
+                    "calling to the intervals inside the BED file."
+                ),
+                "type": path_arg(exists=True, is_file=True),
+            },
+            "dbsnp": {
+                "flags": ["-d", "--dbsnp"],
+                "help": (
+                    "dbSNP vcf file Supplying this file will annotate "
+                    "variants with their dbSNP refSNP ID numbers."
+                ),
+                "type": path_arg(exists=True, is_file=True),
+            },
+            "gvcf": {
+                "flags": ["-g", "--gvcf"],
+                "help": (
+                    "Generate a gVCF output file along with the VCF."
+                    " (default generates only the VCF)"
+                ),
+                "action": "store_true",
+            },
+            "lr_align_input": {
+                "help": (
+                    "Align the input long-read BAM/CRAM/uBAM file to the "
+                    "reference genome"
+                ),
+                "action": "store_true",
+            },
+            "lr_input_ref": {
+                "help": (
+                    "Used to decode the input long-read alignment file. "
+                    "Required if the input file is in the CRAM/uCRAM formats."
+                ),
+                "type": path_arg(exists=True, is_file=True),
+            },
+            "rgsm": {
+                "help": (
+                    "Overwrite the SM tag of the input readgroups for "
+                    "compatibility"
+                )
+            },
+            "skip_cnv": {
+                "help": "Skip CNV calling.",
+                "action": "store_true",
+            },
+            "skip_metrics": {
+                "help": "Skip all metrics collection and multiQC",
+                "action": "store_true",
+            },
+            "skip_mosdepth": {
+                "help": "Skip QC with mosdepth.",
+                "action": "store_true",
+            },
+            "skip_multiqc": {
+                "help": "Skip multiQC report generation.",
+                "action": "store_true",
+            },
+            "skip_svs": {
+                "help": "Skip SV calling",
+                "action": "store_true",
+            },
+            "sr_duplicate_marking": {
+                "help": "Options for duplicate marking.",
+                "choices": ["markdup", "rmdup", "none"],
+                "default": "markdup",
+            },
+            "bwa_args": {
+                # help="Extra arguments for sentieon bwa",
+                "help": argparse.SUPPRESS,
+                "default": "",
+            },
+            "bwa_k": {
+                # help="The '-K' argument in bwa",
+                "help": argparse.SUPPRESS,
+                "default": 100000000,
+            },
+            "bwt_max_mem": {
+                # Manually set `bwt_max_mem`
+                "help": argparse.SUPPRESS,
+            },
+            "lr_fastq_taglist": {
+                # help="A comma-separated list of tags to retain. Defaults to "
+                # "'%(default)s' and the 'RG' tag is required",
+                "help": argparse.SUPPRESS,
+                "default": "*",
+            },
+            "lr_read_filter": {
+                "help": argparse.SUPPRESS,
+            },
+            "minimap2_args": {
+                # help="Extra arguments for sentieon minimap2",
+                "help": argparse.SUPPRESS,
+                "default": "-Y",
+            },
+            "no_split_alignment": {
+                "help": argparse.SUPPRESS,
+                "action": "store_true",
+            },
+            "skip_model_apply": {
+                "help": argparse.SUPPRESS,
+                "action": "store_true",
+            },
+            "sr_read_filter": {
+                "help": argparse.SUPPRESS,
+            },
+            "util_sort_args": {
+                # help="Extra arguments for sentieon util sort",
+                "help": argparse.SUPPRESS,
+                "default": "--cram_write_options version=3.0,compressor=rans",
+            },
+        }
+    )
 
     def __init__(self) -> None:
         super().__init__()

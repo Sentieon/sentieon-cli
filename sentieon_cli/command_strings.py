@@ -438,13 +438,19 @@ def bcftools_subset(
 def bcftools_concat(
     out_vcf: pathlib.Path,
     in_vcfs: List[pathlib.Path],
+    xargs: List[str] = ["-aD"],
 ) -> Pipeline:
     """VCF processing through bcftools concat"""
     concat_cmd = Command(
-        "bcftools", "concat", "-aD", *[str(x) for x in in_vcfs]
+        "bcftools",
+        "concat",
+        "-W=tbi",
+        "--output",
+        str(out_vcf),
+        *xargs,
+        *[str(x) for x in in_vcfs],
     )
-    convert_cmd = Command("sentieon", "util", "vcfconvert", "-", str(out_vcf))
-    return Pipeline(concat_cmd, convert_cmd)
+    return Pipeline(concat_cmd)
 
 
 def filter_norm(
@@ -886,6 +892,70 @@ def cmd_kmc(
     return Pipeline(Command(*cmd))
 
 
+def cmd_extract_kmc(
+    output_prefix: pathlib.Path,
+    out_fastq: pathlib.Path,
+    input_aln: List[pathlib.Path],
+    reference: pathlib.Path,
+    extract_model: pathlib.Path,
+    tmp_dir: pathlib.Path,
+    threads=1,
+) -> Pipeline:
+    merge_cmd = Command(
+        "samtools",
+        "merge",
+        "--reference",
+        str(reference),
+        "-@",
+        str(threads),
+        "-u",
+        "-o",
+        "/dev/stdout",
+        *[str(x) for x in input_aln],
+    )
+    view_cmd = Command(
+        "samtools",
+        "view",
+        "-@",
+        str(threads),
+        "-ub",
+        "-F",
+        "0xf00",
+        "-",
+    )
+    extract_cmd = Command(
+        "sentieon",
+        "pgutil",
+        "extract",
+        "-t",
+        str(threads),
+        "-T",
+        "tp,t0",
+        "-S",
+        "-PG",
+        "-m",
+        str(extract_model),
+        "-O",
+        "fastq_compression=1",
+        "-o",
+        str(out_fastq),
+        "-a",
+        "-",
+    )
+    kmc_cmd = Command(
+        "kmc",
+        "-k29",
+        "-m32",
+        "-okff",
+        f"-t{threads}",
+        "-fa",
+        "/dev/stdin",
+        str(output_prefix),
+        str(tmp_dir),
+    )
+    return Pipeline(merge_cmd, view_cmd, extract_cmd, kmc_cmd)
+
+
 def cmd_vg_haplotypes(
     output_gbz: pathlib.Path,
     kmer_file: pathlib.Path,
@@ -1186,3 +1256,232 @@ def cmd_segdup_caller(
         str(out_segdup),
     ]
     return Pipeline(Command(*cmd))
+
+
+def cmd_bwa_extract(
+    out_bam: pathlib.Path,
+    out_fastq: pathlib.Path,
+    reference: pathlib.Path,
+    fastq1: List[pathlib.Path],
+    fastq2: List[pathlib.Path],
+    readgroup: str,
+    extract_model: pathlib.Path,
+    bwa_model: pathlib.Path,
+    threads=1,
+    unzip: str = "gzip",
+) -> Pipeline:
+    """BWA alignment with pgutil extract"""
+    fq1_cmd = Pipeline(
+        Command(
+            unzip,
+            "-dc",
+            *[str(x) for x in fastq1],
+        )
+    )
+    fq2_cmd = Pipeline(
+        Command(
+            unzip,
+            "-dc",
+            *[str(x) for x in fastq2],
+        )
+    )
+
+    bwa_cmd = Command(
+        "sentieon",
+        "bwa",
+        "mem",
+        "-R",
+        readgroup,
+        "-t",
+        str(threads),
+        "-x",
+        str(bwa_model),
+        "-K",
+        "10000000",
+        str(reference),
+        InputProcSub(fq1_cmd),
+        InputProcSub(fq2_cmd),
+    )
+
+    extract_cmd = Command(
+        "sentieon",
+        "pgutil",
+        "extract",
+        "-t",
+        str(threads),
+        "-S",
+        "-PG",
+        "-m",
+        str(extract_model),
+        "-O",
+        "fastq_compression=1",
+        "-b",
+        str(out_bam),
+        "-o",
+        str(out_fastq),
+    )
+
+    return Pipeline(bwa_cmd, extract_cmd)
+
+
+def cmd_vg_convert_gfa(
+    output_gfa: pathlib.Path,
+    input_gbz: pathlib.Path,
+    reference_name="GRCh38",
+    threads=1,
+) -> Pipeline:
+    """Convert GBZ to GFA"""
+    cmd = [
+        "vg",
+        "convert",
+        "-t",
+        str(threads),
+        "-f",
+        "-Q",
+        reference_name,
+        str(input_gbz),
+    ]
+    return Pipeline(Command(*cmd), file_output=output_gfa)
+
+
+def cmd_vg_paths_fasta(
+    output_fasta: pathlib.Path,
+    input_gbz: pathlib.Path,
+) -> Pipeline:
+    """Extract haplotype sequences as FASTA"""
+    cmd = [
+        "vg",
+        "paths",
+        "-x",
+        str(input_gbz),
+        "-H",
+        "-F",
+    ]
+    return Pipeline(Command(*cmd), file_output=output_fasta)
+
+
+def cmd_minimap2_lift(
+    out_bam: pathlib.Path,
+    sample_fasta: pathlib.Path,
+    input_fastq: pathlib.Path,
+    gfa_file: pathlib.Path,
+    reference_fasta: pathlib.Path,
+    readgroup: str,
+    minimap2_model: Union[pathlib.Path, str],
+    minimap2_i: str = "16G",
+    threads=1,
+    mm2_xargs: List[str] = [],
+) -> Pipeline:
+    """Minimap2 alignment with pgutil lift"""
+    mm2_cmd = Command(
+        "sentieon",
+        "minimap2",
+        "-t",
+        str(threads),
+        "-R",
+        readgroup,
+        "-a",
+        "-y",
+        "-I",
+        minimap2_i,
+        "-x",
+        str(minimap2_model),
+        *mm2_xargs,
+        str(sample_fasta),
+        str(input_fastq),
+    )
+
+    lift_cmd = Command(
+        "sentieon",
+        "pgutil",
+        "lift",
+        "-t",
+        str(threads),
+        "-F",
+        str(reference_fasta) + ".fai",
+        "-g",
+        str(gfa_file),
+    )
+
+    sort_cmd = Command(
+        "sentieon",
+        "util",
+        "sort",
+        "-i",
+        "-",
+        "-r",
+        str(reference_fasta),
+        "-t",
+        str(threads),
+        "-o",
+        str(out_bam),
+    )
+
+    return Pipeline(mm2_cmd, lift_cmd, sort_cmd)
+
+
+def cmd_bcftools_merge_trim(
+    shard_vcf: pathlib.Path,
+    raw_vcf: pathlib.Path,
+    pop_vcf: pathlib.Path,
+    trim_script: pathlib.Path,
+    shard: str,
+    merge_rules: str,
+    merge_xargs: List[str] = [],
+    view_xargs: List[str] = [],
+):
+    """Merge and trim variants"""
+    merge_cmd = Command(
+        "bcftools",
+        "merge",
+        "-r",
+        shard,
+        *merge_xargs,
+        "-i",
+        merge_rules,
+        str(raw_vcf),
+        str(pop_vcf),
+    )
+
+    trim_cmd = Command(
+        "python3",
+        str(trim_script),
+    )
+
+    view_cmd = Command(
+        "bcftools",
+        "view",
+        *view_xargs,
+        "-W=tbi",
+        "-o",
+        str(shard_vcf),
+    )
+
+    return Pipeline(merge_cmd, trim_cmd, view_cmd)
+
+
+def cmd_bcftools_view_regions(
+    out_vcf: pathlib.Path,
+    in_vcf: pathlib.Path,
+    regions: Optional[str] = None,
+    regions_file: Optional[pathlib.Path] = None,
+):
+    xargs = []
+    if regions:
+        xargs.extend(["--regions", regions])
+    if regions_file:
+        xargs.extend(["--regions-file", str(regions_file)])
+    return Pipeline(
+        Command(
+            "bcftools",
+            "view",
+            "--no-version",
+            "-W=tbi",
+            "-O",
+            "z",
+            "-o",
+            str(out_vcf),
+            *xargs,
+            str(in_vcf),
+        )
+    )

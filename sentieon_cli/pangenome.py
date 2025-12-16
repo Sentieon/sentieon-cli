@@ -3,15 +3,15 @@ Pangenome alignment and variant calling pipeline
 """
 
 import argparse
+import copy
 from enum import Enum
 import itertools
 import json
-import multiprocessing as mp
 import os
 import pathlib
 import shutil
 import sys
-from typing import Any, Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import packaging.version
 
@@ -19,6 +19,7 @@ from importlib_resources import files
 
 from . import command_strings as cmds
 from .archive import ar_load
+from .base_pangenome import BasePangenome
 from .dag import DAG
 from .driver import (
     AlignmentStat,
@@ -38,7 +39,6 @@ from .driver import (
     WgsMetricsAlgo,
 )
 from .job import Job
-from .pipeline import BasePipeline
 from .shell_pipeline import Command, Pipeline
 from .util import __version__, check_version, parse_rg_line, path_arg, tmp
 
@@ -47,7 +47,7 @@ PANGENOME_MIN_VERSIONS = {
     "kmc": None,
     "sentieon driver": packaging.version.Version("202503.01"),
     "vg": None,
-    "bcftools": packaging.version.Version("1.10"),
+    "bcftools": packaging.version.Version("1.20"),
     "samtools": packaging.version.Version("1.16"),
     "run-t1k": None,
     "ExpansionHunter": None,
@@ -170,178 +170,100 @@ class SampleSex(Enum):
     UNKNOWN = 3
 
 
-class PangenomePipeline(BasePipeline):
+class PangenomePipeline(BasePangenome):
     """The Pangenome pipeline"""
 
-    params: Dict[str, Dict[str, Any]] = {
-        # Required arguments
-        "reference": {
-            "flags": ["-r", "--reference"],
-            "required": True,
-            "help": "fasta for reference genome.",
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "gbz": {
-            "help": "The pangenome graph file in GBZ format.",
-            "required": True,
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "hapl": {
-            "help": "The haplotype file.",
-            "required": True,
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "snarls": {
-            "help": (
-                "The vg snarls file for the .gbz file. Can be created "
-                "using vg."
-            ),
-            "required": True,
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "xg": {
-            "help": "The xg file for the .gbz file. Can be created using vg",
-            "required": True,
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "model_bundle": {
-            "flags": ["-m", "--model_bundle"],
-            "help": "The model bundle file.",
-            "required": True,
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "r1_fastq": {
-            "nargs": "*",
-            "help": "Sample R1 fastq files.",
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "r2_fastq": {
-            "nargs": "*",
-            "help": "Sample R2 fastq files.",
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "readgroups": {
-            "nargs": "*",
-            "help": (
-                "Readgroup information for the fastq files. Only the ID and "
-                "SM attributes are used."
-            ),
-        },
-        # Additional arguments
-        "bam_format": {
-            "help": (
-                "Use the BAM format instead of CRAM for output aligned files."
-            ),
-            "action": "store_true",
-        },
-        "cores": {
-            "flags": ["-t", "--cores"],
-            "help": (
-                "Number of threads/processes to use. Defaults to all "
-                "available."
-            ),
-            "default": mp.cpu_count(),
-        },
-        "dbsnp": {
-            "flags": ["-d", "--dbsnp"],
-            "help": (
-                "dbSNP vcf file Supplying this file will annotate variants "
-                "with their dbSNP refSNP ID numbers."
-            ),
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "dry_run": {
-            "help": "Print the commands without running them.",
-            "action": "store_true",
-        },
-        "expansion_catalog": {
-            "help": (
-                "An ExpansionHunter variant catalog. Required for expansion "
-                "calling."
-            ),
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "kmer_memory": {
-            "help": "Memory limit for KMC in GB.",
-            "default": 58,
-            "type": int,
-        },
-        "segdup_caller_genes": {
-            "type": str,
-            "help": (
-                "Genes for SegDup calling. Ex: "
-                "'CFH,CFHR3,CYP11B1,CYP2D6,GBA,NCF1,PMS2,SMN1,STRC'. Required "
-                "for SegDup calling."
-            ),
-        },
-        "t1k_hla_seq": {
-            "help": (
-                "The DNA HLA seq FASTA file for T1K. Required for HLA calling."
-            ),
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "t1k_hla_coord": {
-            "help": (
-                "The DNA HLA coord FASTA file for T1K. Required for HLA "
-                "calling."
-            ),
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "t1k_kir_seq": {
-            "help": (
-                "The DNA KIR seq FASTA file for T1K. Required for KIA calling."
-            ),
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "t1k_kir_coord": {
-            "help": (
-                "The DNA KIR coord FASTA file for T1K. Required for KIA "
-                "calling."
-            ),
-            "type": path_arg(exists=True, is_file=True),
-        },
-        # Hidden arguments
-        "retain_tmpdir": {
-            "help": argparse.SUPPRESS,
-            "action": "store_true",
-        },
-        "skip_version_check": {
-            "help": argparse.SUPPRESS,
-            "action": "store_true",
-        },
-    }
+    params = copy.deepcopy(BasePangenome.params)
+    params.update(
+        {
+            "readgroups": {
+                "nargs": "*",
+                "help": (
+                    "Readgroup information for the fastq files. Only the ID "
+                    "and SM attributes are used."
+                ),
+            },
+            # Required arguments
+            "snarls": {
+                "help": (
+                    "The vg snarls file for the .gbz file. Can be created "
+                    "using vg."
+                ),
+                "required": True,
+                "type": path_arg(exists=True, is_file=True),
+            },
+            "xg": {
+                "help": (
+                    "The xg file for the .gbz file. Can be created using vg"
+                ),
+                "required": True,
+                "type": path_arg(exists=True, is_file=True),
+            },
+            # Additional arguments
+            "expansion_catalog": {
+                "help": (
+                    "An ExpansionHunter variant catalog. Required for "
+                    "expansion calling."
+                ),
+                "type": path_arg(exists=True, is_file=True),
+            },
+            "kmer_memory": {
+                "help": "Memory limit for KMC in GB.",
+                "default": 58,
+                "type": int,
+            },
+            "segdup_caller_genes": {
+                "type": str,
+                "help": (
+                    "Genes for SegDup calling. Ex: "
+                    "'CFH,CFHR3,CYP11B1,CYP2D6,GBA,NCF1,PMS2,SMN1,STRC'. "
+                    "Required for SegDup calling."
+                ),
+            },
+            "t1k_hla_seq": {
+                "help": (
+                    "The DNA HLA seq FASTA file for T1K. Required for HLA "
+                    "calling."
+                ),
+                "type": path_arg(exists=True, is_file=True),
+            },
+            "t1k_hla_coord": {
+                "help": (
+                    "The DNA HLA coord FASTA file for T1K. Required for HLA "
+                    "calling."
+                ),
+                "type": path_arg(exists=True, is_file=True),
+            },
+            "t1k_kir_seq": {
+                "help": (
+                    "The DNA KIR seq FASTA file for T1K. Required for KIA "
+                    "calling."
+                ),
+                "type": path_arg(exists=True, is_file=True),
+            },
+            "t1k_kir_coord": {
+                "help": (
+                    "The DNA KIR coord FASTA file for T1K. Required for KIA "
+                    "calling."
+                ),
+                "type": path_arg(exists=True, is_file=True),
+            },
+        }
+    )
 
-    positionals: Dict[str, Dict[str, Any]] = {
-        "output_vcf": {
-            "help": "Output VCF file. The file name must end in .vcf.gz",
-            "type": path_arg(),
-        },
-    }
+    positionals = BasePangenome.positionals
 
     def __init__(self) -> None:
         super().__init__()
-        self.output_vcf: Optional[pathlib.Path] = None
-        self.reference: Optional[pathlib.Path] = None
-        self.gbz: Optional[pathlib.Path] = None
-        self.hapl: Optional[pathlib.Path] = None
+        self.readgroups: List[str] = []
         self.snarls: Optional[pathlib.Path] = None
         self.xg: Optional[pathlib.Path] = None
-        self.r1_fastq: List[pathlib.Path] = []
-        self.r2_fastq: List[pathlib.Path] = []
-        self.readgroups: List[str] = []
-        self.model_bundle: Optional[pathlib.Path] = None
-        self.bam_format = False
-        self.dbsnp: Optional[pathlib.Path] = None
-        self.cores = mp.cpu_count()
         self.expansion_catalog: Optional[pathlib.Path] = None
-        self.kmer_memory = 128
         self.segdup_caller_genes: Optional[str] = None
         self.t1k_hla_seq: Optional[pathlib.Path] = None
         self.t1k_hla_coord: Optional[pathlib.Path] = None
         self.t1k_kir_seq: Optional[pathlib.Path] = None
         self.t1k_kir_coord: Optional[pathlib.Path] = None
-        self.retain_tmpdir = False
-        self.skip_version_check = False
 
     def main(self, args: argparse.Namespace) -> None:
         """Run the pipeline"""
@@ -373,80 +295,15 @@ class PangenomePipeline(BasePipeline):
         assert self.reference
 
         self.validate_bundle()
-
-        if not self.r1_fastq:
-            self.logger.error("Please supply --r1_fastq arguments")
-            sys.exit(2)
-
-        if not str(self.output_vcf).endswith(".vcf.gz"):
-            self.logger.error("The output file should end with '.vcf.gz'")
-            sys.exit(2)
-
-        if len(self.r1_fastq) != len(self.readgroups):
-            self.logger.error(
-                "The number of readgroups does not equal the number of fastq "
-                "files"
-            )
-            sys.exit(2)
-
-        # Confirm the presence of the reference index file
-        fai_file = str(self.reference) + ".fai"
-        if not os.path.isfile(fai_file):
-            self.logger.error(
-                "Fasta index file %s does not exist. Please index the "
-                "reference genome with 'samtools faidx'",
-                fai_file,
-            )
-            sys.exit(2)
-
-        # Validate readgroups
-        rg_sample = None
-        for rg in self.readgroups:
-            rg_dict = parse_rg_line(rg.replace(r"\t", "\t"))
-            rg_sm = rg_dict.get("SM")
-            if not rg_sm:
-                self.logger.error(
-                    "Found a readgroup without a SM tag: %s",
-                    str(rg),
-                )
-                sys.exit(2)
-            if rg_sample and rg_sample != rg_sm:
-                self.logger.error(
-                    "Inconsistent readgroup sample information found in: %s",
-                    str(rg),
-                )
-                sys.exit(2)
-            rg_sample = rg_sm
-            if "ID" not in rg_dict:
-                self.logger.error(
-                    "Found a readgroup without an ID tag: %s",
-                    str(rg),
-                )
-                sys.exit(2)
+        self.validate_fastq_rg(r1_required=True)
+        self.validate_output_vcf()
+        self.validate_ref()
+        self.validate_t1k()
 
         if not self.skip_version_check:
             for cmd, min_version in PANGENOME_MIN_VERSIONS.items():
                 if not check_version(cmd, min_version):
                     sys.exit(2)
-
-        # Check the T1K files
-        if (self.t1k_hla_seq and not self.t1k_hla_coord) or (
-            self.t1k_hla_coord and not self.t1k_hla_seq
-        ):
-            self.logger.error(
-                "For HLA calling, both the seq and coord fasta files need to "
-                "be supplied. Exiting"
-            )
-            sys.exit(2)
-
-        if (self.t1k_kir_seq and not self.t1k_kir_coord) or (
-            self.t1k_kir_coord and not self.t1k_kir_seq
-        ):
-            self.logger.error(
-                "For KIR calling, both the seq and coord fasta files need to "
-                "be supplied. Exiting"
-            )
-            sys.exit(2)
 
     def validate_bundle(self) -> None:
         bundle_info_bytes = ar_load(
@@ -487,6 +344,43 @@ class PangenomePipeline(BasePipeline):
                 "Expected model files not found in the model bundle file"
             )
             sys.exit(2)
+
+    def validate_fastq_rg(self, r1_required=False) -> None:
+        if not self.r1_fastq and r1_required:
+            self.logger.error("Please supply --r1_fastq arguments")
+            sys.exit(2)
+
+        if len(self.r1_fastq) != len(self.readgroups):
+            self.logger.error(
+                "The number of readgroups does not equal the number of fastq "
+                "files"
+            )
+            sys.exit(2)
+
+        # Validate readgroups
+        rg_sample = None
+        for rg in self.readgroups:
+            rg_dict = parse_rg_line(rg.replace(r"\t", "\t"))
+            rg_sm = rg_dict.get("SM")
+            if not rg_sm:
+                self.logger.error(
+                    "Found a readgroup without a SM tag: %s",
+                    str(rg),
+                )
+                sys.exit(2)
+            if rg_sample and rg_sample != rg_sm:
+                self.logger.error(
+                    "Inconsistent readgroup sample information found in: %s",
+                    str(rg),
+                )
+                sys.exit(2)
+            rg_sample = rg_sm
+            if "ID" not in rg_dict:
+                self.logger.error(
+                    "Found a readgroup without an ID tag: %s",
+                    str(rg),
+                )
+                sys.exit(2)
 
     def configure(self) -> None:
         """Configure pipeline parameters"""
@@ -538,7 +432,7 @@ class PangenomePipeline(BasePipeline):
         self.create_sv_header(sv_header, sample_name)
 
         # KMC k-mer counting
-        kmc_job = self.build_kmc_job(kmer_prefix)
+        kmc_job = self.build_kmc_job(kmer_prefix, self.cores)
         dag.add_job(kmc_job)
 
         # vg haplotypes - create sample-specific pangenome
@@ -705,40 +599,6 @@ class PangenomePipeline(BasePipeline):
                     sample_name,
                 ]
                 print("\t".join(last_hdr_line), file=fh)
-
-    def build_kmc_job(self, kmer_prefix: pathlib.Path) -> Job:
-        """Build KMC k-mer counting jobs"""
-        # Create file list for KMC
-        file_list = pathlib.Path(str(kmer_prefix) + ".paths")
-        all_fastqs = []
-
-        # Add R1 files
-        all_fastqs.extend(self.r1_fastq)
-
-        # Add R2 files if present
-        if self.r2_fastq:
-            all_fastqs.extend(self.r2_fastq)
-
-        # Write file list
-        if not self.dry_run:
-            with open(file_list, "w") as f:
-                for fq in all_fastqs:
-                    f.write(f"{fq}\n")
-
-        # Create KMC job
-        kmc_job = Job(
-            cmds.cmd_kmc(
-                kmer_prefix,
-                file_list,
-                self.tmp_dir,
-                memory=self.kmer_memory,
-                threads=self.cores,
-            ),
-            "kmc",
-            self.cores,
-        )
-
-        return kmc_job
 
     def build_haplotypes_job(
         self, output_gbz: pathlib.Path, kmer_file: pathlib.Path
