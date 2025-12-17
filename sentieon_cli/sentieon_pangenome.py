@@ -44,11 +44,35 @@ SENT_PANGENOME_MIN_VERSIONS = {
     "sentieon driver": packaging.version.Version("202503.02"),
     "vg": None,
     "bcftools": packaging.version.Version("1.20"),
+    "samtools": packaging.version.Version("1.16"),
 }
 
-# With multiple aligned input files, require kff-tools
-MULTI_INPUT_MIN_VERSIONS = {
-    "kff-tools": None,
+GRCH38_CONTIGS: Dict[str, int] = {
+    "chr1": 248956422,
+    "chr2": 242193529,
+    "chr3": 198295559,
+    "chr4": 190214555,
+    "chr5": 181538259,
+    "chr6": 170805979,
+    "chr7": 159345973,
+    "chr8": 145138636,
+    "chr9": 138394717,
+    "chr10": 133797422,
+    "chr11": 135086622,
+    "chr12": 133275309,
+    "chr13": 114364328,
+    "chr14": 107043718,
+    "chr15": 101991189,
+    "chr16": 90338345,
+    "chr17": 83257441,
+    "chr18": 80373285,
+    "chr19": 58617616,
+    "chr20": 64444167,
+    "chr21": 46709983,
+    "chr22": 50818468,
+    "chrX": 156040895,
+    "chrY": 57227415,
+    "chrM": 16569,
 }
 
 logger = get_logger(__name__)
@@ -130,6 +154,17 @@ def vcf_contigs(
     return contigs
 
 
+def vcf_id(in_vcf: pathlib.Path) -> Optional[str]:
+    """Collect the SentieonVcfID header"""
+    cmd = ["bcftools", "view", "-h", str(in_vcf)]
+    p = sp.run(cmd, capture_output=True, text=True)
+    for line in p.stdout.split("\n"):
+        if line.startswith("##SentieonVcfID="):
+            i = line.index("=")
+            return line[i + 1 :]  # noqa: E203
+    return None
+
+
 class SentieonPangenome(BasePangenome):
     """The Sentieon pangenome pipeline"""
 
@@ -146,6 +181,14 @@ class SentieonPangenome(BasePangenome):
                 "help": "sample BAM or CRAM file.",
                 "type": path_arg(exists=True, is_file=True),
             },
+            "pop_vcf": {
+                "flags": ["--pop_vcf"],
+                "help": (
+                    "A VCF containing annotations for use with DNAModelApply."
+                ),
+                "type": path_arg(exists=True, is_file=True),
+                "required": True,
+            },
             # Additional arguments
             "bed": {
                 "flags": ["-b", "--bed"],
@@ -155,12 +198,18 @@ class SentieonPangenome(BasePangenome):
                 ),
                 "type": path_arg(exists=True, is_file=True),
             },
-            "pop_vcf": {
-                "flags": ["--pop_vcf"],
-                "help": (
-                    "A VCF containing annotations for use with DNAModelApply."
-                ),
-                "type": path_arg(exists=True, is_file=True),
+            # Hidden arguments
+            "skip_pangenome_name_checks": {
+                "help": argparse.SUPPRESS,
+                "action": "store_true",
+            },
+            "skip_contig_checks": {
+                "help": argparse.SUPPRESS,
+                "action": "store_true",
+            },
+            "skip_pop_vcf_id_check": {
+                "help": argparse.SUPPRESS,
+                "action": "store_true",
             },
         }
     )
@@ -173,19 +222,26 @@ class SentieonPangenome(BasePangenome):
         self.sample_input: List[pathlib.Path] = []
         self.bed: Optional[pathlib.Path] = None
         self.pop_vcf: Optional[pathlib.Path] = None
+        self.skip_pangenome_name_checks: bool = False
+        self.skip_contig_checks: bool = False
+        self.skip_pop_vcf_id_check: bool = False
 
     def main(self, args: argparse.Namespace) -> None:
         """Run the pipeline"""
         self.handle_arguments(args)
         self.setup_logging(args)
-        self.validate()
+        self.validate_ref()
+
         self.fai_data = parse_fai(pathlib.Path(str(self.reference) + ".fai"))
-        self.shards = determine_shards_from_fai(
-            self.fai_data, 10 * 1000 * 1000
-        )
+        self.pop_vcf_contigs: Dict[str, Optional[int]] = {}
         if self.pop_vcf:
             self.pop_vcf_contigs = vcf_contigs(self.pop_vcf, self.dry_run)
             self.logger.debug("VCF contigs are: %s", self.pop_vcf_contigs)
+
+        self.validate()
+        self.shards = determine_shards_from_fai(
+            self.fai_data, 10 * 1000 * 1000
+        )
 
         tmp_dir_str = tmp()
         self.tmp_dir = pathlib.Path(tmp_dir_str)
@@ -202,7 +258,6 @@ class SentieonPangenome(BasePangenome):
         self.validate_bundle()
         self.validate_fastq_rg()
         self.validate_output_vcf()
-        self.validate_ref()
         self.collect_readgroups()
 
         if not self.sample_input and not self.r1_fastq:
@@ -223,10 +278,6 @@ class SentieonPangenome(BasePangenome):
             for cmd, min_version in SENT_PANGENOME_MIN_VERSIONS.items():
                 if not check_version(cmd, min_version):
                     sys.exit(2)
-            if self.sample_input and len(self.sample_input) > 1:
-                for cmd, min_version in MULTI_INPUT_MIN_VERSIONS.items():
-                    if not check_version(cmd, min_version):
-                        sys.exit(2)
 
         if self.bed is None:
             self.logger.info(
@@ -234,7 +285,53 @@ class SentieonPangenome(BasePangenome):
                 "across decoy and unplaced contigs."
             )
 
+        if not self.skip_pangenome_name_checks:
+            if not str(self.gbz).endswith("grch38.gbz"):
+                self.logger.error(
+                    "The `--gbz` file does not have the expected suffix. "
+                    "Check that you are using a GRCh38 pangenome."
+                )
+                sys.exit(2)
+            if not str(self.hapl).endswith("grch38.hapl"):
+                self.logger.error(
+                    "The `--hapl` file does not have the expected suffix. "
+                    "Check that you re using a GRCh38 pangenome."
+                )
+                sys.exit(2)
+
+        if not self.skip_contig_checks:
+            # Check the fai file contigs
+            mismatch_contigs: Set[str] = set()
+            for ctg, length in GRCH38_CONTIGS.items():
+                d = self.fai_data.get(ctg, {})
+                fai_length = d.get("length", -1)
+                if length != fai_length:
+                    mismatch_contigs.add(ctg)
+            if mismatch_contigs:
+                mismatch_contigs_s = ", ".join(mismatch_contigs)
+                self.logger.error(
+                    "Reference contigs with unexpected lengths: %s",
+                    mismatch_contigs_s,
+                )
+                sys.exit(2)
+
+            # Check the pop VCF file contigs
+            if not self.dry_run:
+                mismatch_contigs = set()
+                for ctg, length in GRCH38_CONTIGS.items():
+                    vcf_length = self.pop_vcf_contigs.get(ctg, -1)
+                    if length != vcf_length:
+                        mismatch_contigs.add(ctg)
+                if mismatch_contigs:
+                    mismatch_contigs_s = ", ".join(mismatch_contigs)
+                    self.logger.error(
+                        "Pop VCF contigs with unexpected lengths: %s",
+                        mismatch_contigs_s,
+                    )
+                    sys.exit(2)
+
     def validate_bundle(self) -> None:
+        assert self.pop_vcf
         bundle_info_bytes = ar_load(
             str(self.model_bundle) + "/bundle_info.json"
         )
@@ -248,6 +345,7 @@ class SentieonPangenome(BasePangenome):
             )
             bundle_pipeline = bundle_info["pipeline"]
             self.tech: str = bundle_info["platform"].upper()
+            bundle_vcf_id = bundle_info["SentieonVcfID"]
         except KeyError:
             self.logger.error(
                 "The model bundle does not have the expected attributes"
@@ -275,28 +373,45 @@ class SentieonPangenome(BasePangenome):
             )
             sys.exit(2)
 
+        if not self.skip_pop_vcf_id_check and not self.dry_run:
+            pop_vcf_id = vcf_id(self.pop_vcf)
+            if bundle_vcf_id != pop_vcf_id:
+                self.logger.error(
+                    "The ID of the `--pop_vcf` does not match the model bundle"
+                )
+                sys.exit(2)
+
     def validate_fastq_rg(self) -> None:
-        if not len(self.r1_fastq) != len(self.r2_fastq):
+        if len(self.r1_fastq) != len(self.r2_fastq):
             self.logger.error(
-                "The number of input --r1_fastq files does not equal the "
-                "number of --r2_fastq files"
+                "The number of input `--r1_fastq` files does not equal the "
+                "number of `--r2_fastq` files"
             )
             sys.exit(2)
 
-        if len(self.r1_fastq) > 0 and not self.readgroup:
+        if (len(self.r1_fastq) > 0 and not self.readgroup) or (
+            self.readgroup and len(self.r1_fastq) < 1
+        ):
             self.logger.error(
-                "--r1_fastq, --r12_fastq, and --readgroup are required with "
-                "fastq input"
+                "`--r1_fastq`, `--r2_fastq`, and `--readgroup` are required "
+                "with fastq input. `--readgroup` cannot be used with bam/cram "
+                "input."
             )
             sys.exit(2)
 
     def collect_readgroups(self) -> None:
         """Collect readgroup tags"""
+        self.bam_readgroups: List[Dict[str, str]] = []
+        for aln in self.sample_input:
+            aln_rgs = cmds.get_rg_lines(aln, self.dry_run)
+            for rg_line in aln_rgs:
+                self.bam_readgroups.append(parse_rg_line(rg_line))
+                break  # currently just the first RG line for each input
+
         self.fastq_readgroup: Dict[str, str] = {}
         if not self.readgroup:
             return
 
-        sample_sm = None
         parsed_rg = parse_rg_line(self.readgroup.replace(r"\t", "\t"))
         if not parsed_rg.get("ID"):
             self.logger.error(
@@ -304,23 +419,12 @@ class SentieonPangenome(BasePangenome):
                 self.readgroup,
             )
             sys.exit(2)
-        if sample_sm:
-            if parsed_rg.get("SM") != sample_sm:
-                self.logger.error(
-                    "Readgroup '%s' has a RGSM tag inconsistent with "
-                    "earlier readgroups",
-                    self.readgroup,
-                )
-                sys.exit(2)
-            self.fastq_readgroup = parsed_rg
-        sample_sm = parsed_rg.get("SM")
-
-        self.bam_readgroups: List[Dict[str, str]] = []
-        for aln in self.sample_input:
-            aln_rgs = cmds.get_rg_lines(aln, self.dry_run)
-            for rg_line in aln_rgs:
-                self.bam_readgroups.append(parse_rg_line(rg_line))
-                break  # currently just the first RG line for each input
+        if parsed_rg.get("SM", None) is None:
+            self.logger.error(
+                "Readgroup '%s' does not have a RGSM tag",
+                self.readgroup,
+            )
+        self.fastq_readgroup = parsed_rg
 
     def configure(self) -> None:
         """Configure pipeline parameters"""
@@ -702,6 +806,11 @@ class SentieonPangenome(BasePangenome):
         ).resolve()
         seen_contigs: Set[str] = set()
         for i, shard in enumerate(self.shards):
+            # Use a BED file for unusual contig names
+            subset_bed = self.tmp_dir.joinpath(
+                f"sample-dnascope_transfer-subset{i}.bed"
+            )
+
             # Extract contigs not in the pop vcf as merge will fail
             if shard.contig not in self.pop_vcf_contigs:
                 if shard.contig in seen_contigs:
@@ -714,10 +823,6 @@ class SentieonPangenome(BasePangenome):
                     f"sample-dnascope_transfer-subset{i}.vcf.gz"
                 )
 
-                # Use a BED file for unusual contig names
-                subset_bed = self.tmp_dir.joinpath(
-                    f"sample-dnascope_transfer-subset{i}.bed"
-                )
                 ctg_len = self.fai_data[shard.contig]["length"]
                 if not self.dry_run:
                     with open(subset_bed, "w") as fh:
@@ -735,6 +840,13 @@ class SentieonPangenome(BasePangenome):
                 sharded_merge_jobs.append(view_job)
                 sharded_vcfs.append(subset_vcf)
             else:
+                if not self.dry_run:
+                    with open(subset_bed, "w") as fh:
+                        print(
+                            f"{shard.contig}\t{shard.start}\t{shard.stop}",
+                            file=fh,
+                        )
+
                 self.logger.debug("Transferring shard: %s", shard)
                 shard_vcf = self.tmp_dir.joinpath(
                     f"sample-dnascope_transfer-shard{i}.vcf.gz"
@@ -745,7 +857,7 @@ class SentieonPangenome(BasePangenome):
                         raw_vcf,
                         self.pop_vcf,
                         trim_script,
-                        shard.bcftools_str(),
+                        subset_bed,
                         merge_rules=merge_rules,
                         merge_xargs=[
                             "--no-version",
