@@ -36,7 +36,7 @@ from .util import (
 
 TOOL_MIN_VERSIONS = {
     "sentieon driver": packaging.version.Version("202308.01"),
-    "bcftools": packaging.version.Version("1.20"),
+    "bcftools": packaging.version.Version("1.22"),
     "bedtools": None,
 }
 

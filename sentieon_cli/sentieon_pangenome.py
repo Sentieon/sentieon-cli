@@ -574,7 +574,7 @@ class SentieonPangenome(BasePangenome):
 
         unzip = "igzip"
         if not shutil.which(unzip):
-            self.logger.warning(
+            self.logger.info(
                 "igzip is recommended for decompression, but is not "
                 "available. Falling back to gzip."
             )

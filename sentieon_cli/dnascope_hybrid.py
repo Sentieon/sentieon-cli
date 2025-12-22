@@ -43,7 +43,7 @@ from .util import (
 CALLING_MIN_VERSIONS = {
     "sentieon driver": packaging.version.Version("202503.01"),
     "bedtools": None,
-    "bcftools": packaging.version.Version("1.20"),
+    "bcftools": packaging.version.Version("1.22"),
     "samtools": packaging.version.Version("1.16"),
 }
 

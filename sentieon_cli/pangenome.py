@@ -47,7 +47,7 @@ PANGENOME_MIN_VERSIONS = {
     "kmc": None,
     "sentieon driver": packaging.version.Version("202503.01"),
     "vg": None,
-    "bcftools": packaging.version.Version("1.20"),
+    "bcftools": packaging.version.Version("1.22"),
     "samtools": packaging.version.Version("1.16"),
     "run-t1k": None,
     "ExpansionHunter": None,
