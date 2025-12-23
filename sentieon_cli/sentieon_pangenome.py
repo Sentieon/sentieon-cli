@@ -21,11 +21,20 @@ from .archive import ar_load
 from .base_pangenome import BasePangenome
 from .dag import DAG
 from .driver import (
+    AlignmentStat,
+    BaseDistributionByCycle,
+    CoverageMetrics,
     Dedup,
     DNAModelApply,
     DNAscope,
     Driver,
+    GCBias,
+    InsertSizeMetricAlgo,
     LocusCollector,
+    MeanQualityByCycle,
+    QualDistribution,
+    ReadWriter,
+    WgsMetricsAlgo,
 )
 from .job import Job
 from .logging import get_logger
@@ -45,6 +54,10 @@ SENT_PANGENOME_MIN_VERSIONS = {
     "vg": None,
     "bcftools": packaging.version.Version("1.20"),
     "samtools": packaging.version.Version("1.16"),
+}
+
+MULTIQC_MIN_VERSION = {
+    "multiqc": packaging.version.Version("1.18"),
 }
 
 GRCH38_CONTIGS: Dict[str, int] = {
@@ -198,12 +211,20 @@ class SentieonPangenome(BasePangenome):
                 ),
                 "type": path_arg(exists=True, is_file=True),
             },
+            "skip_metrics": {
+                "help": "Skip metrics collection and multiQC",
+                "action": "store_true",
+            },
+            "skip_multiqc": {
+                "help": "Skip multiQC report generation",
+                "action": "store_true",
+            },
             # Hidden arguments
-            "skip_pangenome_name_checks": {
+            "skip_contig_checks": {
                 "help": argparse.SUPPRESS,
                 "action": "store_true",
             },
-            "skip_contig_checks": {
+            "skip_pangenome_name_checks": {
                 "help": argparse.SUPPRESS,
                 "action": "store_true",
             },
@@ -222,8 +243,10 @@ class SentieonPangenome(BasePangenome):
         self.sample_input: List[pathlib.Path] = []
         self.bed: Optional[pathlib.Path] = None
         self.pop_vcf: Optional[pathlib.Path] = None
-        self.skip_pangenome_name_checks: bool = False
+        self.skip_metrics = False
+        self.skip_multiqc = False
         self.skip_contig_checks: bool = False
+        self.skip_pangenome_name_checks: bool = False
         self.skip_pop_vcf_id_check: bool = False
 
     def main(self, args: argparse.Namespace) -> None:
@@ -247,6 +270,11 @@ class SentieonPangenome(BasePangenome):
         self.tmp_dir = pathlib.Path(tmp_dir_str)
 
         dag = self.build_first_dag()
+        executor = self.run(dag)
+        self.check_execution(dag, executor)
+
+        self.get_sex(self.ploidy_json)
+        dag = self.build_second_dag(self.rw_bam)
         executor = self.run(dag)
         self.check_execution(dag, executor)
 
@@ -449,6 +477,14 @@ class SentieonPangenome(BasePangenome):
         out_mm2_aln = pathlib.Path(
             str(self.output_vcf).replace(".vcf.gz", f"_mm2_deduped.{suffix}")
         )
+        self.ploidy_json = pathlib.Path(
+            str(self.output_vcf).replace(".vcf.gz", "_ploidy.json")
+        )
+        out_hla = pathlib.Path(str(self.output_vcf).replace(".vcf.gz", "_hla"))
+        out_kir = pathlib.Path(str(self.output_vcf).replace(".vcf.gz", "_kir"))
+        out_segdup = pathlib.Path(
+            str(self.output_vcf).replace(".vcf.gz", "_segdups")
+        )
 
         # Intermediate file paths
         bwa_bam = self.tmp_dir.joinpath("sample-bwa.bam")
@@ -461,6 +497,8 @@ class SentieonPangenome(BasePangenome):
         mm2_bam = self.tmp_dir.joinpath("sample-mm2.bam")
         raw_vcf = self.tmp_dir.joinpath("sample-dnascope.vcf.gz")
         transfer_vcf = self.tmp_dir.joinpath("sample-dnascope_transfer.vcf.gz")
+        # - Ensure we have a bam file for t1k
+        self.rw_bam = self.tmp_dir.joinpath("sample_deduped.bam")
 
         bwa_lc_dependencies: Set[Job] = set()
         haplotype_dependencies: Set[Job] = set()
@@ -522,7 +560,8 @@ class SentieonPangenome(BasePangenome):
         dag.add_job(mm2_job, mm2_dependencies | {gfa_job, fasta_job})
         dnascope_dependencies.add(mm2_job)
 
-        # With fastq input, perform dedup
+        # With fastq input, perform dedup and metrics
+        rw_jobs = set()
         if self.r1_fastq:
             dnascope_bams.append(out_bwa_aln)
             dnascope_bams.append(out_mm2_aln)
@@ -538,8 +577,34 @@ class SentieonPangenome(BasePangenome):
             dag.add_job(mm2_lc_job, {mm2_job})
             dag.add_job(mm2_dedup_job, {mm2_lc_job})
             dnascope_dependencies.add(mm2_dedup_job)
+
+            metrics_job, rehead_job = self.build_metrics_job(
+                self.rw_bam,
+                [out_bwa_aln, out_mm2_aln],
+            )
+            dag.add_job(metrics_job, {bwa_dedup_job, mm2_dedup_job})
+            rw_jobs.add(metrics_job)
+            if rehead_job:
+                dag.add_job(rehead_job, {metrics_job})
+                if not self.skip_multiqc:
+                    multiqc_job = self.multiqc()
+                    if multiqc_job:
+                        dag.add_job(multiqc_job, {rehead_job})
         else:
             dnascope_bams.append(mm2_bam)
+
+            # Generate a single BAM for T1K and ploidy estimation
+            driver = Driver(
+                reference=self.reference,
+                thread_count=self.cores,
+                input=dnascope_bams,
+            )
+            driver.add_algo(ReadWriter(self.rw_bam))
+            rw_job = Job(
+                Pipeline(Command(*driver.build_cmd())), "readwriter", 0
+            )
+            dag.add_job(rw_job, {mm2_job})
+            rw_jobs.add(rw_job)
 
         # DNAscope calling with bwa and mm2 input
         apply_dependencies = set()
@@ -560,6 +625,40 @@ class SentieonPangenome(BasePangenome):
         # DNAModelApply
         apply_job = self.build_dnamodelapply_job(transfer_vcf)
         dag.add_job(apply_job, apply_dependencies)
+
+        # estimate ploidy
+        ploidy_job = self.build_ploidy_job(
+            self.ploidy_json,
+            [self.rw_bam],
+        )
+        dag.add_job(ploidy_job, rw_jobs)
+
+        # HLA and KIR calling with T1K
+        if self.t1k_hla_seq and self.t1k_hla_coord:
+            hla_job = self.build_t1k_job(
+                out_hla,
+                self.rw_bam,
+                self.t1k_hla_seq,
+                self.t1k_hla_coord,
+                "hla-wgs",
+            )
+            dag.add_job(hla_job, rw_jobs)
+        if self.t1k_kir_seq and self.t1k_kir_coord:
+            kir_job = self.build_t1k_job(
+                out_kir,
+                self.rw_bam,
+                self.t1k_kir_seq,
+                self.t1k_kir_coord,
+                "kir-wgs",
+            )
+            dag.add_job(kir_job, rw_jobs)
+
+        # special-caller
+        if self.segdup_caller_genes:
+            segdup_job = self.build_segdup_job(
+                out_segdup, self.rw_bam, genes=self.segdup_caller_genes
+            )
+            dag.add_job(segdup_job, rw_jobs)
 
         return dag
 
@@ -741,6 +840,84 @@ class SentieonPangenome(BasePangenome):
         )
 
         return lc_job, dedup_job
+
+    def build_metrics_job(
+        self,
+        output_bam: pathlib.Path,
+        sample_input: List[pathlib.Path],
+    ) -> Tuple[Job, Optional[Job]]:
+        """Build a metrics job"""
+        assert self.output_vcf
+
+        # Create the metrics directory
+        sample_name = self.output_vcf.name.replace(".vcf.gz", "")
+        metric_base = sample_name + ".txt"
+        metrics_dir = pathlib.Path(
+            str(self.output_vcf).replace(".vcf.gz", "_metrics")
+        )
+        if not self.dry_run:
+            metrics_dir.mkdir(exist_ok=True)
+
+        is_metrics = metrics_dir.joinpath(metric_base + ".insert_size.txt")
+        mqbc_metrics = metrics_dir.joinpath(
+            metric_base + ".mean_qual_by_cycle.txt"
+        )
+        bdbc_metrics = metrics_dir.joinpath(
+            metric_base + ".base_distribution_by_cycle.txt"
+        )
+        qualdist_metrics = metrics_dir.joinpath(
+            metric_base + ".qual_distribution.txt"
+        )
+        as_metrics = metrics_dir.joinpath(metric_base + ".alignment_stat.txt")
+        coverage_metrics = metrics_dir.joinpath("coverage")
+
+        # WGS metrics
+        wgs_metrics = metrics_dir.joinpath(metric_base + ".wgs.txt")
+        gc_metrics = metrics_dir.joinpath(metric_base + ".gc_bias.txt")
+        gc_summary = metrics_dir.joinpath(metric_base + ".gc_bias_summary.txt")
+
+        driver = Driver(
+            reference=self.reference,
+            thread_count=self.cores,
+            input=sample_input,
+        )
+
+        driver.add_algo(ReadWriter(output_bam))
+        if not self.skip_metrics:
+            driver.add_algo(InsertSizeMetricAlgo(is_metrics))
+            driver.add_algo(MeanQualityByCycle(mqbc_metrics))
+            driver.add_algo(BaseDistributionByCycle(bdbc_metrics))
+            driver.add_algo(QualDistribution(qualdist_metrics))
+            driver.add_algo(AlignmentStat(as_metrics))
+            driver.add_algo(GCBias(gc_metrics, summary=gc_summary))
+            driver.add_algo(
+                WgsMetricsAlgo(wgs_metrics, include_unpaired="true")
+            )
+            driver.add_algo(CoverageMetrics(coverage_metrics))
+
+        metrics_job = Job(Pipeline(Command(*driver.build_cmd())), "metrics", 0)
+        if self.skip_metrics:
+            return (metrics_job, None)
+
+        rehead_script = pathlib.Path(
+            str(
+                files("sentieon_cli.scripts").joinpath("rehead_wgs_metrics.py")
+            )
+        )
+        rehead_job = Job(
+            Pipeline(
+                Command(
+                    "sentieon",
+                    "pyexec",
+                    str(rehead_script),
+                    "--metrics_file",
+                    str(wgs_metrics),
+                )
+            ),
+            "Rehead metrics",
+            0,
+        )
+        return (metrics_job, rehead_job)
 
     def build_dnascope_job(
         self,

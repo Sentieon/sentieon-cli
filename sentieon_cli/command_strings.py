@@ -586,7 +586,7 @@ def cmd_samtools_fastq_bwa(
     input_ref: Optional[pathlib.Path] = None,
     collate: bool = False,
     bwa_args: str = "",
-    bwa_k: str = "100000000",
+    bwa_k: str = "20000000",
     fastq_taglist: str = "RG",
     util_sort_args: str = "--cram_write_options version=3.0,compressor=rans",
 ) -> Pipeline:
@@ -739,7 +739,7 @@ def cmd_fastq_bwa(
     cores: int,
     unzip: str = "gzip",
     bwa_args: str = "",
-    bwa_k: str = "100000000",
+    bwa_k: str = "20000000",
     util_sort_args: str = "--cram_write_options version=3.0,compressor=rans",
     numa: Optional[str] = None,
     split: Optional[str] = None,
@@ -1269,6 +1269,7 @@ def cmd_bwa_extract(
     bwa_model: pathlib.Path,
     threads=1,
     unzip: str = "gzip",
+    bwa_k: str = "2000000",
 ) -> Pipeline:
     """BWA alignment with pgutil extract"""
     fq1_cmd = Pipeline(
@@ -1297,7 +1298,7 @@ def cmd_bwa_extract(
         "-x",
         str(bwa_model),
         "-K",
-        "10000000",
+        bwa_k,
         str(reference),
         InputProcSub(fq1_cmd),
         InputProcSub(fq2_cmd),
