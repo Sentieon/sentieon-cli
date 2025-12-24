@@ -95,6 +95,10 @@ class BasePangenome(BasePipeline):
                     "Required for SegDup calling."
                 ),
             },
+            "skip_cnv": {
+                "help": "Skip CNV calling.",
+                "action": "store_true",
+            },
             "t1k_hla_seq": {
                 "help": (
                     "The DNA HLA seq FASTA file for T1K. Required for HLA "
@@ -140,6 +144,7 @@ class BasePangenome(BasePipeline):
         self.expansion_catalog: Optional[pathlib.Path] = None
         self.kmer_memory = 30
         self.segdup_caller_genes: Optional[str] = None
+        self.skip_cnv = False
         self.t1k_hla_seq: Optional[pathlib.Path] = None
         self.t1k_hla_coord: Optional[pathlib.Path] = None
         self.t1k_kir_seq: Optional[pathlib.Path] = None
@@ -308,26 +313,27 @@ class BasePangenome(BasePipeline):
         )
 
         # CNV calling
-        (
-            cnvscope_job,
-            cnvapply_job,
-            haploid_cnv_job,
-            haploid_apply_job,
-            concat_job,
-        ) = self.build_cnv_jobs(
-            out_cnv,
-            cnvscope_tmp,
-            cnvscope_autosomes,
-            cnvscope_haploid_tmp,
-            cnvscope_haploid,
-            input_aln,
-        )
-        dag.add_job(cnvscope_job)
-        dag.add_job(cnvapply_job, {cnvscope_job})
-        if haploid_cnv_job and haploid_apply_job and concat_job:
-            dag.add_job(haploid_cnv_job)
-            dag.add_job(haploid_apply_job, {haploid_cnv_job})
-            dag.add_job(concat_job, {cnvapply_job, haploid_apply_job})
+        if not self.skip_cnv:
+            (
+                cnvscope_job,
+                cnvapply_job,
+                haploid_cnv_job,
+                haploid_apply_job,
+                concat_job,
+            ) = self.build_cnv_jobs(
+                out_cnv,
+                cnvscope_tmp,
+                cnvscope_autosomes,
+                cnvscope_haploid_tmp,
+                cnvscope_haploid,
+                input_aln,
+            )
+            dag.add_job(cnvscope_job)
+            dag.add_job(cnvapply_job, {cnvscope_job})
+            if haploid_cnv_job and haploid_apply_job and concat_job:
+                dag.add_job(haploid_cnv_job)
+                dag.add_job(haploid_apply_job, {haploid_cnv_job})
+                dag.add_job(concat_job, {cnvapply_job, haploid_apply_job})
 
         # Repeat expansions
         if self.expansion_catalog:
