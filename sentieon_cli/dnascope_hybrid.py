@@ -522,8 +522,8 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
                 dag.add_job(job)
 
         if not self.skip_mosdepth:
-            mosdpeth_jobs = self.mosdepth(sample_input=lr_aln)
-            for job in mosdpeth_jobs:
+            mosdepth_jobs = self.mosdepth(sample_input=lr_aln)
+            for job in mosdepth_jobs:
                 dag.add_job(job, realign_jobs)
 
         if not self.skip_multiqc:

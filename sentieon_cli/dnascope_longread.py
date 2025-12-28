@@ -240,7 +240,7 @@ class DNAscopeLRPipeline(BasePipeline):
         # validate
         if not (self.lr_aln or self.fastq):
             self.logger.error(
-                "Please suppy either the `--sample_input` or `--fastq` and "
+                "Please supply either the `--sample_input` or `--fastq` and "
                 "`--readgroups` arguments"
             )
             sys.exit(2)
@@ -301,8 +301,8 @@ class DNAscopeLRPipeline(BasePipeline):
             dag.add_job(job)
 
         if not self.skip_mosdepth:
-            mosdpeth_jobs = self.mosdepth(sample_input)
-            for job in mosdpeth_jobs:
+            mosdepth_jobs = self.mosdepth(sample_input)
+            for job in mosdepth_jobs:
                 dag.add_job(job, realign_jobs.union(align_jobs))
 
         if self.use_pbsv or not self.skip_cnv:
@@ -536,12 +536,12 @@ class DNAscopeLRPipeline(BasePipeline):
                 )
                 return set()
 
-        mosdpeth_jobs = set()
+        mosdepth_jobs = set()
         for i, input_file in enumerate(sample_input):
             mosdepth_dir = pathlib.Path(
                 str(self.output_vcf).replace(".vcf.gz", f"_mosdepth_{i}")
             )
-            mosdpeth_jobs.add(
+            mosdepth_jobs.add(
                 Job(
                     cmds.cmd_mosdepth(
                         input_file,
@@ -553,7 +553,7 @@ class DNAscopeLRPipeline(BasePipeline):
                     0,  # Run in background
                 )
             )
-        return mosdpeth_jobs
+        return mosdepth_jobs
 
     def merge_input_files(
         self, sample_input: List[pathlib.Path]

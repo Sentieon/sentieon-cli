@@ -94,7 +94,7 @@ sentieon-cli dnascope [-h] \
 ```
 
 With uBAM or uCRAM input, the DNAscope pipeline requires the following new arguments:
-- `-i SAMPLE_INPUT`: the input input sample file in uBAM or uCRAM format. One or more files can be supplied by passing multiple files after the `-i` argument.
+- `-i SAMPLE_INPUT`: the input sample file in uBAM or uCRAM format. One or more files can be supplied by passing multiple files after the `-i` argument.
 - `--align`: directs the pipeline to align the input reads.
 
 The DNAscope pipeline accepts the following new optional arguments:
