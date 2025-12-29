@@ -395,8 +395,12 @@ class SentieonPangenome(BasePangenome):
             "dnascope.model" not in bundle_members
             or "extract.model" not in bundle_members
             or "minimap2.model" not in bundle_members
-            or "cnv.model" not in bundle_members
         ):
+            self.logger.error(
+                "Expected model files not found in the model bundle file"
+            )
+            sys.exit(2)
+        if self.tech.upper() != "ULTIMA" and "cnv.model" not in bundle_members:
             self.logger.error(
                 "Expected model files not found in the model bundle file"
             )
