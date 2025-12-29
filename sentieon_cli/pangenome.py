@@ -46,9 +46,6 @@ PANGENOME_MIN_VERSIONS = {
     "vg": None,
     "bcftools": packaging.version.Version("1.22"),
     "samtools": packaging.version.Version("1.16"),
-    "run-t1k": None,
-    "ExpansionHunter": None,
-    "segdup-caller": None,
 }
 
 
@@ -231,6 +228,8 @@ class PangenomePipeline(BasePangenome):
         self.validate_output_vcf()
         self.validate_ref()
         self.validate_t1k()
+        self.validate_expansion()
+        self.validate_segdup()
 
         if not self.skip_version_check:
             for cmd, min_version in PANGENOME_MIN_VERSIONS.items():

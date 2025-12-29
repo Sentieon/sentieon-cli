@@ -56,10 +56,6 @@ SENT_PANGENOME_MIN_VERSIONS = {
     "samtools": packaging.version.Version("1.16"),
 }
 
-MULTIQC_MIN_VERSION = {
-    "multiqc": packaging.version.Version("1.18"),
-}
-
 GRCH38_CONTIGS: Dict[str, int] = {
     "chr1": 248956422,
     "chr2": 242193529,
@@ -286,6 +282,10 @@ class SentieonPangenome(BasePangenome):
         self.validate_bundle()
         self.validate_fastq_rg()
         self.validate_output_vcf()
+        self.validate_ref()
+        self.validate_t1k()
+        self.validate_expansion()
+        self.validate_segdup()
         self.collect_readgroups()
 
         if not self.sample_input and not self.r1_fastq:
@@ -395,6 +395,7 @@ class SentieonPangenome(BasePangenome):
             "dnascope.model" not in bundle_members
             or "extract.model" not in bundle_members
             or "minimap2.model" not in bundle_members
+            or "cnv.model" not in bundle_members
         ):
             self.logger.error(
                 "Expected model files not found in the model bundle file"

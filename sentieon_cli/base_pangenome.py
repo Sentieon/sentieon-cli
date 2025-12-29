@@ -17,7 +17,19 @@ from .driver import CNVscope, CNVModelApply, Driver
 from .job import Job
 from .pipeline import BasePipeline
 from .shell_pipeline import Command, Pipeline
-from .util import path_arg
+from .util import check_version, path_arg
+
+T1K_MIN_VERSION = {
+    "run-t1k": None,
+}
+
+EXPANSION_MIN_VERSION = {
+    "ExpansionHunter": None,
+}
+
+SEGDUP_MIN_VERSION = {
+    "segdup-caller": None,
+}
 
 
 class SampleSex(Enum):
@@ -168,6 +180,25 @@ class BasePangenome(BasePipeline):
                 "be supplied. Exiting"
             )
             sys.exit(2)
+
+        if (
+            self.t1k_hla_seq or self.t1k_kir_seq
+        ) and not self.skip_version_check:
+            for cmd, min_version in T1K_MIN_VERSION.items():
+                if not check_version(cmd, min_version):
+                    sys.exit(2)
+
+    def validate_expansion(self) -> None:
+        if self.expansion_catalog and not self.skip_version_check:
+            for cmd, min_version in EXPANSION_MIN_VERSION.items():
+                if not check_version(cmd, min_version):
+                    sys.exit(2)
+
+    def validate_segdup(self) -> None:
+        if self.segdup_caller_genes and not self.skip_version_check:
+            for cmd, min_version in SEGDUP_MIN_VERSION.items():
+                if not check_version(cmd, min_version):
+                    sys.exit(2)
 
     def build_kmc_job(
         self, kmer_prefix: pathlib.Path, job_threads: int
