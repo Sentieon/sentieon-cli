@@ -391,11 +391,6 @@ class SentieonPangenome(BasePangenome):
                 "Expected model files not found in the model bundle file"
             )
             sys.exit(2)
-        if self.tech.upper() != "ULTIMA" and "cnv.model" not in bundle_members:
-            self.logger.error(
-                "Expected model files not found in the model bundle file"
-            )
-            sys.exit(2)
 
         if not self.skip_pop_vcf_id_check and not self.dry_run:
             pop_vcf_id = vcf_id(self.pop_vcf)
