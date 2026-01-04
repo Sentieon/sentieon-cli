@@ -40,7 +40,11 @@ for line in sys.stdin:
                 kr = [True] + ka
                 break
 
-    if ka is None or all(ka):
+    if ka is None:
+        # no-call, drop
+        continue
+
+    if all(ka):
         sys.stdout.write(line)
         continue
 

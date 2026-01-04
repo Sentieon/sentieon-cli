@@ -33,7 +33,6 @@ from .driver import (
     LocusCollector,
     MeanQualityByCycle,
     QualDistribution,
-    ReadWriter,
     WgsMetricsAlgo,
 )
 from .job import Job
@@ -269,11 +268,6 @@ class SentieonPangenome(BasePangenome):
         executor = self.run(dag)
         self.check_execution(dag, executor)
 
-        self.get_sex(self.ploidy_json)
-        dag = self.build_second_dag(self.rw_bam)
-        executor = self.run(dag)
-        self.check_execution(dag, executor)
-
         if not self.retain_tmpdir:
             shutil.rmtree(tmp_dir_str)
 
@@ -283,9 +277,6 @@ class SentieonPangenome(BasePangenome):
         self.validate_fastq_rg()
         self.validate_output_vcf()
         self.validate_ref()
-        self.validate_t1k()
-        self.validate_expansion()
-        self.validate_segdup()
         self.collect_readgroups()
 
         if not self.sample_input and not self.r1_fastq:
@@ -485,11 +476,6 @@ class SentieonPangenome(BasePangenome):
         self.ploidy_json = pathlib.Path(
             str(self.output_vcf).replace(".vcf.gz", "_ploidy.json")
         )
-        out_hla = pathlib.Path(str(self.output_vcf).replace(".vcf.gz", "_hla"))
-        out_kir = pathlib.Path(str(self.output_vcf).replace(".vcf.gz", "_kir"))
-        out_segdup = pathlib.Path(
-            str(self.output_vcf).replace(".vcf.gz", "_segdups")
-        )
 
         # Intermediate file paths
         bwa_bam = self.tmp_dir.joinpath("sample-bwa.bam")
@@ -566,7 +552,6 @@ class SentieonPangenome(BasePangenome):
         dnascope_dependencies.add(mm2_job)
 
         # With fastq input, perform dedup and metrics
-        rw_jobs = set()
         if self.r1_fastq:
             dnascope_bams.append(out_bwa_aln)
             dnascope_bams.append(out_mm2_aln)
@@ -583,13 +568,11 @@ class SentieonPangenome(BasePangenome):
             dag.add_job(mm2_dedup_job, {mm2_lc_job})
             dnascope_dependencies.add(mm2_dedup_job)
 
-            metrics_job, rehead_job = self.build_metrics_job(
-                self.rw_bam,
-                [out_bwa_aln, out_mm2_aln],
-            )
-            dag.add_job(metrics_job, {bwa_dedup_job, mm2_dedup_job})
-            rw_jobs.add(metrics_job)
-            if rehead_job:
+            if not self.skip_metrics:
+                metrics_job, rehead_job = self.build_metrics_job(
+                    [out_bwa_aln, out_mm2_aln],
+                )
+                dag.add_job(metrics_job, {bwa_dedup_job, mm2_dedup_job})
                 dag.add_job(rehead_job, {metrics_job})
                 if not self.skip_multiqc:
                     multiqc_job = self.multiqc()
@@ -597,19 +580,6 @@ class SentieonPangenome(BasePangenome):
                         dag.add_job(multiqc_job, {rehead_job})
         else:
             dnascope_bams.append(mm2_bam)
-
-            # Generate a single BAM for T1K and ploidy estimation
-            driver = Driver(
-                reference=self.reference,
-                thread_count=self.cores,
-                input=dnascope_bams,
-            )
-            driver.add_algo(ReadWriter(self.rw_bam))
-            rw_job = Job(
-                Pipeline(Command(*driver.build_cmd())), "readwriter", 0
-            )
-            dag.add_job(rw_job, {mm2_job})
-            rw_jobs.add(rw_job)
 
         # DNAscope calling with bwa and mm2 input
         apply_dependencies = set()
@@ -630,40 +600,6 @@ class SentieonPangenome(BasePangenome):
         # DNAModelApply
         apply_job = self.build_dnamodelapply_job(transfer_vcf)
         dag.add_job(apply_job, apply_dependencies)
-
-        # estimate ploidy
-        ploidy_job = self.build_ploidy_job(
-            self.ploidy_json,
-            [self.rw_bam],
-        )
-        dag.add_job(ploidy_job, rw_jobs)
-
-        # HLA and KIR calling with T1K
-        if self.t1k_hla_seq and self.t1k_hla_coord:
-            hla_job = self.build_t1k_job(
-                out_hla,
-                self.rw_bam,
-                self.t1k_hla_seq,
-                self.t1k_hla_coord,
-                "hla-wgs",
-            )
-            dag.add_job(hla_job, rw_jobs)
-        if self.t1k_kir_seq and self.t1k_kir_coord:
-            kir_job = self.build_t1k_job(
-                out_kir,
-                self.rw_bam,
-                self.t1k_kir_seq,
-                self.t1k_kir_coord,
-                "kir-wgs",
-            )
-            dag.add_job(kir_job, rw_jobs)
-
-        # special-caller
-        if self.segdup_caller_genes:
-            segdup_job = self.build_segdup_job(
-                out_segdup, self.rw_bam, genes=self.segdup_caller_genes
-            )
-            dag.add_job(segdup_job, rw_jobs)
 
         return dag
 
@@ -848,9 +784,8 @@ class SentieonPangenome(BasePangenome):
 
     def build_metrics_job(
         self,
-        output_bam: pathlib.Path,
         sample_input: List[pathlib.Path],
-    ) -> Tuple[Job, Optional[Job]]:
+    ) -> Tuple[Job, Job]:
         """Build a metrics job"""
         assert self.output_vcf
 
@@ -887,22 +822,16 @@ class SentieonPangenome(BasePangenome):
             input=sample_input,
         )
 
-        driver.add_algo(ReadWriter(output_bam))
-        if not self.skip_metrics:
-            driver.add_algo(InsertSizeMetricAlgo(is_metrics))
-            driver.add_algo(MeanQualityByCycle(mqbc_metrics))
-            driver.add_algo(BaseDistributionByCycle(bdbc_metrics))
-            driver.add_algo(QualDistribution(qualdist_metrics))
-            driver.add_algo(AlignmentStat(as_metrics))
-            driver.add_algo(GCBias(gc_metrics, summary=gc_summary))
-            driver.add_algo(
-                WgsMetricsAlgo(wgs_metrics, include_unpaired="true")
-            )
-            driver.add_algo(CoverageMetrics(coverage_metrics))
+        driver.add_algo(InsertSizeMetricAlgo(is_metrics))
+        driver.add_algo(MeanQualityByCycle(mqbc_metrics))
+        driver.add_algo(BaseDistributionByCycle(bdbc_metrics))
+        driver.add_algo(QualDistribution(qualdist_metrics))
+        driver.add_algo(AlignmentStat(as_metrics))
+        driver.add_algo(GCBias(gc_metrics, summary=gc_summary))
+        driver.add_algo(WgsMetricsAlgo(wgs_metrics, include_unpaired="true"))
+        driver.add_algo(CoverageMetrics(coverage_metrics))
 
         metrics_job = Job(Pipeline(Command(*driver.build_cmd())), "metrics", 0)
-        if self.skip_metrics:
-            return (metrics_job, None)
 
         rehead_script = pathlib.Path(
             str(
