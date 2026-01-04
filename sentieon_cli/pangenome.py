@@ -920,6 +920,7 @@ class PangenomePipeline(BasePangenome):
         interval_ctgs.extend(["chrX", "chrY"])
         interval = ",".join(interval_ctgs)
 
+        pcr_indel_model = "NONE" if self.pcr_free else "CONSERVATIVE"
         driver = Driver(
             reference=self.reference,
             thread_count=self.cores,
@@ -930,7 +931,7 @@ class PangenomePipeline(BasePangenome):
             DNAscope(
                 dnascope_tmp,
                 dbsnp=self.dbsnp,
-                pcr_indel_model="NONE",
+                pcr_indel_model=pcr_indel_model,
                 model=model,
             )
         )

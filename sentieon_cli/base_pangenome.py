@@ -76,6 +76,10 @@ class BasePangenome(BasePipeline):
                 "default": 30,
                 "type": int,
             },
+            "pcr_free": {
+                "help": "Use arguments for PCR-free data processing",
+                "action": "store_true",
+            },
         }
     )
 
@@ -91,6 +95,7 @@ class BasePangenome(BasePipeline):
         self.bam_format = False
         self.dbsnp: Optional[pathlib.Path] = None
         self.kmer_memory = 30
+        self.pcr_free = False
 
     def build_kmc_job(
         self, kmer_prefix: pathlib.Path, job_threads: int

@@ -859,6 +859,7 @@ class SentieonPangenome(BasePangenome):
         if self.tech.upper() == "ULTIMA":
             read_filters.append("UltimaReadFilter")
 
+        pcr_indel_model = "NONE" if self.pcr_free else "CONSERVATIVE"
         driver = Driver(
             reference=self.reference,
             thread_count=self.cores,
@@ -870,7 +871,7 @@ class SentieonPangenome(BasePangenome):
             DNAscope(
                 out_vcf,
                 model=self.model_bundle.joinpath("dnascope.model"),
-                pcr_indel_model="NONE",
+                pcr_indel_model=pcr_indel_model,
                 dbsnp=self.dbsnp,
             )
         )
