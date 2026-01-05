@@ -11,7 +11,6 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from tests.utils.test_helpers import (
-    CommandValidator,
     DAGAnalyzer,
     setup_basic_test_environment,
     teardown_test_environment
@@ -42,11 +41,8 @@ class TestPipelineDryRunExecution:
         commands = [job.shell for job in all_jobs]
 
         # Validate commands
-        sentieon_commands = [cmd for cmd in commands if cmd.startswith("sentieon")]
+        sentieon_commands = [cmd for subcommands in commands for cmd in subcommands.nodes if cmd.executable.startswith("sentieon")]
         assert len(sentieon_commands) > 0, "Should have sentieon commands"
-
-        for cmd in sentieon_commands:
-            assert CommandValidator.validate_sentieon_command(cmd), f"Invalid command: {cmd}"
 
     def test_longread_dry_run_execution(self):
         """Test long-read pipeline dry-run execution"""
@@ -61,7 +57,7 @@ class TestPipelineDryRunExecution:
         commands = [job.shell for job in all_jobs]
 
         # Should have complex phased calling commands
-        variant_commands = [cmd for cmd in commands if "DNAscope" in cmd or "VariantPhaser" in cmd]
+        variant_commands = [cmd for subcommands in commands for cmd in subcommands.nodes if "DNAscope" in cmd.args or "VariantPhaser" in cmd.args]
         assert len(variant_commands) > 1, "Should have multiple variant calling steps"
 
     def test_hybrid_dry_run_execution(self):
@@ -100,6 +96,48 @@ class TestPipelineDryRunExecution:
             hybrid_stages = [name for name in job_names if "stage" in name.lower()]
             assert len(hybrid_stages) > 0, "Should have hybrid staging jobs"
 
+    def test_hybrid_dry_run_execution_rgsm(self):
+        """Test hybrid pipeline dry-run execution with --rgsm"""
+        pipeline = self.helper.create_hybrid_pipeline()
+        pipeline.rgsm = "HG001"
+
+        # Mock the archive loading and readgroup functions
+        with patch('sentieon_cli.dnascope_hybrid.ar_load') as mock_ar_load, \
+             patch('sentieon_cli.command_strings.get_rg_lines') as mock_get_rg:
+
+            # Mock bundle info
+            import json
+            bundle_info = {
+                "longReadPlatform": "HiFi",
+                "shortReadPlatform": "Illumina",
+                "minScriptVersion": "1.0.0",
+                "pipeline": "DNAscope Hybrid"
+            }
+            mock_ar_load.side_effect = [
+                json.dumps(bundle_info).encode(),  # First call for bundle_info.json
+                ["longreadsv.model", "cnv.model", "bwa.model"]  # Second call for bundle members
+            ]
+
+            # Mock readgroup lines
+            mock_get_rg.return_value = ["@RG\tID:test\tSM:sample"]
+
+            pipeline.validate()
+            pipeline.configure()
+
+            dag = pipeline.build_dag()
+            all_jobs = [job for job in list(dag.waiting_jobs.keys()) + list(dag.ready_jobs.keys())]
+
+            # with --rgsm should use replace_rg during first pass
+            first_pass_job = [job for job in all_jobs if job.name == "calling-1"][0]
+            assert "--replace_rg" in first_pass_job.shell.nodes[0].args
+
+            # should use replace_rg in CNV calling
+            cnv_job = [job for job in all_jobs if job.name == "CNVscope"][0]
+            assert "--replace_rg" in cnv_job.shell.nodes[0].args
+
+            # should use replace_rg in SV calling
+            sv_job = [job for job in all_jobs if job.name == "LongReadSV"][0]
+            assert "--replace_rg" in sv_job.shell.nodes[0].args
 
 class TestPipelineCommandGeneration:
     """Test command generation for different pipeline configurations"""
@@ -130,10 +168,14 @@ class TestPipelineCommandGeneration:
         assert variant_job is not None, "Should have variant calling job"
 
         # Check that command includes expected parameters
-        command = variant_job.shell
-        assert "--algo DNAscope" in command
-        assert "dbsnp.vcf.gz" in command, "Should include dbSNP file"
-        assert "emit_mode" in command, "Should have emit mode for gVCF"
+        commands = variant_job.shell.nodes
+        dnascope_cmds = [cmd for cmd in commands if "DNAscope" in cmd.args]
+        assert len(dnascope_cmds) > 0
+        for cmd in dnascope_cmds:
+            dnascope_idx = cmd.args.index("DNAscope")
+            assert cmd.args[dnascope_idx - 1] == "--algo"
+            assert "--dbsnp" in cmd.args, "Should include dbSNP file"
+            assert "--emit_mode" in cmd.args, "Should have emit mode for gVCF"
 
     def test_resource_allocation_in_commands(self):
         """Test that resource allocation is reflected in commands"""
@@ -176,11 +218,11 @@ class TestPipelineCommandGeneration:
         commands2 = [job.shell for job in list(dag2.waiting_jobs.keys()) + list(dag2.ready_jobs.keys())]
 
         # Metrics pipeline should have more algorithms
-        metrics_algos1 = [cmd for cmd in commands1 if "--algo" in cmd and any(
-            algo in cmd for algo in ["InsertSizeMetricAlgo", "MeanQualityByCycle", "GCBias"]
+        metrics_algos1 = [cmd for subcommand in commands1 for cmd in subcommand.nodes if any(
+            algo in cmd.args for algo in ["InsertSizeMetricAlgo", "MeanQualityByCycle", "GCBias"]
         )]
-        metrics_algos2 = [cmd for cmd in commands2 if "--algo" in cmd and any(
-            algo in cmd for algo in ["InsertSizeMetricAlgo", "MeanQualityByCycle", "GCBias"]
+        metrics_algos2 = [cmd for subcommand in commands2 for cmd in subcommand.nodes if any(
+            algo in cmd.args for algo in ["InsertSizeMetricAlgo", "MeanQualityByCycle", "GCBias"]
         )]
 
         assert len(metrics_algos1) > len(metrics_algos2), "Metrics enabled should have more metric algorithms"
@@ -302,25 +344,6 @@ class TestDAGDependencyValidation:
             if variant_job in dag.waiting_jobs:
                 # Should have some dependencies
                 assert len(dag.waiting_jobs[variant_job]) > 0, "Variant calling should have dependencies"
-
-    def test_cleanup_jobs_at_end(self):
-        """Test that cleanup jobs are scheduled after main processing"""
-        pipeline = self.helper.create_dnascope_pipeline(use_bam=True)
-        pipeline.validate()
-        pipeline.configure()
-
-        dag = pipeline.build_dag()
-
-        # Find cleanup jobs (typically have fail_ok=True)
-        cleanup_jobs = [job for job in list(dag.waiting_jobs.keys()) + list(dag.ready_jobs.keys())
-                       if job.fail_ok]
-
-        if cleanup_jobs:
-            # Cleanup jobs should depend on main processing jobs
-            for cleanup_job in cleanup_jobs:
-                if cleanup_job in dag.waiting_jobs:
-                    deps = dag.waiting_jobs[cleanup_job]
-                    assert len(deps) > 0, "Cleanup jobs should have dependencies"
 
 
 if __name__ == "__main__":

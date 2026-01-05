@@ -14,20 +14,19 @@ jobs:
       fail-fast: true
       max-parallel: 1
       matrix:
-        python-version: ["3.8", "3.13"]
-        poetry-version: ["1.5.1"]
-        sentieon-version: ["202503"]
+        python-version: ["3.9", "3.13"]
+        sentieon-version: ["202503.01"]
         os: [ubuntu-22.04] #, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Run image
-        uses: abatilo/actions-poetry@v2
-        with:
-          poetry-version: ${{ matrix.poetry-version }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --upgrade poetry
       - name: Install the project dependencies
         run: |
           poetry config virtualenvs.in-project true
@@ -42,9 +41,16 @@ jobs:
           pip install multiqc
       - name: Install sentieon
         run: |
-          curl -L https://s3.amazonaws.com/sentieon-release/software/sentieon-genomics-$SENTIEON_VERSION.tar.gz | tar -zxf -
+          url="https://s3.amazonaws.com/sentieon-release/software/sentieon-genomics-$SENTIEON_VERSION.tar.gz"
+          bin_dir=$(pwd)/sentieon-genomics-$SENTIEON_VERSION/bin
+          machine_arch=$(uname -m)
+          if [[ "$machine_arch" == "arm64" || "$machine_arch" == "aarch64" || "$machine_arch" == "armv7l" ]]; then
+            url="https://s3.amazonaws.com/sentieon-release/software/arm-sentieon-genomics-$SENTIEON_VERSION.tar.gz"
+            bin_dir=$(pwd)/arm-sentieon-genomics-$SENTIEON_VERSION/bin
+          fi
+          curl -L "$url" | tar -zxf -
           echo "SENTIEON_VERSION=$SENTIEON_VERSION" >> $GITHUB_ENV
-          echo "PATH=$(pwd)/sentieon-genomics-$SENTIEON_VERSION/bin:$PATH" >> $GITHUB_ENV
+          echo "PATH=$bin_dir:$PATH" >> $GITHUB_ENV
         env:
           SENTIEON_VERSION: ${{ matrix.sentieon-version }}
       - name: Download short-read model
@@ -91,20 +97,19 @@ jobs:
       fail-fast: true
       max-parallel: 1
       matrix:
-        python-version: ["3.8", "3.13"]
-        poetry-version: ["1.5.1"]
-        sentieon-version: ["202503"]
+        python-version: ["3.9", "3.13"]
+        sentieon-version: ["202503.01"]
         os: [ubuntu-22.04] #, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Run image
-        uses: abatilo/actions-poetry@v2
-        with:
-          poetry-version: ${{ matrix.poetry-version }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --upgrade poetry
       - name: Install the project dependencies
         run: |
           poetry config virtualenvs.in-project true
@@ -112,7 +117,10 @@ jobs:
       - name: Install bcftools
         run: |
           sudo apt-get update
-          sudo apt-get install -y bcftools
+          sudo apt-get install libcurl4-gnutls-dev
+          curl -L https://github.com/samtools/bcftools/releases/download/1.22/bcftools-1.22.tar.bz2 | tar -jxf -
+          cd bcftools-1.22
+          ./configure && sudo make install
       - name: Install samtools
         run: |
           curl -L https://github.com/samtools/samtools/releases/download/1.19.2/samtools-1.19.2.tar.bz2 | tar -jxf -
@@ -128,9 +136,16 @@ jobs:
           sudo chmod ugo+x /usr/local/bin/mosdepth
       - name: Install sentieon
         run: |
-          curl -L https://s3.amazonaws.com/sentieon-release/software/sentieon-genomics-$SENTIEON_VERSION.tar.gz | tar -zxf -
+          url="https://s3.amazonaws.com/sentieon-release/software/sentieon-genomics-$SENTIEON_VERSION.tar.gz"
+          bin_dir=$(pwd)/sentieon-genomics-$SENTIEON_VERSION/bin
+          machine_arch=$(uname -m)
+          if [[ "$machine_arch" == "arm64" || "$machine_arch" == "aarch64" || "$machine_arch" == "armv7l" ]]; then
+            url="https://s3.amazonaws.com/sentieon-release/software/arm-sentieon-genomics-$SENTIEON_VERSION.tar.gz"
+            bin_dir=$(pwd)/arm-sentieon-genomics-$SENTIEON_VERSION/bin
+          fi
+          curl -L "$url" | tar -zxf -
           echo "SENTIEON_VERSION=$SENTIEON_VERSION" >> $GITHUB_ENV
-          echo "PATH=$(pwd)/sentieon-genomics-$SENTIEON_VERSION/bin:$PATH" >> $GITHUB_ENV
+          echo "PATH=$bin_dir:$PATH" >> $GITHUB_ENV
         env:
           SENTIEON_VERSION: ${{ matrix.sentieon-version }}
       - name: Download long-read model
@@ -204,20 +219,19 @@ jobs:
       fail-fast: true
       max-parallel: 1
       matrix:
-        python-version: ["3.8", "3.13"]
-        poetry-version: ["1.5.1"]
-        sentieon-version: ["202503.01.rc1"]
+        python-version: ["3.9", "3.13"]
+        sentieon-version: ["202503.01"]
         os: [ubuntu-22.04] #, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Run image
-        uses: abatilo/actions-poetry@v2
-        with:
-          poetry-version: ${{ matrix.poetry-version }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --upgrade poetry
       - name: Install the project dependencies
         run: |
           poetry config virtualenvs.in-project true
@@ -225,7 +239,10 @@ jobs:
       - name: Install bcftools
         run: |
           sudo apt-get update
-          sudo apt-get install -y bcftools
+          sudo apt-get install libcurl4-gnutls-dev
+          curl -L https://github.com/samtools/bcftools/releases/download/1.22/bcftools-1.22.tar.bz2 | tar -jxf -
+          cd bcftools-1.22
+          ./configure && sudo make install
       - name: Install samtools
         run: |
           curl -L https://github.com/samtools/samtools/releases/download/1.19.2/samtools-1.19.2.tar.bz2 | tar -jxf -
@@ -244,9 +261,16 @@ jobs:
           pip install multiqc
       - name: Install sentieon
         run: |
-          curl -L https://s3.amazonaws.com/sentieon-release/software/sentieon-genomics-$SENTIEON_VERSION.tar.gz | tar -zxf -
+          url="https://s3.amazonaws.com/sentieon-release/software/sentieon-genomics-$SENTIEON_VERSION.tar.gz"
+          bin_dir=$(pwd)/sentieon-genomics-$SENTIEON_VERSION/bin
+          machine_arch=$(uname -m)
+          if [[ "$machine_arch" == "arm64" || "$machine_arch" == "aarch64" || "$machine_arch" == "armv7l" ]]; then
+            url="https://s3.amazonaws.com/sentieon-release/software/arm-sentieon-genomics-$SENTIEON_VERSION.tar.gz"
+            bin_dir=$(pwd)/arm-sentieon-genomics-$SENTIEON_VERSION/bin
+          fi
+          curl -L "$url" | tar -zxf -
           echo "SENTIEON_VERSION=$SENTIEON_VERSION" >> $GITHUB_ENV
-          echo "PATH=$(pwd)/sentieon-genomics-$SENTIEON_VERSION/bin:$PATH" >> $GITHUB_ENV
+          echo "PATH=$bin_dir:$PATH" >> $GITHUB_ENV
         env:
           SENTIEON_VERSION: ${{ matrix.sentieon-version }}
       - name: Download hybrid model
@@ -292,5 +316,23 @@ jobs:
             -m "DNAscope hybrid IlmnPB1.1.bundle" \
             "output_hybrid2.vcf.gz"
           if [ ! -f "output_hybrid2.vcf.gz" ]; then
+            exit 1
+          fi
+      - name: Smoke test - readgroups
+        run: |
+          . .venv/bin/activate
+          samtools addreplacerg -m overwrite_all \
+            -o "tests/smoke/illumina_2.bam" \
+            -r '@RG\tID:HG002-2\tSM:HG003\tPL:ILLUMINA' -O BAM \
+            --reference "tests/smoke/r ef.fa" "tests/smoke/illumina.cram"
+          samtools index -b "tests/smoke/illumina_2.bam"
+          sentieon-cli -v dnascope-hybrid -t 1 -r "tests/smoke/r ef.fa" \
+            --rgsm "HG001" \
+            --sr_aln "tests/smoke/illumina.cram" "tests/smoke/illumina_2.bam" \
+            --lr_aln "tests/smoke/sam ple.cram" \
+            -m "DNAscope hybrid IlmnPB1.1.bundle" \
+            --sr_duplicate_marking none \
+            "output_hybrid3.vcf.gz"
+          if [ ! -f "output_hybrid3.vcf.gz" ]; then
             exit 1
           fi

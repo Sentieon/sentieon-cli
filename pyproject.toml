@@ -1,27 +1,29 @@
 
-#https://stackoverflow.com/questions/75408641/whats-difference-between-tool-poetry-and-project-in-pyproject-toml
-[tool.poetry]
+[project]
 name = "sentieon_cli"
-version = "1.4.0"
+version = "1.5.0"
 description = "entry point for sentieon command-line tools"
-authors = ["Don Freed <don.freed@sentieon.com>", "Brent <bpederse@gmail.com>"]
+authors = [
+    {name = "Don Freed", email = "don.freed@sentieon.com"},
+    {name = "Brent", email = "bpederse@gmail.com"},
+]
 readme = "README.md"
+requires-python = ">= 3.8"
 
 classifiers = [
-    "Development Status :: 5 — Production/Stable",
-    'License :: OSI Approved :: BSD 2-Clause "Simplified License" (BSD-2-Clause)',
+    "Development Status :: 5 - Production/Stable",
+    "License :: OSI Approved :: BSD License",
     "Programming Language :: Python :: 3",
 ]
 include = ["LICENSE"]
 
+dependencies = [
+    "colorlog (>=6.7.0,<7.0.0)",
+    "importlib-resources (>=5.0,<6.0)",
+    "packaging (>=23.2,<26.0)",
+]
 
-[tool.poetry.dependencies]
-python = "^3.8"
-colorlog = "^6.7.0"
-importlib-resources = "^5.0"
-packaging = "^23.2"
-
-[tool.poetry.scripts]
+[project.scripts]
 sentieon-cli = "sentieon_cli:main"
 
 [tool.mypy]

@@ -8,12 +8,13 @@ import itertools
 import multiprocessing as mp
 import os
 import pathlib
-import shlex
 import shutil
 import sys
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, List, Optional, Set, Tuple
 
 import packaging.version
+
+from importlib_resources import files
 
 from . import command_strings as cmds
 from .dag import DAG
@@ -39,8 +40,8 @@ from .driver import (
 )
 from .job import Job
 from .pipeline import BasePipeline
+from .shell_pipeline import Command, Pipeline
 from .util import (
-    __version__,
     check_version,
     library_preloaded,
     path_arg,
@@ -62,10 +63,6 @@ VARIANTS_MIN_VERSIONS = {
     "sentieon driver": packaging.version.Version("202308"),
 }
 
-MULTIQC_MIN_VERSION = {
-    "multiqc": packaging.version.Version("1.18"),
-}
-
 CNV_MIN_VERSIONS = {
     "sentieon driver": packaging.version.Version("202308.03"),
 }
@@ -74,187 +71,160 @@ CNV_MIN_VERSIONS = {
 class DNAscopePipeline(BasePipeline):
     """The DNAscope pipeline"""
 
-    params: Dict[str, Dict[str, Any]] = {
-        "model_bundle": {
-            "flags": ["-m", "--model_bundle"],
-            "help": "The model bundle file.",
-            "required": True,
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "r1_fastq": {
-            "nargs": "*",
-            "help": "Sample R1 fastq files.",
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "r2_fastq": {
-            "nargs": "*",
-            "help": "Sample R2 fastq files.",
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "readgroups": {
-            "nargs": "*",
-            "help": "Readgroup information for the fastq files.",
-        },
-        "reference": {
-            "flags": ["-r", "--reference"],
-            "required": True,
-            "help": "fasta for reference genome.",
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "sample_input": {
-            "flags": ["-i", "--sample_input"],
-            "nargs": "*",
-            "help": "sample BAM or CRAM file.",
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "align": {
-            "help": (
-                "Align the reads in the input uBAM/uCRAM file to the "
-                "reference genome. Assumes paired reads are collated in the "
-                "input file."
-            ),
-            "action": "store_true",
-        },
-        "assay": {
-            "help": "The type of assay, WGS or WES.",
-            "choices": ["WGS", "WES"],
-            "default": "WGS",
-        },
-        "bam_format": {
-            "help": (
-                "Use the BAM format instead of CRAM for output aligned files"
-            ),
-            "action": "store_true",
-        },
-        "bed": {
-            "flags": ["-b", "--bed"],
-            "help": (
-                "Region BED file. Supplying this file will limit variant "
-                "calling to the intervals inside the BED file."
-            ),
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "collate_align": {
-            "help": (
-                "Collate and align the reads in the input BAM/CRAM file to "
-                "the reference genome. Suitable for coordinate-sorted "
-                "BAM/CRAM input."
-            ),
-            "action": "store_true",
-        },
-        "consensus": {
-            "help": "Generate consensus reads during dedup",
-            "action": "store_true",
-        },
-        "cores": {
-            "flags": ["-t", "--cores"],
-            "help": (
-                "Number of threads/processes to use. Defaults to all "
-                "available."
-            ),
-            "default": mp.cpu_count(),
-        },
-        "dbsnp": {
-            "flags": ["-d", "--dbsnp"],
-            "help": (
-                "dbSNP vcf file Supplying this file will annotate variants "
-                "with their dbSNP refSNP ID numbers."
-            ),
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "dry_run": {
-            "help": "Print the commands without running them.",
-            "action": "store_true",
-        },
-        "duplicate_marking": {
-            "help": "Options for duplicate marking.",
-            "choices": ["markdup", "rmdup", "none"],
-            "default": "markdup",
-        },
-        "gvcf": {
-            "flags": ["-g", "--gvcf"],
-            "help": (
-                "Generate a gVCF output file along with the VCF."
-                " (default generates only the VCF)"
-            ),
-            "action": "store_true",
-        },
-        "input_ref": {
-            "help": (
-                "Used to decode the input alignment file. Required if the "
-                "input file is in the CRAM/uCRAM formats."
-            ),
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "interval_padding": {
-            "help": "Amount to pad all intervals.",
-            "type": int,
-        },
-        "pcr_free": {
-            "help": "Use arguments for PCR-free data processing",
-            "action": "store_true",
-        },
-        "skip_metrics": {
-            "help": "Skip all metrics collection and multiQC",
-            "action": "store_true",
-        },
-        "skip_multiqc": {
-            "help": "Skip multiQC report generation",
-            "action": "store_true",
-        },
-        "skip_small_variants": {
-            "help": "Skip small variant (SNV/indel) calling",
-            "action": "store_true",
-        },
-        "skip_svs": {
-            "help": "Skip SV calling",
-            "action": "store_true",
-        },
-        "bwa_args": {
-            # "help": "Extra arguments for sentieon bwa",
-            "help": argparse.SUPPRESS,
-            "default": "",
-        },
-        "bwa_k": {
-            # "help": "The '-K' argument in bwa",
-            "help": argparse.SUPPRESS,
-            "default": 100000000,
-        },
-        "bwt_max_mem": {
-            # Manually set `bwt_max_mem`
-            "help": argparse.SUPPRESS,
-        },
-        "no_ramdisk": {
-            # Do not use /dev/shm, even on high memory machines
-            "help": argparse.SUPPRESS,
-            "action": "store_true",
-        },
-        "no_split_alignment": {
-            "help": argparse.SUPPRESS,
-            "action": "store_true",
-        },
-        "skip_version_check": {
-            "help": argparse.SUPPRESS,
-            "action": "store_true",
-        },
-        "util_sort_args": {
-            # "help": "Extra arguments for sentieon util sort",
-            "help": argparse.SUPPRESS,
-            "default": "--cram_write_options version=3.0,compressor=rans",
-        },
-    }
-
-    positionals: Dict[str, Dict[str, Any]] = {
-        "output_vcf": {
-            "help": "Output VCF File. The file name must end in .vcf.gz",
-            "type": path_arg(),
-        },
-    }
+    params = copy.deepcopy(BasePipeline.params)
+    params.update(
+        {
+            "model_bundle": {
+                "flags": ["-m", "--model_bundle"],
+                "help": "The model bundle file.",
+                "required": True,
+                "type": path_arg(exists=True, is_file=True),
+            },
+            "r1_fastq": {
+                "nargs": "*",
+                "help": "Sample R1 fastq files.",
+                "type": path_arg(exists=True, is_file=True),
+            },
+            "r2_fastq": {
+                "nargs": "*",
+                "help": "Sample R2 fastq files.",
+                "type": path_arg(exists=True, is_file=True),
+            },
+            "readgroups": {
+                "nargs": "*",
+                "help": "Readgroup information for the fastq files.",
+            },
+            "sample_input": {
+                "flags": ["-i", "--sample_input"],
+                "nargs": "*",
+                "help": "sample BAM or CRAM file.",
+                "type": path_arg(exists=True, is_file=True),
+            },
+            "align": {
+                "help": (
+                    "Align the reads in the input uBAM/uCRAM file to the "
+                    "reference genome. Assumes paired reads are collated in "
+                    "the input file."
+                ),
+                "action": "store_true",
+            },
+            "assay": {
+                "help": "The type of assay, WGS or WES.",
+                "choices": ["WGS", "WES"],
+                "default": "WGS",
+            },
+            "bam_format": {
+                "help": (
+                    "Use the BAM format instead of CRAM for output aligned "
+                    "files."
+                ),
+                "action": "store_true",
+            },
+            "bed": {
+                "flags": ["-b", "--bed"],
+                "help": (
+                    "Region BED file. Supplying this file will limit variant "
+                    "calling to the intervals inside the BED file."
+                ),
+                "type": path_arg(exists=True, is_file=True),
+            },
+            "collate_align": {
+                "help": (
+                    "Collate and align the reads in the input BAM/CRAM file "
+                    "to the reference genome. Suitable for coordinate-sorted "
+                    "BAM/CRAM input."
+                ),
+                "action": "store_true",
+            },
+            "consensus": {
+                "help": "Generate consensus reads during dedup",
+                "action": "store_true",
+            },
+            "dbsnp": {
+                "flags": ["-d", "--dbsnp"],
+                "help": (
+                    "dbSNP vcf file Supplying this file will annotate "
+                    "variants with their dbSNP refSNP ID numbers."
+                ),
+                "type": path_arg(exists=True, is_file=True),
+            },
+            "duplicate_marking": {
+                "help": "Options for duplicate marking.",
+                "choices": ["markdup", "rmdup", "none"],
+                "default": "markdup",
+            },
+            "gvcf": {
+                "flags": ["-g", "--gvcf"],
+                "help": (
+                    "Generate a gVCF output file along with the VCF."
+                    " (default generates only the VCF)"
+                ),
+                "action": "store_true",
+            },
+            "input_ref": {
+                "help": (
+                    "Used to decode the input alignment file. Required if the "
+                    "input file is in the CRAM/uCRAM formats."
+                ),
+                "type": path_arg(exists=True, is_file=True),
+            },
+            "interval_padding": {
+                "help": "Amount to pad all intervals.",
+                "type": int,
+            },
+            "pcr_free": {
+                "help": "Use arguments for PCR-free data processing",
+                "action": "store_true",
+            },
+            "skip_metrics": {
+                "help": "Skip all metrics collection and multiQC",
+                "action": "store_true",
+            },
+            "skip_multiqc": {
+                "help": "Skip multiQC report generation",
+                "action": "store_true",
+            },
+            "skip_small_variants": {
+                "help": "Skip small variant (SNV/indel) calling",
+                "action": "store_true",
+            },
+            "skip_svs": {
+                "help": "Skip SV calling",
+                "action": "store_true",
+            },
+            "bwa_args": {
+                # "help": "Extra arguments for sentieon bwa",
+                "help": argparse.SUPPRESS,
+                "default": "",
+            },
+            "bwa_k": {
+                # "help": "The '-K' argument in bwa",
+                "help": argparse.SUPPRESS,
+                "default": 100000000,
+            },
+            "bwt_max_mem": {
+                # Manually set `bwt_max_mem`
+                "help": argparse.SUPPRESS,
+            },
+            "no_ramdisk": {
+                # Do not use /dev/shm, even on high memory machines
+                "help": argparse.SUPPRESS,
+                "action": "store_true",
+            },
+            "no_split_alignment": {
+                "help": argparse.SUPPRESS,
+                "action": "store_true",
+            },
+            "util_sort_args": {
+                # "help": "Extra arguments for sentieon util sort",
+                "help": argparse.SUPPRESS,
+                "default": "--cram_write_options version=3.0,compressor=rans",
+            },
+        }
+    )
 
     def __init__(self) -> None:
         super().__init__()
-        self.output_vcf: Optional[pathlib.Path] = None
-        self.reference: Optional[pathlib.Path] = None
         self.sample_input: List[pathlib.Path] = []
         self.r1_fastq: List[pathlib.Path] = []
         self.r2_fastq: List[pathlib.Path] = []
@@ -263,7 +233,6 @@ class DNAscopePipeline(BasePipeline):
         self.dbsnp: Optional[pathlib.Path] = None
         self.bed: Optional[pathlib.Path] = None
         self.interval_padding = 0
-        self.cores = mp.cpu_count()
         self.pcr_free = False
         self.gvcf = False
         self.duplicate_marking = "markdup"
@@ -282,7 +251,6 @@ class DNAscopePipeline(BasePipeline):
         self.util_sort_args = (
             "--cram_write_options version=3.0,compressor=rans"
         )
-        self.skip_version_check = False
         self.bwt_max_mem: Optional[str] = None
         self.no_ramdisk = False
         self.no_split_alignment = False
@@ -300,7 +268,7 @@ class DNAscopePipeline(BasePipeline):
         del self.readgroups
         del self.duplicate_marking
 
-        # vaidate
+        # validate
         if not self.sample_input and not (
             self.sr_r1_fastq and self.sr_readgroups
         ):
@@ -382,7 +350,7 @@ class DNAscopePipeline(BasePipeline):
 
         if (
             shm_free > total_input_size * 2.3
-            and total_mem > total_input_size + 40 * 1024**3 * n_alignment_jobs
+            and total_mem > total_input_size + 60 * 1024**3 * n_alignment_jobs
         ):
             self.logger.debug("Using /dev/shm for temporary files")
             return True
@@ -545,10 +513,11 @@ class DNAscopePipeline(BasePipeline):
 
         # Create an unscheduled job to remove the aligned inputs
         rm_job = Job(
-            shlex.join(["rm"] + [str(x) for x in align_outputs]),
+            Pipeline(
+                Command("rm", *[str(x) for x in align_outputs], fail_ok=True)
+            ),
             "rm-bam-aln",
             0,
-            True,
         )
 
         return (res, jobs, rm_job)
@@ -636,10 +605,11 @@ class DNAscopePipeline(BasePipeline):
 
         # Create an unscheduled job to remove the aligned inputs
         rm_job = Job(
-            shlex.join(["rm"] + [str(x) for x in align_outputs]),
+            Pipeline(
+                Command("rm", *[str(x) for x in align_outputs], fail_ok=True)
+            ),
             "rm-fq-aln",
             0,
-            True,
         )
 
         return (res, jobs, rm_job)
@@ -689,7 +659,6 @@ class DNAscopePipeline(BasePipeline):
 
         # WGS metrics
         wgs_metrics = metrics_dir.joinpath(metric_base + ".wgs.txt")
-        wgs_metrics_tmp = metrics_dir.joinpath(metric_base + ".wgs.txt.tmp")
         gc_metrics = metrics_dir.joinpath(metric_base + ".gc_bias.txt")
         gc_summary = metrics_dir.joinpath(metric_base + ".gc_bias_summary.txt")
 
@@ -724,7 +693,9 @@ class DNAscopePipeline(BasePipeline):
 
         if not (self.sr_duplicate_marking == "none" and self.skip_metrics):
             lc_job = Job(
-                shlex.join(driver.build_cmd()), "locuscollector", self.cores
+                Pipeline(Command(*driver.build_cmd())),
+                "locuscollector",
+                self.cores,
             )
 
         if self.sr_duplicate_marking == "none":
@@ -751,7 +722,9 @@ class DNAscopePipeline(BasePipeline):
                 rmdup=(self.sr_duplicate_marking == "rmdup"),
             )
         )
-        dedup_job = Job(shlex.join(driver.build_cmd()), "dedup", self.cores)
+        dedup_job = Job(
+            Pipeline(Command(*driver.build_cmd())), "dedup", self.cores
+        )
 
         if self.skip_metrics:
             return ([deduped], lc_job, dedup_job, None, None)
@@ -774,7 +747,7 @@ class DNAscopePipeline(BasePipeline):
             driver.add_algo(HsMetricAlgo(hs_metrics, self.bed, self.bed))
             driver.add_algo(InsertSizeMetricAlgo(is_metrics))
             metrics_job = Job(
-                shlex.join(driver.build_cmd()), "metrics", 0
+                Pipeline(Command(*driver.build_cmd())), "metrics", 0
             )  # Run metrics in the background
 
         # Run WgsMetricsAlgo after duplicate marking to account for
@@ -786,12 +759,27 @@ class DNAscopePipeline(BasePipeline):
             )
             driver.add_algo(CoverageMetrics(coverage_metrics))
             metrics_job = Job(
-                shlex.join(driver.build_cmd()), "metrics", 0
+                Pipeline(Command(*driver.build_cmd())), "metrics", 0
             )  # Run metrics in the background
 
             # Rehead WGS metrics so they are recognized by MultiQC
+            rehead_script = pathlib.Path(
+                str(
+                    files("sentieon_cli.scripts").joinpath(
+                        "rehead_wgs_metrics.py"
+                    )
+                )
+            )
             rehead_job = Job(
-                cmds.rehead_wgsmetrics(wgs_metrics, wgs_metrics_tmp),
+                Pipeline(
+                    Command(
+                        "sentieon",
+                        "pyexec",
+                        str(rehead_script),
+                        "--metrics_file",
+                        str(wgs_metrics),
+                    )
+                ),
                 "Rehead metrics",
                 0,
             )
@@ -860,7 +848,9 @@ class DNAscopePipeline(BasePipeline):
                 )
             )
         call_job = Job(
-            shlex.join(driver.build_cmd()), "variant-calling", self.cores
+            Pipeline(Command(*driver.build_cmd())),
+            "variant-calling",
+            self.cores,
         )
 
         # Genotyping and filtering with DNAModelApply
@@ -876,12 +866,12 @@ class DNAscopePipeline(BasePipeline):
             )
         )
         apply_job = Job(
-            shlex.join(driver.build_cmd()), "model-apply", self.cores
+            Pipeline(Command(*driver.build_cmd())), "model-apply", self.cores
         )
 
         # Remove the tmp_vcf
         rm_cmd = ["rm", str(tmp_vcf), str(tmp_vcf) + ".tbi"]
-        rm_job = Job(shlex.join(rm_cmd), "rm-tmp-vcf", 0, True)
+        rm_job = Job(Pipeline(Command(*rm_cmd, fail_ok=True)), "rm-tmp-vcf", 0)
 
         # Genotype gVCFs
         gvcftyper_job = None
@@ -898,7 +888,7 @@ class DNAscopePipeline(BasePipeline):
                 )
             )
             gvcftyper_job = Job(
-                shlex.join(driver.build_cmd()), "gvcftyper", self.cores
+                Pipeline(Command(*driver.build_cmd())), "gvcftyper", self.cores
             )
 
         # Call SVs
@@ -916,14 +906,20 @@ class DNAscopePipeline(BasePipeline):
                     vcf=out_svs_tmp,
                 )
             )
-            svsolver_job = Job(shlex.join(driver.build_cmd()), "svsolver")
+            svsolver_job = Job(
+                Pipeline(Command(*driver.build_cmd())), "svsolver"
+            )
             sv_rm_job = Job(
-                shlex.join(
-                    ["rm", str(out_svs_tmp), str(out_svs_tmp) + ".tbi"]
+                Pipeline(
+                    Command(
+                        "rm",
+                        str(out_svs_tmp),
+                        str(out_svs_tmp) + ".tbi",
+                        fail_ok=True,
+                    )
                 ),
                 "rm-tmp-sv",
                 0,
-                True,
             )
 
         return (
@@ -935,36 +931,6 @@ class DNAscopePipeline(BasePipeline):
             sv_rm_job,
         )
 
-    def multiqc(self) -> Optional[Job]:
-        """Run MultiQC on the metrics files"""
-
-        if not self.skip_version_check:
-            if not all(
-                [
-                    check_version(cmd, min_version)
-                    for (cmd, min_version) in MULTIQC_MIN_VERSION.items()
-                ]
-            ):
-                self.logger.warning(
-                    "Skipping MultiQC. MultiQC version %s or later not found",
-                    MULTIQC_MIN_VERSION["multiqc"],
-                )
-                return None
-
-        metrics_dir = pathlib.Path(
-            str(self.output_vcf).replace(".vcf.gz", "_metrics")
-        )
-        multiqc_job = Job(
-            cmds.cmd_multiqc(
-                metrics_dir,
-                metrics_dir,
-                f"Generated by the Sentieon-CLI version {__version__}",
-            ),
-            "multiqc",
-            0,
-        )
-        return multiqc_job
-
 
 def call_cnvs(
     tmp_dir: pathlib.Path,
@@ -975,6 +941,7 @@ def call_cnvs(
     bed: Optional[pathlib.Path] = None,
     cores: int = mp.cpu_count(),
     skip_version_check: bool = False,
+    replace_rg: Optional[List[List[str]]] = None,
     **_kwargs: Any,
 ) -> Tuple[Job, Job]:
     """
@@ -990,6 +957,7 @@ def call_cnvs(
     driver = Driver(
         reference=reference,
         thread_count=cores,
+        replace_rg=replace_rg,
         input=sample_input,
         interval=bed,
     )
@@ -999,7 +967,9 @@ def call_cnvs(
             model_bundle.joinpath("cnv.model"),
         )
     )
-    cnvscope_job = Job(shlex.join(driver.build_cmd()), "CNVscope", cores)
+    cnvscope_job = Job(
+        Pipeline(Command(*driver.build_cmd())), "CNVscope", cores
+    )
 
     driver = Driver(
         reference=reference,
@@ -1013,7 +983,7 @@ def call_cnvs(
         )
     )
     cnvmodelapply_job = Job(
-        shlex.join(driver.build_cmd()),
+        Pipeline(Command(*driver.build_cmd())),
         "CNVModelApply",
         cores,
     )

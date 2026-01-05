@@ -17,7 +17,7 @@ import packaging.version
 
 from .logging import get_logger
 
-__version__ = "1.4.0"
+__version__ = "1.5.0"
 
 logger = get_logger(__name__)
 
@@ -174,7 +174,7 @@ def split_numa_nodes(numa_nodes: List[str]) -> List[str]:
 def split_alignment(cores: int) -> List[str]:
     """split large alignment tasks into smaller parts on large machines"""
     numa_nodes = find_numa_nodes()
-    while len(numa_nodes) > 0 and cores / len(numa_nodes) >= 48:
+    while len(numa_nodes) > 0 and cores / len(numa_nodes) > 64:
         numa_nodes = split_numa_nodes(numa_nodes)
     if cores > 32 and numa_nodes:
         return numa_nodes

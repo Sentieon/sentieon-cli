@@ -3,16 +3,14 @@ Pangenome alignment and variant calling pipeline
 """
 
 import argparse
-from enum import Enum
+import copy
 import itertools
 import json
-import multiprocessing as mp
 import os
 import pathlib
-import shlex
 import shutil
 import sys
-from typing import Any, Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import packaging.version
 
@@ -20,6 +18,7 @@ from importlib_resources import files
 
 from . import command_strings as cmds
 from .archive import ar_load
+from .base_pangenome import BasePangenome, SampleSex
 from .dag import DAG
 from .driver import (
     AlignmentStat,
@@ -39,7 +38,7 @@ from .driver import (
     WgsMetricsAlgo,
 )
 from .job import Job
-from .pipeline import BasePipeline
+from .shell_pipeline import Command, Pipeline
 from .util import __version__, check_version, parse_rg_line, path_arg, tmp
 
 
@@ -47,15 +46,20 @@ PANGENOME_MIN_VERSIONS = {
     "kmc": None,
     "sentieon driver": packaging.version.Version("202503.01"),
     "vg": None,
-    "bcftools": packaging.version.Version("1.10"),
+    "bcftools": packaging.version.Version("1.22"),
     "samtools": packaging.version.Version("1.16"),
-    "run-t1k": None,
-    "ExpansionHunter": None,
-    "segdup-caller": None,
 }
 
-MULTIQC_MIN_VERSION = {
-    "multiqc": packaging.version.Version("1.18"),
+T1K_MIN_VERSION = {
+    "run-t1k": None,
+}
+
+EXPANSION_MIN_VERSION = {
+    "ExpansionHunter": None,
+}
+
+SEGDUP_MIN_VERSION = {
+    "segdup-caller": None,
 }
 
 
@@ -164,184 +168,100 @@ GRCh38_CONTIGS_NOT_IN_PANGENOME = {
 }
 
 
-class SampleSex(Enum):
-    FEMALE = 1
-    MALE = 2
-    UNKNOWN = 3
-
-
-class PangenomePipeline(BasePipeline):
+class PangenomePipeline(BasePangenome):
     """The Pangenome pipeline"""
 
-    params: Dict[str, Dict[str, Any]] = {
-        # Required arguments
-        "reference": {
-            "flags": ["-r", "--reference"],
-            "required": True,
-            "help": "fasta for reference genome.",
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "gbz": {
-            "help": "The pangenome graph file in GBZ format.",
-            "required": True,
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "hapl": {
-            "help": "The haplotype file.",
-            "required": True,
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "snarls": {
-            "help": (
-                "The vg snarls file for the .gbz file. Can be created "
-                "using vg."
-            ),
-            "required": True,
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "xg": {
-            "help": "The xg file for the .gbz file. Can be created using vg",
-            "required": True,
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "model_bundle": {
-            "flags": ["-m", "--model_bundle"],
-            "help": "The model bundle file.",
-            "required": True,
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "r1_fastq": {
-            "nargs": "*",
-            "help": "Sample R1 fastq files.",
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "r2_fastq": {
-            "nargs": "*",
-            "help": "Sample R2 fastq files.",
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "readgroups": {
-            "nargs": "*",
-            "help": (
-                "Readgroup information for the fastq files. Only the ID and "
-                "SM attributes are used."
-            ),
-        },
-        # Additional arguments
-        "bam_format": {
-            "help": (
-                "Use the BAM format instead of CRAM for output aligned files."
-            ),
-            "action": "store_true",
-        },
-        "cores": {
-            "flags": ["-t", "--cores"],
-            "help": (
-                "Number of threads/processes to use. Defaults to all "
-                "available."
-            ),
-            "default": mp.cpu_count(),
-        },
-        "dbsnp": {
-            "flags": ["-d", "--dbsnp"],
-            "help": (
-                "dbSNP vcf file Supplying this file will annotate variants "
-                "with their dbSNP refSNP ID numbers."
-            ),
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "dry_run": {
-            "help": "Print the commands without running them.",
-            "action": "store_true",
-        },
-        "expansion_catalog": {
-            "help": (
-                "An ExpansionHunter variant catalog. Required for expansion "
-                "calling."
-            ),
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "kmer_memory": {
-            "help": "Memory limit for KMC in GB.",
-            "default": 58,
-            "type": int,
-        },
-        "segdup_caller_genes": {
-            "type": str,
-            "help": (
-                "Genes for SegDup calling. Ex: "
-                "'CFH,CFHR3,CYP11B1,CYP2D6,GBA,NCF1,PMS2,SMN1,STRC'. Required "
-                "for SegDup calling."
-            ),
-        },
-        "t1k_hla_seq": {
-            "help": (
-                "The DNA HLA seq FASTA file for T1K. Required for HLA calling."
-            ),
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "t1k_hla_coord": {
-            "help": (
-                "The DNA HLA coord FASTA file for T1K. Required for HLA "
-                "calling."
-            ),
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "t1k_kir_seq": {
-            "help": (
-                "The DNA KIR seq FASTA file for T1K. Required for KIA calling."
-            ),
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "t1k_kir_coord": {
-            "help": (
-                "The DNA KIR coord FASTA file for T1K. Required for KIA "
-                "calling."
-            ),
-            "type": path_arg(exists=True, is_file=True),
-        },
-        # Hidden arguments
-        "retain_tmpdir": {
-            "help": argparse.SUPPRESS,
-            "action": "store_true",
-        },
-        "skip_version_check": {
-            "help": argparse.SUPPRESS,
-            "action": "store_true",
-        },
-    }
+    params = copy.deepcopy(BasePangenome.params)
+    params.update(
+        {
+            "readgroups": {
+                "nargs": "*",
+                "help": (
+                    "Readgroup information for the fastq files. Only the ID "
+                    "and SM attributes are used."
+                ),
+            },
+            # Required arguments
+            "snarls": {
+                "help": (
+                    "The vg snarls file for the .gbz file. Can be created "
+                    "using vg."
+                ),
+                "required": True,
+                "type": path_arg(exists=True, is_file=True),
+            },
+            "xg": {
+                "help": (
+                    "The xg file for the .gbz file. Can be created using vg"
+                ),
+                "required": True,
+                "type": path_arg(exists=True, is_file=True),
+            },
+            # Additional arguments
+            "expansion_catalog": {
+                "help": (
+                    "An ExpansionHunter variant catalog. Required for "
+                    "expansion calling."
+                ),
+                "type": path_arg(exists=True, is_file=True),
+            },
+            "segdup_caller_genes": {
+                "type": str,
+                "help": (
+                    "Genes for SegDup calling. Ex: "
+                    "'CFH,CFHR3,CYP11B1,CYP2D6,GBA,NCF1,PMS2,SMN1,STRC'. "
+                    "Required for SegDup calling."
+                ),
+            },
+            "skip_cnv": {
+                "help": "Skip CNV calling.",
+                "action": "store_true",
+            },
+            "t1k_hla_seq": {
+                "help": (
+                    "The DNA HLA seq FASTA file for T1K. Required for HLA "
+                    "calling."
+                ),
+                "type": path_arg(exists=True, is_file=True),
+            },
+            "t1k_hla_coord": {
+                "help": (
+                    "The DNA HLA coord FASTA file for T1K. Required for HLA "
+                    "calling."
+                ),
+                "type": path_arg(exists=True, is_file=True),
+            },
+            "t1k_kir_seq": {
+                "help": (
+                    "The DNA KIR seq FASTA file for T1K. Required for KIA "
+                    "calling."
+                ),
+                "type": path_arg(exists=True, is_file=True),
+            },
+            "t1k_kir_coord": {
+                "help": (
+                    "The DNA KIR coord FASTA file for T1K. Required for KIA "
+                    "calling."
+                ),
+                "type": path_arg(exists=True, is_file=True),
+            },
+        }
+    )
 
-    positionals: Dict[str, Dict[str, Any]] = {
-        "output_vcf": {
-            "help": "Output VCF file. The file name must end in .vcf.gz",
-            "type": path_arg(),
-        },
-    }
+    positionals = BasePangenome.positionals
 
     def __init__(self) -> None:
         super().__init__()
-        self.output_vcf: Optional[pathlib.Path] = None
-        self.reference: Optional[pathlib.Path] = None
-        self.gbz: Optional[pathlib.Path] = None
-        self.hapl: Optional[pathlib.Path] = None
+        self.readgroups: List[str] = []
         self.snarls: Optional[pathlib.Path] = None
         self.xg: Optional[pathlib.Path] = None
-        self.r1_fastq: List[pathlib.Path] = []
-        self.r2_fastq: List[pathlib.Path] = []
-        self.readgroups: List[str] = []
-        self.model_bundle: Optional[pathlib.Path] = None
-        self.bam_format = False
-        self.dbsnp: Optional[pathlib.Path] = None
-        self.cores = mp.cpu_count()
         self.expansion_catalog: Optional[pathlib.Path] = None
-        self.kmer_memory = 128
         self.segdup_caller_genes: Optional[str] = None
+        self.skip_cnv = False
         self.t1k_hla_seq: Optional[pathlib.Path] = None
         self.t1k_hla_coord: Optional[pathlib.Path] = None
         self.t1k_kir_seq: Optional[pathlib.Path] = None
         self.t1k_kir_coord: Optional[pathlib.Path] = None
-        self.retain_tmpdir = False
-        self.skip_version_check = False
 
     def main(self, args: argparse.Namespace) -> None:
         """Run the pipeline"""
@@ -356,8 +276,8 @@ class PangenomePipeline(BasePipeline):
         executor = self.run(dag)
         self.check_execution(dag, executor)
 
-        self.get_sex()
-        dag = self.build_second_dag()
+        self.get_sex(self.ploidy_json)
+        dag = self.build_second_dag(self.deduped_cram)
         executor = self.run(dag)
         self.check_execution(dag, executor)
 
@@ -367,69 +287,7 @@ class PangenomePipeline(BasePipeline):
     def build_dag(self) -> DAG:
         return DAG()
 
-    def validate(self) -> None:
-        """Validate pipeline inputs"""
-        assert self.output_vcf
-        assert self.reference
-
-        self.validate_bundle()
-
-        if not self.r1_fastq:
-            self.logger.error("Please supply --r1_fastq arguments")
-            sys.exit(2)
-
-        if not str(self.output_vcf).endswith(".vcf.gz"):
-            self.logger.error("The output file should end with '.vcf.gz'")
-            sys.exit(2)
-
-        if len(self.r1_fastq) != len(self.readgroups):
-            self.logger.error(
-                "The number of readgroups does not equal the number of fastq "
-                "files"
-            )
-            sys.exit(2)
-
-        # Confirm the presence of the reference index file
-        fai_file = str(self.reference) + ".fai"
-        if not os.path.isfile(fai_file):
-            self.logger.error(
-                "Fasta index file %s does not exist. Please index the "
-                "reference genome with 'samtools faidx'",
-                fai_file,
-            )
-            sys.exit(2)
-
-        # Validate readgroups
-        rg_sample = None
-        for rg in self.readgroups:
-            rg_dict = parse_rg_line(rg.replace(r"\t", "\t"))
-            rg_sm = rg_dict.get("SM")
-            if not rg_sm:
-                self.logger.error(
-                    "Found a readgroup without a SM tag: %s",
-                    str(rg),
-                )
-                sys.exit(2)
-            if rg_sample and rg_sample != rg_sm:
-                self.logger.error(
-                    "Inconsistent readgroup sample information found in: %s",
-                    str(rg),
-                )
-                sys.exit(2)
-            rg_sample = rg_sm
-            if "ID" not in rg_dict:
-                self.logger.error(
-                    "Found a readgroup without an ID tag: %s",
-                    str(rg),
-                )
-                sys.exit(2)
-
-        if not self.skip_version_check:
-            for cmd, min_version in PANGENOME_MIN_VERSIONS.items():
-                if not check_version(cmd, min_version):
-                    sys.exit(2)
-
-        # Check the T1K files
+    def validate_t1k(self) -> None:
         if (self.t1k_hla_seq and not self.t1k_hla_coord) or (
             self.t1k_hla_coord and not self.t1k_hla_seq
         ):
@@ -447,6 +305,43 @@ class PangenomePipeline(BasePipeline):
                 "be supplied. Exiting"
             )
             sys.exit(2)
+
+        if (
+            self.t1k_hla_seq or self.t1k_kir_seq
+        ) and not self.skip_version_check:
+            for cmd, min_version in T1K_MIN_VERSION.items():
+                if not check_version(cmd, min_version):
+                    sys.exit(2)
+
+    def validate_expansion(self) -> None:
+        if self.expansion_catalog and not self.skip_version_check:
+            for cmd, min_version in EXPANSION_MIN_VERSION.items():
+                if not check_version(cmd, min_version):
+                    sys.exit(2)
+
+    def validate_segdup(self) -> None:
+        if self.segdup_caller_genes and not self.skip_version_check:
+            for cmd, min_version in SEGDUP_MIN_VERSION.items():
+                if not check_version(cmd, min_version):
+                    sys.exit(2)
+
+    def validate(self) -> None:
+        """Validate pipeline inputs"""
+        assert self.output_vcf
+        assert self.reference
+
+        self.validate_bundle()
+        self.validate_fastq_rg(r1_required=True)
+        self.validate_output_vcf()
+        self.validate_ref()
+        self.validate_t1k()
+        self.validate_expansion()
+        self.validate_segdup()
+
+        if not self.skip_version_check:
+            for cmd, min_version in PANGENOME_MIN_VERSIONS.items():
+                if not check_version(cmd, min_version):
+                    sys.exit(2)
 
     def validate_bundle(self) -> None:
         bundle_info_bytes = ar_load(
@@ -487,6 +382,43 @@ class PangenomePipeline(BasePipeline):
                 "Expected model files not found in the model bundle file"
             )
             sys.exit(2)
+
+    def validate_fastq_rg(self, r1_required=False) -> None:
+        if not self.r1_fastq and r1_required:
+            self.logger.error("Please supply --r1_fastq arguments")
+            sys.exit(2)
+
+        if len(self.r1_fastq) != len(self.readgroups):
+            self.logger.error(
+                "The number of readgroups does not equal the number of fastq "
+                "files"
+            )
+            sys.exit(2)
+
+        # Validate readgroups
+        rg_sample = None
+        for rg in self.readgroups:
+            rg_dict = parse_rg_line(rg.replace(r"\t", "\t"))
+            rg_sm = rg_dict.get("SM")
+            if not rg_sm:
+                self.logger.error(
+                    "Found a readgroup without a SM tag: %s",
+                    str(rg),
+                )
+                sys.exit(2)
+            if rg_sample and rg_sample != rg_sm:
+                self.logger.error(
+                    "Inconsistent readgroup sample information found in: %s",
+                    str(rg),
+                )
+                sys.exit(2)
+            rg_sample = rg_sm
+            if "ID" not in rg_dict:
+                self.logger.error(
+                    "Found a readgroup without an ID tag: %s",
+                    str(rg),
+                )
+                sys.exit(2)
 
     def configure(self) -> None:
         """Configure pipeline parameters"""
@@ -538,7 +470,7 @@ class PangenomePipeline(BasePipeline):
         self.create_sv_header(sv_header, sample_name)
 
         # KMC k-mer counting
-        kmc_job = self.build_kmc_job(kmer_prefix)
+        kmc_job = self.build_kmc_job(kmer_prefix, self.cores)
         dag.add_job(kmc_job)
 
         # vg haplotypes - create sample-specific pangenome
@@ -705,40 +637,6 @@ class PangenomePipeline(BasePipeline):
                     sample_name,
                 ]
                 print("\t".join(last_hdr_line), file=fh)
-
-    def build_kmc_job(self, kmer_prefix: pathlib.Path) -> Job:
-        """Build KMC k-mer counting jobs"""
-        # Create file list for KMC
-        file_list = pathlib.Path(str(kmer_prefix) + ".paths")
-        all_fastqs = []
-
-        # Add R1 files
-        all_fastqs.extend(self.r1_fastq)
-
-        # Add R2 files if present
-        if self.r2_fastq:
-            all_fastqs.extend(self.r2_fastq)
-
-        # Write file list
-        if not self.dry_run:
-            with open(file_list, "w") as f:
-                for fq in all_fastqs:
-                    f.write(f"{fq}\n")
-
-        # Create KMC job
-        kmc_job = Job(
-            cmds.cmd_kmc(
-                kmer_prefix,
-                file_list,
-                self.tmp_dir,
-                memory=self.kmer_memory,
-                threads=self.cores,
-            ),
-            "kmc",
-            self.cores,
-        )
-
-        return kmc_job
 
     def build_haplotypes_job(
         self, output_gbz: pathlib.Path, kmer_file: pathlib.Path
@@ -929,7 +827,7 @@ class PangenomePipeline(BasePipeline):
         driver.add_algo(GCBias(gc_metrics, summary=gc_summary))
 
         lc_job = Job(
-            shlex.join(driver.build_cmd()),
+            Pipeline(Command(*driver.build_cmd())),
             "locuscollector",
             self.cores,
         )
@@ -949,7 +847,9 @@ class PangenomePipeline(BasePipeline):
                 metrics=dedup_metrics,
             )
         )
-        dedup_job = Job(shlex.join(driver.build_cmd()), "dedup", self.cores)
+        dedup_job = Job(
+            Pipeline(Command(*driver.build_cmd())), "dedup", self.cores
+        )
 
         return (hdr_jobs, lc_job, dedup_job)
 
@@ -970,7 +870,6 @@ class PangenomePipeline(BasePipeline):
         # - Run some metrics after duplicate marking
         is_metrics = metrics_dir.joinpath(metric_base + ".insert_size.txt")
         wgs_metrics = metrics_dir.joinpath(metric_base + ".wgs.txt")
-        wgs_metrics_tmp = metrics_dir.joinpath(metric_base + ".wgs.txt.tmp")
 
         driver = Driver(
             reference=self.reference,
@@ -981,48 +880,31 @@ class PangenomePipeline(BasePipeline):
         driver.add_algo(InsertSizeMetricAlgo(is_metrics))
         driver.add_algo(WgsMetricsAlgo(wgs_metrics, include_unpaired="true"))
         metrics_job = Job(
-            shlex.join(driver.build_cmd()),
+            Pipeline(Command(*driver.build_cmd())),
             "metrics",
             self.cores,
         )
 
         # Rehead WGS metrics so they are recognized by MultiQC
+        rehead_script = pathlib.Path(
+            str(
+                files("sentieon_cli.scripts").joinpath("rehead_wgs_metrics.py")
+            )
+        )
         rehead_job = Job(
-            cmds.rehead_wgsmetrics(wgs_metrics, wgs_metrics_tmp),
+            Pipeline(
+                Command(
+                    "sentieon",
+                    "pyexec",
+                    str(rehead_script),
+                    "--metrics_file",
+                    str(wgs_metrics),
+                )
+            ),
             "Rehead metrics",
             0,
         )
         return (metrics_job, rehead_job)
-
-    def multiqc(self) -> Optional[Job]:
-        """Run MultiQC on the metrics files"""
-        assert self.output_vcf
-        if not self.skip_version_check:
-            if not all(
-                [
-                    check_version(cmd, min_version)
-                    for (cmd, min_version) in MULTIQC_MIN_VERSION.items()
-                ]
-            ):
-                self.logger.warning(
-                    "Skipping MultiQC. MultiQC version %s or later not found",
-                    MULTIQC_MIN_VERSION["multiqc"],
-                )
-                return None
-
-        metrics_dir = pathlib.Path(
-            str(self.output_vcf).replace(".vcf.gz", "_metrics")
-        )
-        multiqc_job = Job(
-            cmds.cmd_multiqc(
-                metrics_dir,
-                metrics_dir,
-                f"Generated by the Sentieon-CLI version {__version__}",
-            ),
-            "multiqc",
-            0,
-        )
-        return multiqc_job
 
     def build_smallvar_job(
         self,
@@ -1038,6 +920,7 @@ class PangenomePipeline(BasePipeline):
         interval_ctgs.extend(["chrX", "chrY"])
         interval = ",".join(interval_ctgs)
 
+        pcr_indel_model = "NONE" if self.pcr_free else "CONSERVATIVE"
         driver = Driver(
             reference=self.reference,
             thread_count=self.cores,
@@ -1048,12 +931,12 @@ class PangenomePipeline(BasePipeline):
             DNAscope(
                 dnascope_tmp,
                 dbsnp=self.dbsnp,
-                pcr_indel_model="NONE",
+                pcr_indel_model=pcr_indel_model,
                 model=model,
             )
         )
         dnascope_job = Job(
-            shlex.join(driver.build_cmd()), "dnascope", self.cores
+            Pipeline(Command(*driver.build_cmd())), "dnascope", self.cores
         )
 
         driver = Driver(
@@ -1068,46 +951,209 @@ class PangenomePipeline(BasePipeline):
             )
         )
         dnamodelapply_job = Job(
-            shlex.join(driver.build_cmd()), "model-apply", self.cores
+            Pipeline(Command(*driver.build_cmd())), "model-apply", self.cores
         )
-
         return (dnascope_job, dnamodelapply_job)
 
-    def build_ploidy_job(
+    def build_second_dag(self, input_aln: pathlib.Path) -> DAG:
+        """Build the second DAG for the pangenome pipeline"""
+        self.logger.info("Building the second pangenome DAG")
+        dag = DAG()
+
+        # Output files
+        out_cnv = pathlib.Path(
+            str(self.output_vcf).replace(".vcf.gz", "_cnv.vcf.gz")
+        )
+        out_expansions = pathlib.Path(
+            str(self.output_vcf).replace(".vcf.gz", "_expansion")
+        )
+
+        # Intermediate file paths
+        cnvscope_tmp = self.tmp_dir.joinpath("sample_cnvcope_tmp.vcf.gz")
+        cnvscope_autosomes = self.tmp_dir.joinpath(
+            "sample_cnvcope_autosomes.vcf.gz"
+        )
+        cnvscope_haploid_tmp = self.tmp_dir.joinpath(
+            "sample_cnvcope_haploid_tmp.vcf.gz"
+        )
+        cnvscope_haploid = self.tmp_dir.joinpath(
+            "sample_cnvcope_haploid.vcf.gz"
+        )
+
+        # CNV calling
+        if not self.skip_cnv:
+            (
+                cnvscope_job,
+                cnvapply_job,
+                haploid_cnv_job,
+                haploid_apply_job,
+                concat_job,
+            ) = self.build_cnv_jobs(
+                out_cnv,
+                cnvscope_tmp,
+                cnvscope_autosomes,
+                cnvscope_haploid_tmp,
+                cnvscope_haploid,
+                input_aln,
+            )
+            dag.add_job(cnvscope_job)
+            dag.add_job(cnvapply_job, {cnvscope_job})
+            if haploid_cnv_job and haploid_apply_job and concat_job:
+                dag.add_job(haploid_cnv_job)
+                dag.add_job(haploid_apply_job, {haploid_cnv_job})
+                dag.add_job(concat_job, {cnvapply_job, haploid_apply_job})
+
+        # Repeat expansions
+        if self.expansion_catalog:
+            expansion_job = self.build_expansion_job(
+                out_expansions,
+                input_aln,
+                self.expansion_catalog,
+            )
+            dag.add_job(expansion_job)
+
+        return dag
+
+    def build_cnv_jobs(
         self,
-        ploidy_json: pathlib.Path,
-        deduped_bam: List[pathlib.Path],
-    ) -> Job:
-        """Estimate sample ploidy and sex"""
-        estimate_ploidy = pathlib.Path(
-            str(files("sentieon_cli.scripts").joinpath("estimate_ploidy.py"))
-        ).resolve()
-        ploidy_job = Job(
-            cmds.cmd_estimate_ploidy(
-                ploidy_json,
-                deduped_bam,
-                estimate_ploidy,
+        out_cnv: pathlib.Path,
+        cnvscope_tmp: pathlib.Path,
+        cnvscope_autosomes: pathlib.Path,
+        cnvscope_haploid_tmp: pathlib.Path,
+        cnvscope_haploid: pathlib.Path,
+        realigned_cram: pathlib.Path,
+    ) -> Tuple[Job, Job, Optional[Job], Optional[Job], Optional[Job]]:
+        """Call CNVs with CNVscope"""
+        assert self.model_bundle
+
+        model = self.model_bundle.joinpath("cnv.model")
+
+        # First pass will be autosomes for males
+        # or autosomes + chrX for females
+        first_contigs = list(["chr" + str(x) for x in range(1, 23)])
+        if self.sample_sex != SampleSex.MALE:
+            first_contigs.append("chrX")
+
+        driver = Driver(
+            reference=self.reference,
+            thread_count=self.cores,
+            input=[realigned_cram],
+            interval=",".join(first_contigs),
+        )
+        driver.add_algo(
+            CNVscope(
+                cnvscope_tmp,
+                model=model,
+            )
+        )
+        cnvscope_job = Job(
+            Pipeline(Command(*driver.build_cmd())),
+            "cnvscope-autosomes",
+            self.cores,
+        )
+
+        # Autosome model apply
+        outfile = (
+            cnvscope_autosomes
+            if self.sample_sex == SampleSex.MALE
+            else out_cnv
+        )
+        driver = Driver(
+            reference=self.reference,
+            thread_count=self.cores,
+        )
+        driver.add_algo(
+            CNVModelApply(
+                outfile,
+                model,
+                cnvscope_tmp,
+            )
+        )
+        cnvapply_job = Job(
+            Pipeline(Command(*driver.build_cmd())),
+            "cnvmodelapply-autosomes",
+            self.cores,
+        )
+
+        if self.sample_sex != SampleSex.MALE:
+            return (cnvscope_job, cnvapply_job, None, None, None)
+
+        # Sex chrom CNVscope
+        driver = Driver(
+            reference=self.reference,
+            thread_count=self.cores,
+            input=[realigned_cram],
+            interval="chrX,chrY",
+        )
+        driver.add_algo(
+            CNVscope(
+                cnvscope_haploid_tmp,
+                model=model,
+            )
+        )
+        haploid_cnv_job = Job(
+            Pipeline(Command(*driver.build_cmd())),
+            "cnvscope-haploid",
+            self.cores,
+        )
+
+        # Sex chrom CNVModelApply
+        driver = Driver(
+            reference=self.reference,
+            thread_count=self.cores,
+        )
+        driver.add_algo(
+            CNVModelApply(
+                cnvscope_haploid,
+                model,
+                cnvscope_haploid_tmp,
+            )
+        )
+        haploid_apply_job = Job(
+            Pipeline(Command(*driver.build_cmd())),
+            "cnvmodelapply-haploid",
+            self.cores,
+        )
+
+        # Concate autosome and sex chromsome VCFs
+        concat_job = Job(
+            cmds.bcftools_concat(
+                out_cnv, [cnvscope_autosomes, cnvscope_haploid]
             ),
-            "estimate-ploidy",
+            "concat-calls",
             0,
         )
-        return ploidy_job
 
-    def get_sex(self) -> None:
-        """Retrieve the sample sex"""
-        if self.dry_run:
-            self.logger.info("Setting sample sex to MALE for dry-run")
-            self.sample_sex = SampleSex.MALE
-            return
-        with open(self.ploidy_json) as fh:
-            data = json.load(fh)
-            sex = data["sex"]
-            if sex == "female":
-                self.sample_sex = SampleSex.FEMALE
-            elif sex == "male":
-                self.sample_sex = SampleSex.MALE
-            else:
-                self.sample_sex = SampleSex.UNKNOWN
+        return (
+            cnvscope_job,
+            cnvapply_job,
+            haploid_cnv_job,
+            haploid_apply_job,
+            concat_job,
+        )
+
+    def build_expansion_job(
+        self,
+        out_expansions: pathlib.Path,
+        realigned_cram: pathlib.Path,
+        expansion_catalog: pathlib.Path,
+    ) -> Job:
+        """Identify repeat expansions"""
+        assert self.reference
+
+        expansion_job = Job(
+            cmds.cmd_expansion_hunter(
+                out_expansions,
+                realigned_cram,
+                reference=self.reference,
+                variant_catalog=expansion_catalog,
+                sex="male" if self.sample_sex == SampleSex.MALE else "female",
+                threads=self.cores,
+            ),
+            "expansion-hunter",
+            0,
+        )
+        return expansion_job
 
     def build_t1k_job(
         self,
@@ -1154,196 +1200,3 @@ class PangenomePipeline(BasePipeline):
             self.cores,
         )
         return segdup_job
-
-    def build_second_dag(self) -> DAG:
-        """Build the second DAG for the pangenome pipeline"""
-        self.logger.info("Building the second pangenome DAG")
-        dag = DAG()
-
-        # Output files
-        out_cnv = pathlib.Path(
-            str(self.output_vcf).replace(".vcf.gz", "_cnv.vcf.gz")
-        )
-        out_expansions = pathlib.Path(
-            str(self.output_vcf).replace(".vcf.gz", "_expansion")
-        )
-
-        # Intermediate file paths
-        cnvscope_tmp = self.tmp_dir.joinpath("sample_cnvcope_tmp.vcf.gz")
-        cnvscope_autosomes = self.tmp_dir.joinpath(
-            "sample_cnvcope_autosomes.vcf.gz"
-        )
-        cnvscope_haploid_tmp = self.tmp_dir.joinpath(
-            "sample_cnvcope_haploid_tmp.vcf.gz"
-        )
-        cnvscope_haploid = self.tmp_dir.joinpath(
-            "sample_cnvcope_haploid.vcf.gz"
-        )
-
-        # CNV calling
-        (
-            cnvscope_job,
-            cnvapply_job,
-            haploid_cnv_job,
-            haploid_apply_job,
-            concat_job,
-        ) = self.build_cnv_jobs(
-            out_cnv,
-            cnvscope_tmp,
-            cnvscope_autosomes,
-            cnvscope_haploid_tmp,
-            cnvscope_haploid,
-            self.deduped_cram,
-        )
-        dag.add_job(cnvscope_job)
-        dag.add_job(cnvapply_job, {cnvscope_job})
-        if haploid_cnv_job and haploid_apply_job and concat_job:
-            dag.add_job(haploid_cnv_job)
-            dag.add_job(haploid_apply_job, {haploid_cnv_job})
-            dag.add_job(concat_job, {cnvapply_job, haploid_apply_job})
-
-        # Repeat expansions
-        if self.expansion_catalog:
-            expansion_job = self.build_expansion_job(
-                out_expansions,
-                self.deduped_cram,
-                self.expansion_catalog,
-            )
-            dag.add_job(expansion_job)
-
-        return dag
-
-    def build_cnv_jobs(
-        self,
-        out_cnv: pathlib.Path,
-        cnvscope_tmp: pathlib.Path,
-        cnvscope_autosomes: pathlib.Path,
-        cnvscope_haploid_tmp: pathlib.Path,
-        cnvscope_haploid: pathlib.Path,
-        realigned_cram: pathlib.Path,
-    ) -> Tuple[Job, Job, Optional[Job], Optional[Job], Optional[Job]]:
-        """Call CNVs with CNVscope"""
-        assert self.model_bundle
-
-        model = self.model_bundle.joinpath("cnv.model")
-
-        # First pass will be autosomes for males
-        # or autosomes + chrX for females
-        first_contigs = list(["chr" + str(x) for x in range(1, 23)])
-        if self.sample_sex != SampleSex.MALE:
-            first_contigs.append("chrX")
-
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-            input=[realigned_cram],
-            interval=",".join(first_contigs),
-        )
-        driver.add_algo(
-            CNVscope(
-                cnvscope_tmp,
-                model=model,
-            )
-        )
-        cnvscope_job = Job(
-            shlex.join(driver.build_cmd()), "cnvscope-autosomes", self.cores
-        )
-
-        # Autosome model apply
-        outfile = (
-            cnvscope_autosomes
-            if self.sample_sex == SampleSex.MALE
-            else out_cnv
-        )
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-        )
-        driver.add_algo(
-            CNVModelApply(
-                outfile,
-                model,
-                cnvscope_tmp,
-            )
-        )
-        cnvapply_job = Job(
-            shlex.join(driver.build_cmd()),
-            "cnvmodelapply-autosomes",
-            self.cores,
-        )
-
-        if self.sample_sex != SampleSex.MALE:
-            return (cnvscope_job, cnvapply_job, None, None, None)
-
-        # Sex chrom CNVscope
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-            input=[realigned_cram],
-            interval="chrX,chrY",
-        )
-        driver.add_algo(
-            CNVscope(
-                cnvscope_haploid_tmp,
-                model=model,
-            )
-        )
-        haploid_cnv_job = Job(
-            shlex.join(driver.build_cmd()), "cnvscope-haploid", self.cores
-        )
-
-        # Sex chrom CNVModelApply
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-        )
-        driver.add_algo(
-            CNVModelApply(
-                cnvscope_haploid,
-                model,
-                cnvscope_haploid_tmp,
-            )
-        )
-        haploid_apply_job = Job(
-            shlex.join(driver.build_cmd()), "cnvmodelapply-haploid", self.cores
-        )
-
-        # Concate autosome and sex chromsome VCFs
-        concat_job = Job(
-            cmds.bcftools_concat(
-                out_cnv, [cnvscope_autosomes, cnvscope_haploid]
-            ),
-            "concat-calls",
-            0,
-        )
-
-        return (
-            cnvscope_job,
-            cnvapply_job,
-            haploid_cnv_job,
-            haploid_apply_job,
-            concat_job,
-        )
-
-    def build_expansion_job(
-        self,
-        out_expansions: pathlib.Path,
-        realigned_cram: pathlib.Path,
-        expansion_catalog: pathlib.Path,
-    ) -> Job:
-        """Identify repeat expansions"""
-        assert self.reference
-
-        expansion_job = Job(
-            cmds.cmd_expansion_hunter(
-                out_expansions,
-                realigned_cram,
-                reference=self.reference,
-                variant_catalog=expansion_catalog,
-                sex="male" if self.sample_sex == SampleSex.MALE else "female",
-                threads=self.cores,
-            ),
-            "expansion-hunter",
-            0,
-        )
-        return expansion_job

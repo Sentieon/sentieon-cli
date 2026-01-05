@@ -5,7 +5,7 @@ Sentieon DNAscope Hybrid is a pipeline for germline variant calling using combin
 The pipeline supports input data in the following formats; both short-read and long-read input are required:
 * Unaligned short-read data in gzipped FASTQ format.
 * Aligned short-reads in BAM or CRAM format.
-* Unaliged long-read data in the uBAM or uCRAM format.
+* Unaligned long-read data in the uBAM or uCRAM format.
 * Aligned long-read data in BAM or CRAM format.
 
 By default, the pipeline will generate the following output files:

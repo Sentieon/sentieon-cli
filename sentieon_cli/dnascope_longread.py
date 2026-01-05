@@ -3,12 +3,11 @@ Functionality for the DNAscope LongRead pipeline
 """
 
 import argparse
-import multiprocessing as mp
+import copy
 import pathlib
-import shlex
 import shutil
 import sys
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import packaging.version
 
@@ -28,6 +27,7 @@ from .driver import (
 )
 from .job import Job
 from .pipeline import BasePipeline
+from .shell_pipeline import Command, Pipeline
 from .util import (
     check_version,
     path_arg,
@@ -36,7 +36,7 @@ from .util import (
 
 TOOL_MIN_VERSIONS = {
     "sentieon driver": packaging.version.Version("202308.01"),
-    "bcftools": packaging.version.Version("1.10"),
+    "bcftools": packaging.version.Version("1.22"),
     "bedtools": None,
 }
 
@@ -73,168 +73,139 @@ HIFICNV_MIN_VERSIONS = {
 class DNAscopeLRPipeline(BasePipeline):
     """The DNAscope LongRead pipeline"""
 
-    params: Dict[str, Dict[str, Any]] = {
-        "fastq": {
-            "nargs": "*",
-            "help": "Sample fastq files.",
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "model_bundle": {
-            "flags": ["-m", "--model_bundle"],
-            "help": "The model bundle file.",
-            "required": True,
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "readgroups": {
-            "nargs": "*",
-            "help": "Readgroup information for the fastq files.",
-        },
-        "reference": {
-            "flags": ["-r", "--reference"],
-            "required": True,
-            "help": "fasta for reference genome.",
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "sample_input": {
-            "flags": ["-i", "--sample_input"],
-            "nargs": "*",
-            "help": "sample BAM or CRAM file.",
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "align": {
-            "help": (
-                "Align the input BAM/CRAM/uBAM file to the reference genome."
-            ),
-            "action": "store_true",
-        },
-        "bam_format": {
-            "help": (
-                "Use the BAM format instead of CRAM for output aligned files."
-            ),
-            "action": "store_true",
-        },
-        "bed": {
-            "flags": ["-b", "--bed"],
-            "help": (
-                "Region BED file. Supplying this file will restrict diploid "
-                "variant calling to the intervals inside the BED file."
-            ),
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "cnv_excluded_regions": {
-            "help": "Regions to exclude from CNV calling.",
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "cores": {
-            "flags": ["-t", "--cores"],
-            "help": (
-                "Number of threads/processes to use. Defaults to all "
-                "available."
-            ),
-            "default": mp.cpu_count(),
-        },
-        "dbsnp": {
-            "flags": ["-d", "--dbsnp"],
-            "help": (
-                "dbSNP vcf file Supplying this file will annotate variants "
-                "with their dbSNP refSNP ID numbers."
-            ),
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "dry_run": {
-            "help": "Print the commands without running them.",
-            "action": "store_true",
-        },
-        "gvcf": {
-            "flags": ["-g", "--gvcf"],
-            "help": (
-                "Generate a gVCF output file along with the VCF."
-                " (default generates only the VCF)"
-            ),
-            "action": "store_true",
-        },
-        "haploid_bed": {
-            "help": (
-                "A BED file of haploid regions. Supplying this file will "
-                "perform haploid variant calling across these regions."
-            ),
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "input_ref": {
-            "help": (
-                "Used to decode the input alignment file. Required if the "
-                "input file is in the CRAM/uCRAM formats."
-            ),
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "skip_cnv": {
-            "help": "Skip CNV calling.",
-            "action": "store_true",
-        },
-        "skip_mosdepth": {
-            "help": "Skip QC with mosdepth.",
-            "action": "store_true",
-        },
-        "skip_small_variants": {
-            "help": "Skip small variant (SNV/indel) calling.",
-            "action": "store_true",
-        },
-        "skip_svs": {
-            "help": "Skip SV calling.",
-            "action": "store_true",
-        },
-        "tech": {
-            "help": "Sequencing technology used to generate the reads.",
-            "choices": ["HiFi", "ONT"],
-            "default": "HiFi",
-        },
-        "fastq_taglist": {
-            # "help": (
-            #    "A comma-separated list of tags to retain. Defaults to "
-            #    "'%(default)s' and the 'RG' tag is required."
-            # ),
-            "help": argparse.SUPPRESS,
-            "default": "*",
-        },
-        "minimap2_args": {
-            # "help": "Extra arguments for sentieon minimap2.",
-            "help": argparse.SUPPRESS,
-            "default": "-Y",
-        },
-        "repeat_model": {
-            "help": argparse.SUPPRESS,
-            "type": path_arg(exists=True, is_file=True),
-        },
-        "retain_tmpdir": {
-            "help": argparse.SUPPRESS,
-            "action": "store_true",
-        },
-        "skip_version_check": {
-            "help": argparse.SUPPRESS,
-            "action": "store_true",
-        },
-        "use_pbsv": {
-            "help": argparse.SUPPRESS,
-            "action": "store_true",
-        },
-        "util_sort_args": {
-            # "help": "Extra arguments for sentieon util sort.",
-            "help": argparse.SUPPRESS,
-            "default": "--cram_write_options version=3.0,compressor=rans",
-        },
-    }
-
-    positionals: Dict[str, Dict[str, Any]] = {
-        "output_vcf": {
-            "help": "Output VCF File. The file name must end in .vcf.gz",
-            "type": path_arg(),
-        },
-    }
+    params = copy.deepcopy(BasePipeline.params)
+    params.update(
+        {
+            "fastq": {
+                "nargs": "*",
+                "help": "Sample fastq files.",
+                "type": path_arg(exists=True, is_file=True),
+            },
+            "model_bundle": {
+                "flags": ["-m", "--model_bundle"],
+                "help": "The model bundle file.",
+                "required": True,
+                "type": path_arg(exists=True, is_file=True),
+            },
+            "readgroups": {
+                "nargs": "*",
+                "help": "Readgroup information for the fastq files.",
+            },
+            "sample_input": {
+                "flags": ["-i", "--sample_input"],
+                "nargs": "*",
+                "help": "sample BAM or CRAM file.",
+                "type": path_arg(exists=True, is_file=True),
+            },
+            "align": {
+                "help": (
+                    "Align the input BAM/CRAM/uBAM file to the reference "
+                    "genome."
+                ),
+                "action": "store_true",
+            },
+            "bam_format": {
+                "help": (
+                    "Use the BAM format instead of CRAM for output aligned "
+                    "files."
+                ),
+                "action": "store_true",
+            },
+            "bed": {
+                "flags": ["-b", "--bed"],
+                "help": (
+                    "Region BED file. Supplying this file will restrict "
+                    "diploid variant calling to the intervals inside the BED "
+                    "file."
+                ),
+                "type": path_arg(exists=True, is_file=True),
+            },
+            "cnv_excluded_regions": {
+                "help": "Regions to exclude from CNV calling.",
+                "type": path_arg(exists=True, is_file=True),
+            },
+            "dbsnp": {
+                "flags": ["-d", "--dbsnp"],
+                "help": (
+                    "dbSNP vcf file Supplying this file will annotate "
+                    "variants with their dbSNP refSNP ID numbers."
+                ),
+                "type": path_arg(exists=True, is_file=True),
+            },
+            "gvcf": {
+                "flags": ["-g", "--gvcf"],
+                "help": (
+                    "Generate a gVCF output file along with the VCF."
+                    " (default generates only the VCF)"
+                ),
+                "action": "store_true",
+            },
+            "haploid_bed": {
+                "help": (
+                    "A BED file of haploid regions. Supplying this file will "
+                    "perform haploid variant calling across these regions."
+                ),
+                "type": path_arg(exists=True, is_file=True),
+            },
+            "input_ref": {
+                "help": (
+                    "Used to decode the input alignment file. Required if the "
+                    "input file is in the CRAM/uCRAM formats."
+                ),
+                "type": path_arg(exists=True, is_file=True),
+            },
+            "skip_cnv": {
+                "help": "Skip CNV calling.",
+                "action": "store_true",
+            },
+            "skip_mosdepth": {
+                "help": "Skip QC with mosdepth.",
+                "action": "store_true",
+            },
+            "skip_small_variants": {
+                "help": "Skip small variant (SNV/indel) calling.",
+                "action": "store_true",
+            },
+            "skip_svs": {
+                "help": "Skip SV calling.",
+                "action": "store_true",
+            },
+            "tech": {
+                "help": "Sequencing technology used to generate the reads.",
+                "choices": ["HiFi", "ONT"],
+                "default": "HiFi",
+            },
+            "fastq_taglist": {
+                # "help": (
+                #    "A comma-separated list of tags to retain. Defaults to "
+                #    "'%(default)s' and the 'RG' tag is required."
+                # ),
+                "help": argparse.SUPPRESS,
+                "default": "*",
+            },
+            "minimap2_args": {
+                # "help": "Extra arguments for sentieon minimap2.",
+                "help": argparse.SUPPRESS,
+                "default": "-YL",
+            },
+            "repeat_model": {
+                "help": argparse.SUPPRESS,
+                "type": path_arg(exists=True, is_file=True),
+            },
+            "use_pbsv": {
+                "help": argparse.SUPPRESS,
+                "action": "store_true",
+            },
+            "util_sort_args": {
+                # "help": "Extra arguments for sentieon util sort.",
+                "help": argparse.SUPPRESS,
+                "default": "--cram_write_options version=3.0,compressor=rans",
+            },
+        }
+    )
 
     def __init__(self) -> None:
         super().__init__()
-        self.output_vcf: Optional[pathlib.Path] = None
-        self.reference: Optional[pathlib.Path] = None
         self.sample_input: List[pathlib.Path] = []
         self.fastq: List[pathlib.Path] = []
         self.readgroups: List[str] = []
@@ -245,7 +216,6 @@ class DNAscopeLRPipeline(BasePipeline):
         self.cnv_excluded_regions: Optional[pathlib.Path] = None
         self.gvcf = False
         self.tech = "HiFi"
-        self.dry_run = False
         self.skip_small_variants = False
         self.skip_svs = False
         self.skip_mosdepth = False
@@ -254,24 +224,23 @@ class DNAscopeLRPipeline(BasePipeline):
         self.input_ref: Optional[pathlib.Path] = None
         self.fastq_taglist = "*"
         self.bam_format = False
-        self.minimap2_args = "-Y"
+        self.minimap2_args = "-YL"
         self.util_sort_args = (
             "--cram_write_options version=3.0,compressor=rans"
         )
         self.repeat_model: Optional[pathlib.Path] = None
-        self.skip_version_check = False
-        self.retain_tmpdir = False
         self.use_pbsv = False
 
     def validate(self) -> None:
         # uniquify pipeline attributes
         self.lr_aln = self.sample_input
+        self.lr_input_ref = self.input_ref
         del self.sample_input
 
         # validate
         if not (self.lr_aln or self.fastq):
             self.logger.error(
-                "Please suppy either the `--sample_input` or `--fastq` and "
+                "Please supply either the `--sample_input` or `--fastq` and "
                 "`--readgroups` arguments"
             )
             sys.exit(2)
@@ -332,8 +301,8 @@ class DNAscopeLRPipeline(BasePipeline):
             dag.add_job(job)
 
         if not self.skip_mosdepth:
-            mosdpeth_jobs = self.mosdepth(sample_input)
-            for job in mosdpeth_jobs:
+            mosdepth_jobs = self.mosdepth(sample_input)
+            for job in mosdepth_jobs:
                 dag.add_job(job, realign_jobs.union(align_jobs))
 
         if self.use_pbsv or not self.skip_cnv:
@@ -347,7 +316,8 @@ class DNAscopeLRPipeline(BasePipeline):
 
             if not self.skip_cnv:
                 hificnv_job = self.hificnv(merged_bam)
-                dag.add_job(hificnv_job, {merge_job})
+                if hificnv_job:
+                    dag.add_job(hificnv_job, {merge_job})
 
         if not self.skip_small_variants:
             (
@@ -486,7 +456,7 @@ class DNAscopeLRPipeline(BasePipeline):
                         self.cores,
                         rg_lines,
                         sample_name,
-                        self.input_ref,
+                        self.lr_input_ref,
                         self.fastq_taglist,
                         self.minimap2_args,
                         self.util_sort_args,
@@ -566,12 +536,12 @@ class DNAscopeLRPipeline(BasePipeline):
                 )
                 return set()
 
-        mosdpeth_jobs = set()
+        mosdepth_jobs = set()
         for i, input_file in enumerate(sample_input):
             mosdepth_dir = pathlib.Path(
                 str(self.output_vcf).replace(".vcf.gz", f"_mosdepth_{i}")
             )
-            mosdpeth_jobs.add(
+            mosdepth_jobs.add(
                 Job(
                     cmds.cmd_mosdepth(
                         input_file,
@@ -583,7 +553,7 @@ class DNAscopeLRPipeline(BasePipeline):
                     0,  # Run in background
                 )
             )
-        return mosdpeth_jobs
+        return mosdepth_jobs
 
     def merge_input_files(
         self, sample_input: List[pathlib.Path]
@@ -605,7 +575,7 @@ class DNAscopeLRPipeline(BasePipeline):
         )
         driver.add_algo(ReadWriter(merged_bam))
         merge_job = Job(
-            shlex.join(driver.build_cmd()),
+            Pipeline(Command(*driver.build_cmd())),
             "merge-bam",
             0,
         )
@@ -629,19 +599,32 @@ class DNAscopeLRPipeline(BasePipeline):
             ".pbsv_discover.svsig.gz",
         )
         pbsv_discover = Job(
-            f"pbsv discover --hifi {merged_bam} {pbsv_discover_fn}",
+            Pipeline(
+                Command(
+                    "pbsv",
+                    "discover",
+                    "--hifi",
+                    str(merged_bam),
+                    pbsv_discover_fn,
+                )
+            ),
             "pbsv-discover",
             0,
         )
 
         # pbsv call
         pbsv_call_fn = str(self.output_vcf).replace(".vcf.gz", ".pbsv.vcf")
-        cmd = (
-            f"pbsv call -j {self.cores} {self.reference} {pbsv_discover_fn} "
-            f"{pbsv_call_fn}"
-        )
+        call_cmd = [
+            "pbsv",
+            "call",
+            "-j",
+            str(self.cores),
+            str(self.reference),
+            pbsv_discover_fn,
+            pbsv_call_fn,
+        ]
         pbsv_call = Job(
-            cmd,
+            Pipeline(Command(*call_cmd)),
             "pbsv-call",
             self.cores,
         )
@@ -650,24 +633,37 @@ class DNAscopeLRPipeline(BasePipeline):
     def hificnv(
         self,
         merged_bam: pathlib.Path,
-    ) -> Job:
+    ) -> Optional[Job]:
         """
         Call CNVs with HiFiCNV
         """
         if not self.skip_version_check:
             for cmd, min_version in HIFICNV_MIN_VERSIONS.items():
                 if not check_version(cmd, min_version):
-                    sys.exit(2)
+                    self.logger.warning(
+                        "Skipping hificnv. hificnv version %s or later not "
+                        "found",
+                        HIFICNV_MIN_VERSIONS["hificnv"],
+                    )
+                    return None
 
         hifi_cnv_fn = str(self.output_vcf).replace(".vcf.gz", ".hificnv")
-        cmd = (
-            f"hificnv --bam {merged_bam} --ref {self.reference} "
-            f"--threads {self.cores} "
-            f"--output-prefix {hifi_cnv_fn}"
-        )
+        hificnv_cmd = [
+            "hificnv",
+            "--bam",
+            str(merged_bam),
+            "--ref",
+            str(self.reference),
+            "--threads",
+            str(self.cores),
+            "--output-prefix",
+            hifi_cnv_fn,
+        ]
         if self.cnv_excluded_regions:
-            cmd += f" --exclude {self.cnv_excluded_regions}"
-        hificnv_job = Job(cmd, "hificnv", self.cores)
+            hificnv_cmd.extend(["--exclude", str(self.cnv_excluded_regions)])
+        hificnv_job = Job(
+            Pipeline(Command(*hificnv_cmd)), "hificnv", self.cores
+        )
         return hificnv_job
 
     def lr_call_variants(
@@ -703,8 +699,8 @@ class DNAscopeLRPipeline(BasePipeline):
         assert self.reference
         assert self.output_vcf
         if not self.skip_version_check:
-            for cmd, min_version in TOOL_MIN_VERSIONS.items():
-                if not check_version(cmd, min_version):
+            for check_cmd, min_version in TOOL_MIN_VERSIONS.items():
+                if not check_version(check_cmd, min_version):
                     sys.exit(2)
 
         # First pass - diploid calling
@@ -733,7 +729,7 @@ class DNAscopeLRPipeline(BasePipeline):
             )
         )
         first_calling_job = Job(
-            shlex.join(driver.build_cmd()), "first-pass", self.cores
+            Pipeline(Command(*driver.build_cmd())), "first-pass", self.cores
         )
 
         diploid_vcf = self.tmp_dir.joinpath("out_diploid.vcf.gz")
@@ -749,7 +745,9 @@ class DNAscopeLRPipeline(BasePipeline):
             )
         )
         first_modelapply_job = Job(
-            shlex.join(driver.build_cmd()), "first-modelapply", self.cores
+            Pipeline(Command(*driver.build_cmd())),
+            "first-modelapply",
+            self.cores,
         )
 
         # Phasing and RepeatModel
@@ -778,14 +776,28 @@ class DNAscopeLRPipeline(BasePipeline):
             )
         )
         phaser_job = Job(
-            shlex.join(driver.build_cmd()), "variantphaser", self.cores
+            Pipeline(Command(*driver.build_cmd())), "variantphaser", self.cores
         )
 
         bcftools_subset_phased_job = None
         if self.tech.upper() == "ONT":
             bcftools_subset_phased_job = Job(
-                f"bcftools view -T {phased_bed} {phased_vcf} \
-                | sentieon util vcfconvert - {phased_phased}",
+                Pipeline(
+                    Command(
+                        "bcftools",
+                        "view",
+                        "-T",
+                        str(phased_bed),
+                        str(phased_vcf),
+                    ),
+                    Command(
+                        "sentieon",
+                        "util",
+                        "vcfconvert",
+                        "-",
+                        str(phased_phased),
+                    ),
+                ),
                 "bcftools-subset-phased",
                 0,
             )
@@ -831,12 +843,24 @@ class DNAscopeLRPipeline(BasePipeline):
                 )
             )
             repeatmodel_job = Job(
-                shlex.join(driver.build_cmd()), "repeatmodel", self.cores
+                Pipeline(Command(*driver.build_cmd())),
+                "repeatmodel",
+                self.cores,
             )
 
         bcftools_subset_unphased_job = Job(
-            f"bcftools view -T {unphased_bed} {phased_vcf} \
-            | sentieon util vcfconvert - {phased_unphased}",
+            Pipeline(
+                Command(
+                    "bcftools",
+                    "view",
+                    "-T",
+                    str(unphased_bed),
+                    str(phased_vcf),
+                ),
+                Command(
+                    "sentieon", "util", "vcfconvert", "-", str(phased_unphased)
+                ),
+            ),
             "bcftools-subset-unphased",
             0,
         )
@@ -877,7 +901,11 @@ class DNAscopeLRPipeline(BasePipeline):
                 )
             )
             second_calling_job.add(
-                Job(shlex.join(driver.build_cmd()), "second-pass", self.cores)
+                Job(
+                    Pipeline(Command(*driver.build_cmd())),
+                    "second-pass",
+                    self.cores,
+                )
             )
 
         kwargs: Dict[str, str] = dict()
@@ -924,7 +952,7 @@ class DNAscopeLRPipeline(BasePipeline):
             )
             second_modelapply_job.add(
                 Job(
-                    shlex.join(driver.build_cmd()),
+                    Pipeline(Command(*driver.build_cmd())),
                     "second-modelapply",
                     self.cores,
                 )
@@ -949,7 +977,9 @@ class DNAscopeLRPipeline(BasePipeline):
             )
         )
         calling_unphased_job = Job(
-            shlex.join(driver.build_cmd()), "calling-unphased", self.cores
+            Pipeline(Command(*driver.build_cmd())),
+            "calling-unphased",
+            self.cores,
         )
 
         # Patch DNA and DNAHP variants
@@ -977,7 +1007,9 @@ class DNAscopeLRPipeline(BasePipeline):
             )
         )
         modelapply_unphased_job = Job(
-            shlex.join(driver.build_cmd()), "modelapply-unphased", self.cores
+            Pipeline(Command(*driver.build_cmd())),
+            "modelapply-unphased",
+            self.cores,
         )
 
         # merge calls to create the output
@@ -1057,7 +1089,9 @@ class DNAscopeLRPipeline(BasePipeline):
                     )
                 )
             haploid_calling_job = Job(
-                shlex.join(driver.build_cmd()), "haploid-calling", self.cores
+                Pipeline(Command(*driver.build_cmd())),
+                "haploid-calling",
+                self.cores,
             )
 
             haploid_patch2_job = Job(
@@ -1136,6 +1170,7 @@ class DNAscopeLRPipeline(BasePipeline):
     def call_svs(
         self,
         sample_input: List[pathlib.Path],
+        replace_rg: Optional[List[List[str]]] = None,
     ) -> Job:
         """
         Call SVs using Sentieon LongReadSV
@@ -1152,6 +1187,7 @@ class DNAscopeLRPipeline(BasePipeline):
         driver = Driver(
             reference=self.reference,
             thread_count=self.cores,
+            replace_rg=replace_rg,
             input=sample_input,
             interval=self.bed,
         )
@@ -1162,6 +1198,6 @@ class DNAscopeLRPipeline(BasePipeline):
             )
         )
         longreadsv_job = Job(
-            shlex.join(driver.build_cmd()), "LongReadSV", self.cores
+            Pipeline(Command(*driver.build_cmd())), "LongReadSV", self.cores
         )
         return longreadsv_job

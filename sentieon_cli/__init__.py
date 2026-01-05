@@ -3,6 +3,7 @@ from .dnascope import DNAscopePipeline
 from .dnascope_hybrid import DNAscopeHybridPipeline
 from .dnascope_longread import DNAscopeLRPipeline
 from .pangenome import PangenomePipeline
+from .sentieon_pangenome import SentieonPangenome
 
 
 def main():
@@ -49,6 +50,12 @@ def main():
     pangenome_subparser = subparsers.add_parser("pangenome")
     pipeline.add_arguments(pangenome_subparser)
     pangenome_subparser.set_defaults(pipeline=pipeline.main)
+
+    # Sentieon pangenome
+    pipeline = SentieonPangenome()
+    sentieon_pangenome_subparser = subparsers.add_parser("sentieon-pangenome")
+    pipeline.add_arguments(sentieon_pangenome_subparser)
+    sentieon_pangenome_subparser.set_defaults(pipeline=pipeline.main)
 
     args = parser.parse_args()
     args.pipeline(args)
