@@ -312,12 +312,6 @@ class SentieonPangenome(BasePangenome):
                 )
                 sys.exit(2)
 
-            if self.gbz.name != "hprc-v2.0-mc-grch38.gbz":
-                self.logger.warning(
-                    "The `--gbz` file name is not 'hprc-v2.0-mc-grch38.gbz'. "
-                    "This pipeline is optimized for the HPRC v2.0 pangenome."
-                )
-
             if not str(self.hapl).endswith("grch38.hapl"):
                 self.logger.error(
                     "The `--hapl` file does not have the expected suffix. "
@@ -358,6 +352,7 @@ class SentieonPangenome(BasePangenome):
 
     def validate_bundle(self) -> None:
         assert self.pop_vcf
+        assert self.gbz
         bundle_info_bytes = ar_load(
             str(self.model_bundle) + "/bundle_info.json"
         )
@@ -372,6 +367,9 @@ class SentieonPangenome(BasePangenome):
             bundle_pipeline = bundle_info["pipeline"]
             self.tech: str = bundle_info["platform"].upper()
             bundle_vcf_id = bundle_info["SentieonVcfID"]
+            bundle_pangenome = bundle_info.get(
+                "pangenome", "hprc-v2.0-mc-grch38.gbz"
+            )
         except KeyError:
             self.logger.error(
                 "The model bundle does not have the expected attributes"
@@ -387,6 +385,13 @@ class SentieonPangenome(BasePangenome):
         if bundle_pipeline != "Sentieon pangenome":
             self.logger.error("The model bundle is for a different pipeline.")
             sys.exit(2)
+        if self.gbz.name != bundle_pangenome:
+            self.logger.warning(
+                "The `--gbz` file name is not '%s'. "
+                "This model is optimized for the %s pangenome.",
+                bundle_pangenome,
+                bundle_pangenome,
+            )
 
         bundle_members = set(ar_load(str(self.model_bundle)))
         if (
