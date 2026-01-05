@@ -311,6 +311,13 @@ class SentieonPangenome(BasePangenome):
                     "Check that you are using a GRCh38 pangenome."
                 )
                 sys.exit(2)
+
+            if self.gbz.name != "hprc-v2.0-mc-grch38.gbz":
+                self.logger.warning(
+                    "The `--gbz` file name is not 'hprc-v2.0-mc-grch38.gbz'. "
+                    "This pipeline is optimized for the HPRC v2.0 pangenome."
+                )
+
             if not str(self.hapl).endswith("grch38.hapl"):
                 self.logger.error(
                     "The `--hapl` file does not have the expected suffix. "
