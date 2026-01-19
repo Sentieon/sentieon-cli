@@ -227,6 +227,10 @@ class SentieonPangenome(BasePangenome):
                 "help": argparse.SUPPRESS,
                 "action": "store_true",
             },
+            "skip_model_apply": {
+                "help": argparse.SUPPRESS,
+                "action": "store_true",
+            },
         }
     )
 
@@ -243,6 +247,7 @@ class SentieonPangenome(BasePangenome):
         self.skip_contig_checks: bool = False
         self.skip_pangenome_name_checks: bool = False
         self.skip_pop_vcf_id_check: bool = False
+        self.skip_model_apply = False
 
     def main(self, args: argparse.Namespace) -> None:
         """Run the pipeline"""
@@ -468,6 +473,7 @@ class SentieonPangenome(BasePangenome):
         """Build the main DAG for the Sentieon pangenome pipeline"""
         assert self.reference
         assert self.model_bundle
+        assert self.output_vcf
 
         self.logger.info("Building the Sentieon pangenome DAG")
         dag = DAG()
@@ -597,12 +603,16 @@ class SentieonPangenome(BasePangenome):
         # transfer annotations from the pop_vcf
         if self.pop_vcf:
             transfer_jobs, concat_job = self.build_transfer_jobs(
-                transfer_vcf, raw_vcf
+                transfer_vcf if not self.skip_model_apply else self.output_vcf,
+                raw_vcf,
             )
             for job in transfer_jobs:
                 dag.add_job(job, {dnascope_job})
             dag.add_job(concat_job, set(transfer_jobs))
             apply_dependencies.add(concat_job)
+
+        if self.skip_model_apply:
+            return dag
 
         # DNAModelApply
         apply_job = self.build_dnamodelapply_job(transfer_vcf)
