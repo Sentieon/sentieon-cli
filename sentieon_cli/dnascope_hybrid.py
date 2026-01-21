@@ -6,11 +6,8 @@ import argparse
 import copy
 import json
 import pathlib
-import re
-import shutil
-import subprocess as sp
 import sys
-from typing import Any, Dict, List, NamedTuple, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import packaging.version
 
@@ -44,8 +41,6 @@ from .util import (
     vcf_id,
 )
 from .shard import (
-    GRCH38_CONTIGS,
-    Shard,
     determine_shards_from_fai,
     parse_fai,
     vcf_contigs,

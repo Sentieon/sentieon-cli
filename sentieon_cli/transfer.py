@@ -5,7 +5,7 @@ Annotation transfer functionality
 import pathlib
 import re
 import subprocess as sp
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from importlib_resources import files
 
