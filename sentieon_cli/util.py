@@ -228,3 +228,14 @@ def get_read_length_aln(
         if m:
             return int(m.groupdict()["length"])
     return 151
+
+
+def vcf_id(in_vcf: pathlib.Path) -> Optional[str]:
+    """Collect the SentieonVcfID header"""
+    cmd = ["bcftools", "view", "-h", str(in_vcf)]
+    p = sp.run(cmd, capture_output=True, text=True)
+    for line in p.stdout.split("\n"):
+        if line.startswith("##SentieonVcfID="):
+            i = line.index("=")
+            return line[i + 1 :]  # noqa: E203
+    return None

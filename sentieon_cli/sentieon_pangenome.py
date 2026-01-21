@@ -6,11 +6,9 @@ import argparse
 import copy
 import json
 import pathlib
-import re
 import shutil
-import subprocess as sp
 import sys
-from typing import Dict, List, NamedTuple, Optional, Set, Tuple, Union
+from typing import Dict, List, Optional, Set, Tuple, Union
 
 import packaging.version
 
@@ -45,7 +43,15 @@ from .util import (
     path_arg,
     tmp,
     total_memory,
+    vcf_id,
 )
+from .shard import (
+    GRCH38_CONTIGS,
+    determine_shards_from_fai,
+    parse_fai,
+    vcf_contigs,
+)
+from .transfer import build_transfer_jobs
 
 SENT_PANGENOME_MIN_VERSIONS = {
     "kmc": None,
@@ -55,122 +61,7 @@ SENT_PANGENOME_MIN_VERSIONS = {
     "samtools": packaging.version.Version("1.16"),
 }
 
-GRCH38_CONTIGS: Dict[str, int] = {
-    "chr1": 248956422,
-    "chr2": 242193529,
-    "chr3": 198295559,
-    "chr4": 190214555,
-    "chr5": 181538259,
-    "chr6": 170805979,
-    "chr7": 159345973,
-    "chr8": 145138636,
-    "chr9": 138394717,
-    "chr10": 133797422,
-    "chr11": 135086622,
-    "chr12": 133275309,
-    "chr13": 114364328,
-    "chr14": 107043718,
-    "chr15": 101991189,
-    "chr16": 90338345,
-    "chr17": 83257441,
-    "chr18": 80373285,
-    "chr19": 58617616,
-    "chr20": 64444167,
-    "chr21": 46709983,
-    "chr22": 50818468,
-    "chrX": 156040895,
-    "chrY": 57227415,
-    "chrM": 16569,
-}
-
 logger = get_logger(__name__)
-
-
-class Shard(NamedTuple):
-    contig: str
-    start: int
-    stop: int
-
-    def __str__(self) -> str:
-        return f"{self.contig}:{self.start}-{self.stop}"
-
-    def bcftools_str(self) -> str:
-        return f"{{{self.contig}}}:{self.start}-{self.stop}"
-
-
-def parse_fai(ref_fai: pathlib.Path) -> Dict[str, Dict[str, int]]:
-    """Parse a faidx index"""
-    contigs: Dict[str, Dict[str, int]] = {}
-    with open(ref_fai) as fh:
-        for line in fh:
-            try:
-                chrom, length, offset, lb, lw = line.rstrip().split()
-            except ValueError as err:
-                logger.error(
-                    "Reference fasta index (.fai) does not have the expected "
-                    "format"
-                )
-                raise err
-            contigs[chrom] = {
-                "length": int(length),
-                "offset": int(offset),
-                "linebases": int(lb),
-                "linewidth": int(lw),
-            }
-    return contigs
-
-
-def determine_shards_from_fai(
-    fai_data: Dict[str, Dict[str, int]], step: int
-) -> List[Shard]:
-    """Generate shards of the genome from the fasta index"""
-    shards: List[Shard] = []
-    for ctg, d in fai_data.items():
-        pos = 1
-        length = d["length"]
-        while pos <= length:
-            end = pos + step - 1
-            end = end if end < length else length
-            shards.append(Shard(ctg, pos, end))
-            pos = end + 1
-    return shards
-
-
-def vcf_contigs(
-    in_vcf: pathlib.Path, dry_run=False
-) -> Dict[str, Optional[int]]:
-    """Report the contigs in the input VCF"""
-    if dry_run:
-        return {
-            "chr1": 100,
-            "chr2": 200,
-            "chr3": 300,
-        }
-    kvpat = re.compile(r'(.*?)=(".*?"|.*?)(?:,|$)')
-    cmd = ["bcftools", "view", "-h", str(in_vcf)]
-    p = sp.run(cmd, capture_output=True, text=True)
-    contigs: Dict[str, Optional[int]] = {}
-    for line in p.stdout.split("\n"):
-        if not line.startswith("##contig"):
-            continue
-        s = line.index("<")
-        e = line.index(">")
-        d = dict(kvpat.findall(line[s + 1 : e]))  # noqa: E203
-        ctg: str = d["ID"]
-        length: Optional[str] = d.get("length", None)
-        contigs[ctg] = int(length) if length else None
-    return contigs
-
-
-def vcf_id(in_vcf: pathlib.Path) -> Optional[str]:
-    """Collect the SentieonVcfID header"""
-    cmd = ["bcftools", "view", "-h", str(in_vcf)]
-    p = sp.run(cmd, capture_output=True, text=True)
-    for line in p.stdout.split("\n"):
-        if line.startswith("##SentieonVcfID="):
-            i = line.index("=")
-            return line[i + 1 :]  # noqa: E203
-    return None
 
 
 class SentieonPangenome(BasePangenome):
@@ -602,9 +493,16 @@ class SentieonPangenome(BasePangenome):
 
         # transfer annotations from the pop_vcf
         if self.pop_vcf:
-            transfer_jobs, concat_job = self.build_transfer_jobs(
+            transfer_jobs, concat_job = build_transfer_jobs(
                 transfer_vcf if not self.skip_model_apply else self.output_vcf,
+                self.pop_vcf,
                 raw_vcf,
+                self.tmp_dir,
+                self.shards,
+                self.pop_vcf_contigs,
+                self.fai_data,
+                self.dry_run,
+                self.cores,
             )
             for job in transfer_jobs:
                 dag.add_job(job, {dnascope_job})
@@ -902,118 +800,6 @@ class SentieonPangenome(BasePangenome):
             "dnascope-raw",
             self.cores,
         )
-
-    def build_transfer_jobs(
-        self, out_vcf: pathlib.Path, raw_vcf: pathlib.Path
-    ) -> Tuple[List[Job], Job]:
-        """Transfer annotations from the pop_vcf to the raw_vcf"""
-        assert self.pop_vcf
-
-        # Generate merge rules from the population VCF
-        merge_rules = "AC_v20:sum,AF_v20:sum,AC_genomes:sum,AF_genomes:sum"
-        if not self.dry_run:
-            kvpat = re.compile(r'(.*?)=(".*?"|.*?)(?:,|$)')
-            cmd = ["bcftools", "view", "-h", str(self.pop_vcf)]
-            p = sp.run(cmd, capture_output=True, text=True)
-            id_fields: List[str] = []
-            for line in p.stdout.split("\n"):
-                if not line.startswith("##INFO"):
-                    continue
-                if ",Number=A" not in line:
-                    continue
-                s = line.index("<")
-                e = line.index(">")
-                d = dict(kvpat.findall(line[s + 1 : e]))  # noqa: E203
-                id_fields.append(d["ID"])
-            merge_rules = ",".join([x + ":sum" for x in id_fields])
-
-        # Merge VCFs by shards
-        sharded_vcfs: List[pathlib.Path] = []
-        sharded_merge_jobs: List[Job] = []
-        trim_script = pathlib.Path(
-            str(files("sentieon_cli.scripts").joinpath("trimalt.py"))
-        ).resolve()
-        seen_contigs: Set[str] = set()
-        for i, shard in enumerate(self.shards):
-            # Use a BED file for unusual contig names
-            subset_bed = self.tmp_dir.joinpath(
-                f"sample-dnascope_transfer-subset{i}.bed"
-            )
-
-            # Extract contigs not in the pop vcf as merge will fail
-            if shard.contig not in self.pop_vcf_contigs:
-                if shard.contig in seen_contigs:
-                    continue
-                self.logger.info(
-                    "Skipping transfer for contig: %s", shard.contig
-                )
-                seen_contigs.add(shard.contig)
-                subset_vcf = self.tmp_dir.joinpath(
-                    f"sample-dnascope_transfer-subset{i}.vcf.gz"
-                )
-
-                ctg_len = self.fai_data[shard.contig]["length"]
-                if not self.dry_run:
-                    with open(subset_bed, "w") as fh:
-                        print(f"{shard.contig}\t0\t{ctg_len}", file=fh)
-
-                view_job = Job(
-                    cmds.cmd_bcftools_view_regions(
-                        subset_vcf,
-                        raw_vcf,
-                        regions_file=subset_bed,
-                    ),
-                    "merge-trim-extra",
-                    1,
-                )
-                sharded_merge_jobs.append(view_job)
-                sharded_vcfs.append(subset_vcf)
-            else:
-                if not self.dry_run:
-                    with open(subset_bed, "w") as fh:
-                        print(
-                            f"{shard.contig}\t{shard.start}\t{shard.stop}",
-                            file=fh,
-                        )
-
-                self.logger.debug("Transferring shard: %s", shard)
-                shard_vcf = self.tmp_dir.joinpath(
-                    f"sample-dnascope_transfer-shard{i}.vcf.gz"
-                )
-                merge_job = Job(
-                    cmds.cmd_bcftools_merge_trim(
-                        shard_vcf,
-                        raw_vcf,
-                        self.pop_vcf,
-                        trim_script,
-                        subset_bed,
-                        merge_rules=merge_rules,
-                        merge_xargs=[
-                            "--no-version",
-                            "--regions-overlap",
-                            "pos",
-                            "-m",
-                            "all",
-                        ],
-                        view_xargs=["--no-version"],
-                    ),
-                    f"merge-trim-{i}",
-                    1,
-                )
-                sharded_merge_jobs.append(merge_job)
-                sharded_vcfs.append(shard_vcf)
-
-        # Concat all shards
-        concat_job = Job(
-            cmds.bcftools_concat(
-                out_vcf,
-                sharded_vcfs,
-                xargs=["--no-version", "--threads", str(self.cores)],
-            ),
-            "merge-trim-concat",
-            self.cores,
-        )
-        return (sharded_merge_jobs, concat_job)
 
     def build_dnamodelapply_job(self, in_vcf) -> Job:
         assert self.output_vcf

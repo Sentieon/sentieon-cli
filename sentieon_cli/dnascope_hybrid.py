@@ -6,13 +6,17 @@ import argparse
 import copy
 import json
 import pathlib
+import re
+import shutil
+import subprocess as sp
 import sys
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Set, Tuple
 
 import packaging.version
 
 from importlib_resources import files
 
+from .logging import get_logger
 from .archive import ar_load
 from . import command_strings as cmds
 from .dag import DAG
@@ -37,7 +41,19 @@ from .util import (
     parse_rg_line,
     path_arg,
     split_alignment,
+    vcf_id,
 )
+from .shard import (
+    GRCH38_CONTIGS,
+    Shard,
+    determine_shards_from_fai,
+    parse_fai,
+    vcf_contigs,
+)
+from .transfer import build_transfer_jobs
+
+
+logger = get_logger(__name__)
 
 
 CALLING_MIN_VERSIONS = {
@@ -113,6 +129,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
     params = copy.deepcopy(BasePipeline.params)
     params.update(
         {
+            # Required arguments
             "lr_aln": {
                 "nargs": "*",
                 "help": "Long-read BAM or CRAM files.",
@@ -144,6 +161,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
                 "nargs": "*",
                 "help": "Readgroup information for the short-read fastq files",
             },
+            # Additional arguments
             "bam_format": {
                 "help": (
                     "Use the BAM format instead of CRAM for output aligned "
@@ -189,6 +207,13 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
                 ),
                 "type": path_arg(exists=True, is_file=True),
             },
+            "pop_vcf": {
+                "flags": ["--pop_vcf"],
+                "help": (
+                    "A VCF containing annotations for use with DNAModelApply."
+                ),
+                "type": path_arg(exists=True, is_file=True),
+            },
             "rgsm": {
                 "help": (
                     "Overwrite the SM tag of the input readgroups for "
@@ -220,6 +245,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
                 "choices": ["markdup", "rmdup", "none"],
                 "default": "markdup",
             },
+            # Hidden arguments
             "bwa_args": {
                 # help="Extra arguments for sentieon bwa",
                 "help": argparse.SUPPRESS,
@@ -256,6 +282,10 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
                 "help": argparse.SUPPRESS,
                 "action": "store_true",
             },
+            "skip_pop_vcf_id_check": {
+                "help": argparse.SUPPRESS,
+                "action": "store_true",
+            },
             "sr_read_filter": {
                 "help": argparse.SUPPRESS,
             },
@@ -277,6 +307,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         self.lr_aln: List[pathlib.Path] = []
         self.lr_align_input = False
         self.lr_input_ref: Optional[pathlib.Path] = None
+        self.pop_vcf: Optional[pathlib.Path] = None
         self.bam_format = False
         self.rgsm: Optional[str] = None
         self.lr_fastq_taglist = "*"
@@ -284,8 +315,18 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         self.lr_read_filter: Optional[str] = None
         self.assay = "WGS"
         self.skip_model_apply = False
+        self.skip_pop_vcf_id_check = False
 
     def validate(self) -> None:
+        self.fai_data = parse_fai(pathlib.Path(str(self.reference) + ".fai"))
+        self.pop_vcf_contigs: Dict[str, Optional[int]] = {}
+        if self.pop_vcf:
+            self.pop_vcf_contigs = vcf_contigs(self.pop_vcf, self.dry_run)
+            self.logger.debug("VCF contigs are: %s", self.pop_vcf_contigs)
+        self.shards = determine_shards_from_fai(
+            self.fai_data, 10 * 1000 * 1000
+        )
+
         self.validate_bundle()
         self.collect_readgroups()
         self.validate_readgroups()
@@ -329,6 +370,24 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         bundle_info = json.loads(bundle_info_bytes.decode())
         self.longread_tech = bundle_info.get("longReadPlatform")
         self.shortread_tech = bundle_info.get("shortReadPlatform")
+        bundle_vcf_id = bundle_info.get("SentieonVcfID")
+
+        if bundle_vcf_id:
+            if not self.pop_vcf:
+                self.logger.error(
+                    "The model bundle requires a population VCF file. Please "
+                    "supply the `--pop_vcf` argument."
+                )
+                sys.exit(2)
+            if not self.skip_pop_vcf_id_check and not self.dry_run:
+                pop_vcf_id = vcf_id(self.pop_vcf)
+                if bundle_vcf_id != pop_vcf_id:
+                    self.logger.error(
+                        "The ID of the `--pop_vcf` does not match the model "
+                        "bundle"
+                    )
+                    sys.exit(2)
+
         if not self.longread_tech or not self.shortread_tech:
             self.logger.error(
                 "The bundle file does not have the expected attributes. "
@@ -586,6 +645,8 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             concat_job,
             rm_job5,
             anno_job,
+            transfer_jobs,
+            transfer_concat,
             apply_job,
             norm_job,
         ) = self.call_variants(sr_aln, lr_aln, rg_info)
@@ -601,8 +662,16 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         dag.add_job(subset_job, {second_stage_job})
         dag.add_job(concat_job, {subset_job, call2_job})
         dag.add_job(anno_job, {concat_job})
+
+        apply_dependencies = {anno_job}
+        if transfer_jobs and transfer_concat:
+            for job in transfer_jobs:
+                dag.add_job(job, {anno_job})
+            dag.add_job(transfer_concat, set(transfer_jobs))
+            apply_dependencies = {transfer_concat}
+
         if apply_job:
-            dag.add_job(apply_job, {anno_job})
+            dag.add_job(apply_job, apply_dependencies)
         if apply_job and norm_job:
             dag.add_job(norm_job, {apply_job})
 
@@ -640,6 +709,8 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         Job,
         Job,
         Job,
+        Optional[List[Job]],
+        Optional[Job],
         Optional[Job],
         Optional[Job],
     ]:
@@ -910,12 +981,13 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         hybrid_anno = pathlib.Path(
             str(files("sentieon_cli.scripts").joinpath("hybrid_anno.py"))
         )
-        combined_anno_vcf = self.tmp_dir.joinpath("combined_tmp_anno.vcf.gz")
-        if self.skip_model_apply:
-            combined_anno_vcf = self.output_vcf
+        anno_target = self.tmp_dir.joinpath("combined_tmp_anno.vcf.gz")
+        if self.skip_model_apply and not self.pop_vcf:
+            anno_target = self.output_vcf
+
         anno_job = Job(
             cmds.cmd_pyexec_hybrid_anno(
-                combined_anno_vcf,
+                anno_target,
                 combined_tmp_vcf,
                 stage1_hap_bed,
                 hybrid_anno,
@@ -924,6 +996,31 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             "anno-calls",
             0,
         )
+
+        transfer_jobs: Optional[List[Job]] = None
+        transfer_concat_job: Optional[Job] = None
+        input_to_apply = anno_target
+
+        if self.pop_vcf:
+            transfer_target = self.tmp_dir.joinpath(
+                "combined_tmp_transfer.vcf.gz"
+            )
+            if self.skip_model_apply:
+                transfer_target = self.output_vcf
+
+            transfer_jobs, transfer_concat_job = build_transfer_jobs(
+                transfer_target,
+                self.pop_vcf,
+                anno_target,
+                self.tmp_dir,
+                self.shards,
+                self.pop_vcf_contigs,
+                self.fai_data,
+                self.dry_run,
+                self.cores,
+            )
+            input_to_apply = transfer_target
+
         if self.skip_model_apply:
             return (
                 call_job,
@@ -943,6 +1040,8 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
                 concat_job,
                 rm_job5,
                 anno_job,
+                transfer_jobs,
+                transfer_concat_job,
                 None,
                 None,
             )
@@ -957,7 +1056,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         driver.add_algo(
             DNAModelApply(
                 model=self.model_bundle.joinpath("hybrid.model"),
-                vcf=combined_anno_vcf,
+                vcf=input_to_apply,
                 output=apply_vcf,
             )
         )
@@ -994,6 +1093,8 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             concat_job,
             rm_job5,
             anno_job,
+            transfer_jobs,
+            transfer_concat_job,
             apply_job,
             norm_job,
         )

@@ -236,12 +236,13 @@ class TestDNAscopeHybridPipelineValidation:
         # Create mock files
         self.mock_vcf = pathlib.Path(self.temp_dir) / "output.vcf.gz"
         self.mock_ref = pathlib.Path(self.temp_dir) / "reference.fa"
+        self.mock_fai = pathlib.Path(self.temp_dir) / "reference.fa.fai"
         self.mock_lr_bam = pathlib.Path(self.temp_dir) / "longread.bam"
         self.mock_sr_bam = pathlib.Path(self.temp_dir) / "shortread.bam"
         self.mock_fastq = pathlib.Path(self.temp_dir) / "sample_R1.fastq.gz"
 
         # Create empty files
-        for file_path in [self.mock_ref, self.mock_lr_bam, self.mock_sr_bam, self.mock_fastq]:
+        for file_path in [self.mock_ref, self.mock_fai, self.mock_lr_bam, self.mock_sr_bam, self.mock_fastq]:
             file_path.touch()
 
         # Create mock bundle file (content will be mocked by ar_load)
