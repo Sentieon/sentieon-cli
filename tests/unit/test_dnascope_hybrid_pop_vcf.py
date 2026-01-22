@@ -89,7 +89,8 @@ class TestDNAscopeHybridPopVcf:
         return pipeline
 
     @patch("sentieon_cli.dnascope_hybrid.ar_load")
-    def test_validation_requires_pop_vcf(self, mock_ar_load):
+    @patch("sentieon_cli.dnascope_hybrid.vcf_id")
+    def test_validation_requires_pop_vcf(self, mock_vcf_id, mock_ar_load):
         """Test that validation fails if model bundle requires pop_vcf but none provided"""
         pipeline = self.create_pipeline()
         
