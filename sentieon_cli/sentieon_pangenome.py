@@ -39,6 +39,7 @@ from .shell_pipeline import Command, Pipeline
 from .util import (
     __version__,
     check_version,
+    check_kmc_patch,
     parse_rg_line,
     path_arg,
     tmp,
@@ -192,6 +193,16 @@ class SentieonPangenome(BasePangenome):
         if not self.skip_version_check:
             for cmd, min_version in SENT_PANGENOME_MIN_VERSIONS.items():
                 if not check_version(cmd, min_version):
+                    sys.exit(2)
+
+            if self.sample_input:
+                if not check_kmc_patch("kmc"):
+                    self.logger.error(
+                        "Error: The 'kmc' executable in the PATH does not "
+                        "support reading from stdin. Please ensure "
+                        "you are using the patched version of KMC from "
+                        "https://github.com/Sentieon/KMC/releases."
+                    )
                     sys.exit(2)
 
         if self.bed is None:
