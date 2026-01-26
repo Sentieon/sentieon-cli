@@ -17,7 +17,7 @@ import packaging.version
 
 from .logging import get_logger
 
-__version__ = "1.5.0"
+__version__ = "1.5.1"
 
 logger = get_logger(__name__)
 
@@ -228,3 +228,55 @@ def get_read_length_aln(
         if m:
             return int(m.groupdict()["length"])
     return 151
+
+
+def vcf_id(in_vcf: pathlib.Path) -> Optional[str]:
+    """Collect the SentieonVcfID header"""
+    cmd = ["bcftools", "view", "-h", str(in_vcf)]
+    p = sp.run(cmd, capture_output=True, text=True)
+    for line in p.stdout.split("\n"):
+        if line.startswith("##SentieonVcfID="):
+            i = line.index("=")
+            return line[i + 1 :]  # noqa: E203
+    return None
+
+
+def check_kmc_patch(kmc_cmd: str = "kmc") -> bool:
+    """Check if the KMC version supports the required patch"""
+    # Create a temporary directory for the test
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = pathlib.Path(temp_dir)
+        output_prefix = temp_path / "kmc_test"
+
+        # Test input sequence
+        test_input = (
+            ">206B4ABXX100825:7:1:1360:6029/1\n"
+            "TGATTTTNNNNNNNNNNNTGAAGAACGCACCCATGTTAAAGAGCATGACAAANNNANNACAAGGCTAAGNGGCGNG\n"  # noqa: E501
+            ">206B4ABXX100825:7:1:1362:4449/1\n"
+            "ATTCCCCNNNNNNNNNNNCCACAGCCGGAGGAGCTGACCAACATCCTGGAGATNTGNAATGTGGTCTTANCCAGNA"  # noqa: E501
+        )
+
+        cmd = [
+            kmc_cmd,
+            "-k29",
+            "-m4",
+            "-okff",
+            "-t1",
+            "-fa",
+            "/dev/stdin",
+            str(output_prefix),
+            str(temp_path),
+        ]
+
+        try:
+            sp.run(
+                cmd,
+                input=test_input,
+                text=True,
+                check=True,
+                stdout=sp.DEVNULL,
+                stderr=sp.DEVNULL,
+            )
+            return True
+        except (sp.CalledProcessError, FileNotFoundError):
+            return False

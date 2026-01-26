@@ -194,6 +194,7 @@ class PipelineTestHelper:
         # Set default files
         pipeline.output_vcf = self.fs.create_file("output.vcf.gz")
         pipeline.reference = self.fs.create_file("reference.fa")
+        _fai = self.fs.create_file("reference.fa.fai")
         pipeline.model_bundle = self.fs.create_model_bundle("model.bundle", "DNAscope Hybrid")
 
         # Default configuration

@@ -8,8 +8,8 @@ A command-line interface for the Sentieon software
 
 Download the latest tar.gz file from the GitHub release page, https://github.com/sentieon/sentieon-cli/releases/ and install the package with pip:
 ```sh
-curl -LO https://github.com/Sentieon/sentieon-cli/releases/download/v1.5.0/sentieon_cli-1.5.0.tar.gz
-pip install sentieon_cli-1.5.0.tar.gz
+curl -LO https://github.com/Sentieon/sentieon-cli/releases/download/v1.5.1/sentieon_cli-1.5.1.tar.gz
+pip install sentieon_cli-1.5.1.tar.gz
 ```
 
 ## Installation with Poetry

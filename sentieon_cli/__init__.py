@@ -4,6 +4,7 @@ from .dnascope_hybrid import DNAscopeHybridPipeline
 from .dnascope_longread import DNAscopeLRPipeline
 from .pangenome import PangenomePipeline
 from .sentieon_pangenome import SentieonPangenome
+from .util import __version__
 
 
 def main():
@@ -25,6 +26,11 @@ def main():
         action="store_const",
         dest="loglevel",
         const="DEBUG",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=__version__,
     )
     subparsers = parser.add_subparsers(required=True)
 
