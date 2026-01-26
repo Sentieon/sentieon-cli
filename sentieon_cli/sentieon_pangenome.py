@@ -98,6 +98,11 @@ class SentieonPangenome(BasePangenome):
                 ),
                 "type": path_arg(exists=True, is_file=True),
             },
+            "gvcf": {
+                "flags": ["-g", "--gvcf"],
+                "help": "Generate a gVCF output file.",
+                "action": "store_true",
+            },
             "skip_metrics": {
                 "help": "Skip metrics collection and multiQC",
                 "action": "store_true",
@@ -132,8 +137,9 @@ class SentieonPangenome(BasePangenome):
         super().__init__()
         self.readgroup: Optional[str] = None
         self.sample_input: List[pathlib.Path] = []
-        self.bed: Optional[pathlib.Path] = None
         self.pop_vcf: Optional[pathlib.Path] = None
+        self.bed: Optional[pathlib.Path] = None
+        self.gvcf = False
         self.skip_metrics = False
         self.skip_multiqc = False
         self.skip_contig_checks: bool = False
@@ -401,6 +407,13 @@ class SentieonPangenome(BasePangenome):
         sample_gfa = self.tmp_dir.joinpath("sample-hap.gfa")
         sample_fasta = self.tmp_dir.joinpath("sample-hap.fa")
         mm2_bam = self.tmp_dir.joinpath("sample-mm2.bam")
+        if not self.r1_fastq:
+            # with bam/cram input, output the realigned bam/cram
+            mm2_bam = pathlib.Path(
+                str(self.output_vcf).replace(
+                    ".vcf.gz", f"_mm2_deduped.{suffix}"
+                )
+            )
         raw_vcf = self.tmp_dir.joinpath("sample-dnascope.vcf.gz")
         transfer_vcf = self.tmp_dir.joinpath("sample-dnascope_transfer.vcf.gz")
         # - Ensure we have a bam file for t1k
@@ -804,6 +817,7 @@ class SentieonPangenome(BasePangenome):
                 model=self.model_bundle.joinpath("dnascope.model"),
                 pcr_indel_model=pcr_indel_model,
                 dbsnp=self.dbsnp,
+                emit_mode="gvcf" if self.gvcf else "variant",
             )
         )
         return Job(

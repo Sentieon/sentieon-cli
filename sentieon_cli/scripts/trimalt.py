@@ -31,13 +31,19 @@ for line in sys.stdin:
         # pop vcf only site, skip
         continue
 
+    alts = vals[4].split(',')
     ka, kr, kg, info = None, None, None, None
-    if len(vals) >= 8 and vals[7] != '.':
+    if '<NON_REF>' in alts:
+        # <NON_REF> is the last original alt allele
+        nonref_idx = alts.index('<NON_REF>')
+        ka = [True] * (nonref_idx + 1)
+        ka += [False] * (len(alts) - nonref_idx - 1)
+
+    elif len(vals) >= 8 and vals[7] != '.':
         info = list(map(parse_kv, vals[7].split(';')))
         for k,v in info:
             if k == 'AF':
                 ka = [x != '.' for x in v.split(',')]
-                kr = [True] + ka
                 break
 
     if ka is None:
@@ -48,14 +54,23 @@ for line in sys.stdin:
         sys.stdout.write(line)
         continue
 
+    kr = [True] + ka
+    if not info and len(vals) >= 8 and vals[7] != '.':
+        info = list(map(parse_kv, vals[7].split(';')))
+
     if vals[4] != '.':
         v = vals[4].split(',')
         v = [x for x,y in zip(v, ka) if y]
         r = vals[3]
-        #n = len(os.path.commonprefix([r[:0:-1]] + [a[:0:-1] for a in v]))
-        n = min(len(r), min(map(len, v))) - 1
+        try:
+            n = min(len(r), min([len(x) for x in v if x != '<NON_REF>'])) - 1
+        except ValueError:
+            n = 0
         if n > 0:
-            r, v = r[:-n], [a[:-n] for a in v]
+            r = r[:-n]
+            for i in range(len(v)):
+                if v[i] != '<NON_REF>':
+                    v[i] = v[i][:-n]
         vals[3] = r
         vals[4] = ','.join(v)
 
