@@ -157,6 +157,7 @@ class PipelineTestHelper:
         # Set default files
         pipeline.output_vcf = self.fs.create_file("output.vcf.gz")
         pipeline.reference = self.fs.create_file("reference.fa")
+        _reference_fai = self.fs.create_file("reference.fa.fai")
         pipeline.model_bundle = self.fs.create_model_bundle("model.bundle")
 
         # Default configuration

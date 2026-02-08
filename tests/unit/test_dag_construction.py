@@ -2,6 +2,7 @@
 Unit tests for DAG construction logic
 """
 
+import json
 import pathlib
 import pytest
 import tempfile
@@ -256,11 +257,12 @@ class TestLongReadDAGConstruction:
         # Create mock files
         self.mock_vcf = pathlib.Path(self.temp_dir) / "output.vcf.gz"
         self.mock_ref = pathlib.Path(self.temp_dir) / "reference.fa"
+        self.mock_fai = pathlib.Path(self.temp_dir) / "reference.fa.fai"
         self.mock_bam = pathlib.Path(self.temp_dir) / "longread.bam"
         self.mock_bundle = pathlib.Path(self.temp_dir) / "model.bundle"
 
         # Create empty files
-        for file_path in [self.mock_ref, self.mock_bam, self.mock_bundle]:
+        for file_path in [self.mock_ref, self.mock_fai, self.mock_bam, self.mock_bundle]:
             file_path.touch()
 
     def create_basic_longread_pipeline(self):
@@ -290,45 +292,97 @@ class TestLongReadDAGConstruction:
         """Test that long-read DAG is more complex due to phasing"""
         mock_lib_preloaded.return_value = True
 
-        pipeline = self.create_basic_longread_pipeline()
-        pipeline.validate()
-        pipeline.configure()
+        with patch('sentieon_cli.dnascope_longread.ar_load') as mock_ar_load:
+            # Mock bundle info
+            bundle_info = {
+                "platform": "HiFi",
+                "minScriptVersion": "1.5.2",
+                "pipeline": "DNAscope LongRead"
+            }
+            bundle_members = [
+                "diploid_hp_model",
+                "diploid_model",
+                "diploid_model_unphased",
+                "gvcf_model",
+                "haploid_hp_model",
+                "haploid_model",
+                "longreadsv.model",
+                "minimap2.model",
+            ]
+            mock_ar_load.side_effect = [
+                bundle_members,  # First call for bundle members
+                json.dumps(bundle_info).encode(),  # Second call for bundle_info.json
+            ]
 
-        dag = pipeline.build_dag()
+            pipeline = self.create_basic_longread_pipeline()
+            pipeline.validate()
+            pipeline.configure()
 
-        # Long-read pipeline should have many jobs due to phasing complexity
-        total_jobs = (len(dag.waiting_jobs) +
-                     len(dag.ready_jobs) +
-                     len(dag.finished_jobs))
+            dag = pipeline.build_dag()
 
-        # Should have multiple phases of variant calling
-        assert total_jobs > 10  # Rough estimate for complex phased calling
+            # Long-read pipeline should have many jobs due to phasing complexity
+            total_jobs = (len(dag.waiting_jobs) +
+                        len(dag.ready_jobs) +
+                        len(dag.finished_jobs))
+
+            # Should have multiple phases of variant calling
+            assert total_jobs > 10  # Rough estimate for complex phased calling
 
     @patch('sentieon_cli.util.library_preloaded')
     def test_ont_vs_hifi_dag_differences(self, mock_lib_preloaded):
         """Test DAG differences between ONT and HiFi technologies"""
         mock_lib_preloaded.return_value = True
 
-        # Test HiFi pipeline
-        pipeline_hifi = self.create_basic_longread_pipeline()
-        pipeline_hifi.tech = "HiFi"
-        pipeline_hifi.validate()
-        pipeline_hifi.configure()
-        dag_hifi = pipeline_hifi.build_dag()
+        # Mock archive loading
+        with patch('sentieon_cli.dnascope_longread.ar_load') as mock_ar_load:
+            # Mock bundle info
+            hifi_bundle_info = {
+                "platform": "HiFi",
+                "minScriptVersion": "1.5.2",
+                "pipeline": "DNAscope LongRead"
+            }
+            ont_bundle_info ={
+                "platform": "ONT",
+                "minScriptVersion": "1.5.2",
+                "pipeline": "DNAscope LongRead"
+            }
+            bundle_members = [
+                "diploid_hp_model",
+                "diploid_model",
+                "diploid_model_unphased",
+                "gvcf_model",
+                "haploid_hp_model",
+                "haploid_model",
+                "longreadsv.model",
+                "minimap2.model",
+            ]
+            mock_ar_load.side_effect = [
+                bundle_members,  # First call for bundle members
+                json.dumps(hifi_bundle_info).encode(),  # Second call for bundle_info.json
+                bundle_members,
+                json.dumps(ont_bundle_info).encode(),
+            ]
 
-        # Test ONT pipeline
-        pipeline_ont = self.create_basic_longread_pipeline()
-        pipeline_ont.tech = "ONT"
-        pipeline_ont.validate()
-        pipeline_ont.configure()
-        dag_ont = pipeline_ont.build_dag()
+            # Test HiFi pipeline
+            pipeline_hifi = self.create_basic_longread_pipeline()
+            pipeline_hifi.tech = "HiFi"
+            pipeline_hifi.validate()
+            pipeline_hifi.configure()
+            dag_hifi = pipeline_hifi.build_dag()
 
-        # Extract all jobs
-        jobs_hifi = list(dag_hifi.waiting_jobs.keys()) + list(dag_hifi.ready_jobs.keys())
-        jobs_ont = list(dag_ont.waiting_jobs.keys()) + list(dag_ont.ready_jobs.keys())
+            # Test ONT pipeline
+            pipeline_ont = self.create_basic_longread_pipeline()
+            pipeline_ont.tech = "ONT"
+            pipeline_ont.validate()
+            pipeline_ont.configure()
+            dag_ont = pipeline_ont.build_dag()
 
-        # ONT should skip CNV calling (fewer jobs)
-        assert len(jobs_hifi) >= len(jobs_ont)
+            # Extract all jobs
+            jobs_hifi = list(dag_hifi.waiting_jobs.keys()) + list(dag_hifi.ready_jobs.keys())
+            jobs_ont = list(dag_ont.waiting_jobs.keys()) + list(dag_ont.ready_jobs.keys())
+
+            # ONT should skip CNV calling (fewer jobs)
+            assert len(jobs_hifi) >= len(jobs_ont)
 
 
 class TestDAGValidation:

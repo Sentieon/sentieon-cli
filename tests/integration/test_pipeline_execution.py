@@ -2,6 +2,7 @@
 Integration tests for pipeline execution
 """
 
+import json
 import pytest
 import sys
 import os
@@ -47,18 +48,42 @@ class TestPipelineDryRunExecution:
     def test_longread_dry_run_execution(self):
         """Test long-read pipeline dry-run execution"""
         pipeline = self.helper.create_longread_pipeline()
-        pipeline.validate()
-        pipeline.configure()
 
-        dag = pipeline.build_dag()
+        # Mock archive loading
+        with patch('sentieon_cli.dnascope_longread.ar_load') as mock_ar_load:
+            # Mock bundle info
+            bundle_info = {
+                "platform": "HiFi",
+                "minScriptVersion": "1.5.2",
+                "pipeline": "DNAscope LongRead"
+            }
+            bundle_members = [
+                "diploid_hp_model",
+                "diploid_model",
+                "diploid_model_unphased",
+                "gvcf_model",
+                "haploid_hp_model",
+                "haploid_model",
+                "longreadsv.model",
+                "minimap2.model",
+            ]
+            mock_ar_load.side_effect = [
+                bundle_members,  # First call for bundle members
+                json.dumps(bundle_info).encode(),  # Second call for bundle_info.json
+            ]
 
-        # Extract all commands
-        all_jobs = list(dag.waiting_jobs.keys()) + list(dag.ready_jobs.keys())
-        commands = [job.shell for job in all_jobs]
+            pipeline.validate()
+            pipeline.configure()
 
-        # Should have complex phased calling commands
-        variant_commands = [cmd for subcommands in commands for cmd in subcommands.nodes if "DNAscope" in cmd.args or "VariantPhaser" in cmd.args]
-        assert len(variant_commands) > 1, "Should have multiple variant calling steps"
+            dag = pipeline.build_dag()
+
+            # Extract all commands
+            all_jobs = list(dag.waiting_jobs.keys()) + list(dag.ready_jobs.keys())
+            commands = [job.shell for job in all_jobs]
+
+            # Should have complex phased calling commands
+            variant_commands = [cmd for subcommands in commands for cmd in subcommands.nodes if "DNAscope" in cmd.args or "VariantPhaser" in cmd.args]
+            assert len(variant_commands) > 1, "Should have multiple variant calling steps"
 
     def test_hybrid_dry_run_execution(self):
         """Test hybrid pipeline dry-run execution"""
@@ -69,7 +94,6 @@ class TestPipelineDryRunExecution:
              patch('sentieon_cli.command_strings.get_rg_lines') as mock_get_rg:
 
             # Mock bundle info
-            import json
             bundle_info = {
                 "longReadPlatform": "HiFi",
                 "shortReadPlatform": "Illumina",
