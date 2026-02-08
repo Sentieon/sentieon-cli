@@ -5,6 +5,7 @@ Annotation transfer functionality
 import pathlib
 import re
 import subprocess as sp
+import tempfile
 from typing import Dict, List, Optional, Set, Tuple
 
 from importlib_resources import files
@@ -21,7 +22,7 @@ def build_transfer_jobs(
     out_vcf: pathlib.Path,
     pop_vcf: pathlib.Path,
     raw_vcf: pathlib.Path,
-    tmp_dir: pathlib.Path,
+    base_tmp_dir: pathlib.Path,
     shards: List[Shard],
     pop_vcf_contigs: Dict[str, Optional[int]],
     fai_data: Dict[str, Dict[str, int]],
@@ -29,6 +30,10 @@ def build_transfer_jobs(
     cores: int = 1,
 ) -> Tuple[List[Job], Job]:
     """Transfer annotations from the pop_vcf to the raw_vcf"""
+
+    # Get a unique tmpdir
+    tmp_dir_str = tempfile.mkdtemp(dir=base_tmp_dir)
+    tmp_dir = pathlib.Path(tmp_dir_str)
 
     # Generate merge rules from the population VCF
     merge_rules = "AC_v20:sum,AF_v20:sum,AC_genomes:sum,AF_genomes:sum"

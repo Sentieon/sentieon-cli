@@ -556,7 +556,7 @@ class DNAscopeLRPipeline(BasePipeline):
                 dag.add_job(unphased_concat_job, set(unphased_transfer_jobs))
                 unphased_ma_deps.add(unphased_concat_job)
 
-            dag.add_job(modelapply_unphased_job, {diploid_patch_job})
+            dag.add_job(modelapply_unphased_job, unphased_ma_deps)
             merge_deps.add(modelapply_unphased_job)
             dag.add_job(merge_job, merge_deps)
 
