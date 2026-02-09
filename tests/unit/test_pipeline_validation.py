@@ -141,13 +141,14 @@ class TestDNAscopeLRPipelineValidation:
         # Create mock files
         self.mock_vcf = pathlib.Path(self.temp_dir) / "output.vcf.gz"
         self.mock_ref = pathlib.Path(self.temp_dir) / "reference.fa"
+        self.mock_fai = pathlib.Path(self.temp_dir) / "reference.fa.fai"
         self.mock_bam = pathlib.Path(self.temp_dir) / "sample.bam"
         self.mock_fastq = pathlib.Path(self.temp_dir) / "sample.fastq.gz"
         self.mock_bundle = pathlib.Path(self.temp_dir) / "model.bundle"
         self.mock_bed = pathlib.Path(self.temp_dir) / "regions.bed"
 
         # Create empty files
-        for file_path in [self.mock_ref, self.mock_bam, self.mock_fastq, self.mock_bundle, self.mock_bed]:
+        for file_path in [self.mock_ref, self.mock_fai, self.mock_bam, self.mock_fastq, self.mock_bundle, self.mock_bed]:
             file_path.touch()
 
     def test_valid_configuration_with_bam_input(self):
@@ -159,10 +160,33 @@ class TestDNAscopeLRPipelineValidation:
         self.pipeline.fastq = []
         self.pipeline.readgroups = []
 
-        try:
-            self.pipeline.validate()
-        except SystemExit:
-            pytest.fail("Valid configuration should not raise SystemExit")
+        # Mock archive loading
+        with patch('sentieon_cli.dnascope_longread.ar_load') as mock_ar_load:
+            # Mock bundle info
+            bundle_info = {
+                "platform": "HiFi",
+                "minScriptVersion": "1.5.2",
+                "pipeline": "DNAscope LongRead"
+            }
+            bundle_members = [
+                "diploid_hp_model",
+                "diploid_model",
+                "diploid_model_unphased",
+                "gvcf_model",
+                "haploid_hp_model",
+                "haploid_model",
+                "longreadsv.model",
+                "minimap2.model",
+            ]
+            mock_ar_load.side_effect = [
+                bundle_members,  # First call for bundle members
+                json.dumps(bundle_info).encode(),  # Second call for bundle_info.json
+            ]
+
+            try:
+                self.pipeline.validate()
+            except SystemExit:
+                pytest.fail("Valid configuration should not raise SystemExit")
 
     def test_valid_configuration_with_fastq_input(self):
         """Test valid configuration with FASTQ input"""
@@ -173,10 +197,33 @@ class TestDNAscopeLRPipelineValidation:
         self.pipeline.fastq = [self.mock_fastq]
         self.pipeline.readgroups = ["@RG\\tID:test\\tSM:sample"]
 
-        try:
-            self.pipeline.validate()
-        except SystemExit:
-            pytest.fail("Valid configuration should not raise SystemExit")
+        # Mock archive loading
+        with patch('sentieon_cli.dnascope_longread.ar_load') as mock_ar_load:
+            # Mock bundle info
+            bundle_info = {
+                "platform": "HiFi",
+                "minScriptVersion": "1.5.2",
+                "pipeline": "DNAscope LongRead"
+            }
+            bundle_members = [
+                "diploid_hp_model",
+                "diploid_model",
+                "diploid_model_unphased",
+                "gvcf_model",
+                "haploid_hp_model",
+                "haploid_model",
+                "longreadsv.model",
+                "minimap2.model",
+            ]
+            mock_ar_load.side_effect = [
+                bundle_members,  # First call for bundle members
+                json.dumps(bundle_info).encode(),  # Second call for bundle_info.json
+            ]
+
+            try:
+                self.pipeline.validate()
+            except SystemExit:
+                pytest.fail("Valid configuration should not raise SystemExit")
 
     def test_ont_technology_skips_cnv(self):
         """Test that ONT technology automatically skips CNV calling"""
@@ -189,8 +236,31 @@ class TestDNAscopeLRPipelineValidation:
         self.pipeline.tech = "ONT"
         self.pipeline.skip_cnv = False
 
-        self.pipeline.validate()
-        assert self.pipeline.skip_cnv is True
+        # Mock archive loading
+        with patch('sentieon_cli.dnascope_longread.ar_load') as mock_ar_load:
+            # Mock bundle info
+            bundle_info = {
+                "platform": "HiFi",
+                "minScriptVersion": "1.5.2",
+                "pipeline": "DNAscope LongRead"
+            }
+            bundle_members = [
+                "diploid_hp_model",
+                "diploid_model",
+                "diploid_model_unphased",
+                "gvcf_model",
+                "haploid_hp_model",
+                "haploid_model",
+                "longreadsv.model",
+                "minimap2.model",
+            ]
+            mock_ar_load.side_effect = [
+                bundle_members,  # First call for bundle members
+                json.dumps(bundle_info).encode(),  # Second call for bundle_info.json
+            ]
+
+            self.pipeline.validate()
+            assert self.pipeline.skip_cnv is True
 
     def test_haploid_bed_requires_diploid_bed(self):
         """Test that haploid bed requires diploid bed"""

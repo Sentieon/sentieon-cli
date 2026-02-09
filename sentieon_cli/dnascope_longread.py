@@ -4,6 +4,7 @@ Functionality for the DNAscope LongRead pipeline
 
 import argparse
 import copy
+import json
 import pathlib
 import shutil
 import sys
@@ -14,6 +15,7 @@ import packaging.version
 from importlib_resources import files
 
 from . import command_strings as cmds
+from .archive import ar_load
 from .dag import DAG
 from .driver import (
     Driver,
@@ -27,11 +29,19 @@ from .driver import (
 )
 from .job import Job
 from .pipeline import BasePipeline
+from .shard import (
+    determine_shards_from_fai,
+    parse_fai,
+    vcf_contigs,
+)
 from .shell_pipeline import Command, Pipeline
+from .transfer import build_transfer_jobs
 from .util import (
+    __version__,
     check_version,
     path_arg,
     library_preloaded,
+    vcf_id,
 )
 
 TOOL_MIN_VERSIONS = {
@@ -154,6 +164,13 @@ class DNAscopeLRPipeline(BasePipeline):
                 ),
                 "type": path_arg(exists=True, is_file=True),
             },
+            "pop_vcf": {
+                "flags": ["--pop_vcf"],
+                "help": (
+                    "A VCF containing annotations for use with DNAModelApply."
+                ),
+                "type": path_arg(exists=True, is_file=True),
+            },
             "skip_cnv": {
                 "help": "Skip CNV calling.",
                 "action": "store_true",
@@ -192,6 +209,10 @@ class DNAscopeLRPipeline(BasePipeline):
                 "help": argparse.SUPPRESS,
                 "type": path_arg(exists=True, is_file=True),
             },
+            "skip_pop_vcf_id_check": {
+                "help": argparse.SUPPRESS,
+                "action": "store_true",
+            },
             "use_pbsv": {
                 "help": argparse.SUPPRESS,
                 "action": "store_true",
@@ -222,6 +243,7 @@ class DNAscopeLRPipeline(BasePipeline):
         self.skip_cnv = False
         self.align = False
         self.input_ref: Optional[pathlib.Path] = None
+        self.pop_vcf: Optional[pathlib.Path] = None
         self.fastq_taglist = "*"
         self.bam_format = False
         self.minimap2_args = "-YL"
@@ -229,6 +251,7 @@ class DNAscopeLRPipeline(BasePipeline):
             "--cram_write_options version=3.0,compressor=rans"
         )
         self.repeat_model: Optional[pathlib.Path] = None
+        self.skip_pop_vcf_id_check = False
         self.use_pbsv = False
 
     def validate(self) -> None:
@@ -282,6 +305,124 @@ class DNAscopeLRPipeline(BasePipeline):
                     "diploid regions of the genome."
                 )
 
+        self.fai_data = parse_fai(pathlib.Path(str(self.reference) + ".fai"))
+        self.pop_vcf_contigs: Dict[str, Optional[int]] = {}
+        if self.pop_vcf:
+            self.pop_vcf_contigs = vcf_contigs(self.pop_vcf, self.dry_run)
+            self.logger.debug("VCF contigs are: %s", self.pop_vcf_contigs)
+        self.shards = determine_shards_from_fai(
+            self.fai_data, 10 * 1000 * 1000
+        )
+        self.validate_bundle()
+
+    def validate_bundle(self):
+        """Validate the model bundle"""
+        # Validate bundle members
+        bundle_members: Set[str] = set(
+            ar_load(str(self.model_bundle))
+        )  # type: ignore
+        expected_members = {
+            "diploid_hp_model",
+            "diploid_model",
+            "diploid_model_unphased",
+            "gvcf_model",
+            "haploid_hp_model",
+            "haploid_model",
+            "longreadsv.model",
+            "minimap2.model",
+        }
+        missing_members = expected_members - bundle_members
+        if missing_members:
+            self.logger.error(
+                "The model bundle is missing expected files: %s",
+                missing_members,
+            )
+            sys.exit(2)
+
+        # Validate the bundle_info.json
+        bundle_info_bytes = ar_load(
+            str(self.model_bundle) + "/bundle_info.json"
+        )
+        if isinstance(bundle_info_bytes, list):
+            bundle_info_bytes = b"{}"
+        bundle_info = json.loads(bundle_info_bytes.decode())
+
+        # Without a bundle_info.json - we do not expect a pop VCF
+        if not bundle_info:
+            if self.pop_vcf:
+                self.logger.error(
+                    "The model bundle does not require a population VCF. "
+                    "Please use this model bundle files without the "
+                    "`--pop_vcf` argument."
+                )
+                sys.exit(2)
+            return
+
+        try:
+            req_version = packaging.version.Version(
+                bundle_info["minScriptVersion"]
+            )
+            bundle_pipeline = bundle_info["pipeline"]
+            bundle_tech = bundle_info["platform"]
+        except KeyError:
+            self.logger.error(
+                "The model bundle does not have the expected attributes"
+            )
+            sys.exit(2)
+
+        # Check package version
+        if req_version > packaging.version.Version(__version__):
+            self.logger.error(
+                "The model bundle requires version %s or later of the "
+                "sentieon-cli.",
+                req_version,
+            )
+            sys.exit(2)
+
+        # Check the pipeline
+        if bundle_pipeline != "DNAscope LongRead":
+            self.logger.error("The model bundle is for a different pipeline.")
+            sys.exit(2)
+
+        # Check the tech
+        if bundle_tech.upper() != self.tech.upper():
+            self.logger.error(
+                "Mismatch between the bundle tech and the `--tech` argument. "
+                "Bundle uses %s while `--tech` has %s",
+                bundle_tech,
+                self.tech,
+            )
+
+        # Check the pop VCF
+        if "SentieonVcfID" in bundle_info:
+            if not self.pop_vcf:
+                self.logger.error(
+                    "The model bundle requires a population VCF. Please "
+                    "contact Sentieon support to obtain the correct "
+                    "population VCF for this model bundle, or use a "
+                    "different model bundle."
+                )
+                sys.exit(2)
+            if self.skip_pop_vcf_id_check:
+                return
+            current_vcf_id = vcf_id(self.pop_vcf)
+            if current_vcf_id != bundle_info["SentieonVcfID"]:
+                self.logger.error(
+                    "The population VCF provided does not match the "
+                    "population VCF required by the model bundle. "
+                    "Expected: %s, Found: %s",
+                    bundle_info["SentieonVcfID"],
+                    current_vcf_id,
+                )
+                sys.exit(2)
+
+        if self.pop_vcf and "SentieonVcfID" not in bundle_info:
+            self.logger.error(
+                "The model bundle does not require a population VCF. Please "
+                "use this model bundle files without the `--pop_vcf` argument."
+            )
+            sys.exit(2)
+
     def configure(self) -> None:
         pass
 
@@ -322,6 +463,8 @@ class DNAscopeLRPipeline(BasePipeline):
         if not self.skip_small_variants:
             (
                 first_calling_job,
+                diploid_transfer_jobs,
+                diploid_concat_job,
                 first_modelapply_job,
                 phaser_job,
                 bcftools_subset_phased_job,
@@ -331,9 +474,13 @@ class DNAscopeLRPipeline(BasePipeline):
                 bcftools_subset_unphased_job,
                 second_calling_job,
                 haploid_patch_job,
+                patch_transfer_jobs,
+                patch_concat_jobs,
                 second_modelapply_job,
                 calling_unphased_job,
                 diploid_patch_job,
+                unphased_transfer_jobs,
+                unphased_concat_job,
                 modelapply_unphased_job,
                 merge_job,
                 gvcf_combine_job,
@@ -344,7 +491,15 @@ class DNAscopeLRPipeline(BasePipeline):
                 haploid_gvcf_concat_job,
             ) = self.lr_call_variants(sample_input)
             dag.add_job(first_calling_job, realign_jobs.union(align_jobs))
-            dag.add_job(first_modelapply_job, {first_calling_job})
+
+            first_ma_deps = {first_calling_job}
+            if diploid_transfer_jobs and diploid_concat_job:
+                for job in diploid_transfer_jobs:
+                    dag.add_job(job, {first_calling_job})
+                dag.add_job(diploid_concat_job, set(diploid_transfer_jobs))
+                first_ma_deps.add(diploid_concat_job)
+
+            dag.add_job(first_modelapply_job, first_ma_deps)
             dag.add_job(phaser_job, {first_modelapply_job})
 
             haploid_patch_deps = set()
@@ -373,8 +528,19 @@ class DNAscopeLRPipeline(BasePipeline):
                 dag.add_job(job, second_pass_deps)
                 haploid_patch_deps.add(job)
             dag.add_job(haploid_patch_job, haploid_patch_deps)
+
+            second_ma_deps = {haploid_patch_job}
+            if patch_transfer_jobs:  # pop_vcf
+                for patch_transfer_hap, patch_concat in zip(
+                    patch_transfer_jobs, patch_concat_jobs
+                ):
+                    for job in patch_transfer_hap:
+                        dag.add_job(job, {haploid_patch_job})
+                    dag.add_job(patch_concat, set(patch_transfer_hap))
+                    second_ma_deps.add(patch_concat)
+
             for job in second_modelapply_job:
-                dag.add_job(job, {haploid_patch_job})
+                dag.add_job(job, second_ma_deps)
                 merge_deps.add(job)
 
             dag.add_job(calling_unphased_job, calling_unphased_deps)
@@ -382,7 +548,15 @@ class DNAscopeLRPipeline(BasePipeline):
                 diploid_patch_job,
                 {bcftools_subset_unphased_job, calling_unphased_job},
             )
-            dag.add_job(modelapply_unphased_job, {diploid_patch_job})
+
+            unphased_ma_deps = {diploid_patch_job}
+            if unphased_transfer_jobs and unphased_concat_job:  # pop_vcf
+                for job in unphased_transfer_jobs:
+                    dag.add_job(job, {diploid_patch_job})
+                dag.add_job(unphased_concat_job, set(unphased_transfer_jobs))
+                unphased_ma_deps.add(unphased_concat_job)
+
+            dag.add_job(modelapply_unphased_job, unphased_ma_deps)
             merge_deps.add(modelapply_unphased_job)
             dag.add_job(merge_job, merge_deps)
 
@@ -670,27 +844,33 @@ class DNAscopeLRPipeline(BasePipeline):
         self,
         sample_input: List[pathlib.Path],
     ) -> Tuple[
-        Job,
-        Job,
-        Job,
-        Optional[Job],
-        Optional[Job],
-        Job,
-        Optional[Job],
-        Job,
-        Set[Job],
-        Job,
-        Set[Job],
-        Job,
-        Job,
-        Job,
-        Job,
-        Optional[Job],
-        Optional[Job],
-        Optional[Job],
-        Optional[Job],
-        Optional[Job],
-        Optional[Job],
+        Job,  # first_calling_job
+        List[Job],  # diploid_transfer_jobs
+        Optional[Job],  # diploid_concat_job
+        Job,  # first_modelapply_job
+        Job,  # phaser_job
+        Optional[Job],  # bcftools_subset_phased_job
+        Optional[Job],  # fai_to_bed_job
+        Job,  # bcftools_subtract_job
+        Optional[Job],  # repeatmodel_job
+        Job,  # bcftools_subset_unphased_job
+        Set[Job],  # second_calling_job
+        Job,  # haploid_patch_job
+        List[List[Job]],  # patch_transfer_jobs
+        List[Job],  # patch_concat_jobs
+        Set[Job],  # second_modelapply_job
+        Job,  # calling_unphased_job
+        Job,  # diploid_patch_job
+        List[Job],  # unphased_transfer_jobs
+        Optional[Job],  # unphased_concat_job
+        Job,  # modelapply_unphased_job
+        Job,  # merge_job
+        Optional[Job],  # gvcf_combine_job
+        Optional[Job],  # haploid_calling_job
+        Optional[Job],  # haploid_patch2_job
+        Optional[Job],  # haploid_concat_job
+        Optional[Job],  # haploid_gvcf_combine_job
+        Optional[Job],  # haploid_gvcf_concat_job
     ]:
         """
         Call SNVs and indels using the DNAscope LongRead pipeline
@@ -702,6 +882,15 @@ class DNAscopeLRPipeline(BasePipeline):
             for check_cmd, min_version in TOOL_MIN_VERSIONS.items():
                 if not check_version(check_cmd, min_version):
                     sys.exit(2)
+
+        transfer_xargs = (
+            self.tmp_dir,
+            self.shards,
+            self.pop_vcf_contigs,
+            self.fai_data,
+            self.dry_run,
+            self.cores,
+        )
 
         # First pass - diploid calling
         diploid_gvcf_fn = self.tmp_dir.joinpath("out_diploid.g.vcf.gz")
@@ -732,6 +921,22 @@ class DNAscopeLRPipeline(BasePipeline):
             Pipeline(Command(*driver.build_cmd())), "first-pass", self.cores
         )
 
+        # Transfer annotations to the tmp vcf
+        diploid_transfer_jobs: List[Job] = []
+        diploid_concat_job: Optional[Job] = None
+        if self.pop_vcf:
+            diploid_unanno_tmp_vcf = diploid_tmp_vcf
+            diploid_tmp_vcf = self.tmp_dir.joinpath(
+                "out_diploid_tmp_anno.vcf.gz"
+            )
+            diploid_transfer_jobs, diploid_concat_job = build_transfer_jobs(
+                diploid_tmp_vcf,
+                self.pop_vcf,
+                diploid_unanno_tmp_vcf,
+                *transfer_xargs,
+            )
+
+        # DNAModelApply on the diploid VCF
         diploid_vcf = self.tmp_dir.joinpath("out_diploid.vcf.gz")
         driver = Driver(
             reference=self.reference,
@@ -824,7 +1029,7 @@ class DNAscopeLRPipeline(BasePipeline):
 
         repeatmodel_job = None
         if not self.repeat_model:
-            repeat_model = self.tmp_dir.joinpath("out_repeat.model")
+            self.repeat_model = self.tmp_dir.joinpath("out_repeat.model")
             driver = Driver(
                 reference=self.reference,
                 thread_count=self.cores,
@@ -837,7 +1042,7 @@ class DNAscopeLRPipeline(BasePipeline):
             )
             driver.add_algo(
                 RepeatModel(
-                    repeat_model,
+                    self.repeat_model,
                     phased=True,
                     read_flag_mask="drop=supplementary",
                 )
@@ -933,6 +1138,27 @@ class DNAscopeLRPipeline(BasePipeline):
             self.cores,
         )
 
+        # Transfer annotations to the patched VCFs
+        patch_transfer_jobs = []
+        patch_concat_jobs = []
+        if self.pop_vcf:
+            patch_unanno_vcfs = patch_vcfs.copy()
+            patch_vcfs = [
+                self.tmp_dir.joinpath(f"out_hap{i}_patch_anno.vcf.gz")
+                for i in (1, 2)
+            ]
+            for patch_unanno_vcf, patch_vcf in zip(
+                patch_unanno_vcfs, patch_vcfs
+            ):
+                transfer_jobs, concat_job = build_transfer_jobs(
+                    patch_vcf,
+                    self.pop_vcf,
+                    patch_unanno_vcf,
+                    *transfer_xargs,
+                )
+                patch_transfer_jobs.append(transfer_jobs)
+                patch_concat_jobs.append(concat_job)
+
         # apply trained model to the patched vcfs.
         hap_vcfs = [
             self.tmp_dir.joinpath(f"out_hap{i}.vcf.gz") for i in (1, 2)
@@ -986,7 +1212,6 @@ class DNAscopeLRPipeline(BasePipeline):
         diploid_unphased_patch = self.tmp_dir.joinpath(
             "out_diploid_unphased_patch.vcf.gz"
         )
-        diploid_unphased = self.tmp_dir.joinpath("out_diploid_unphased.vcf.gz")
         cmd = cmds.cmd_pyexec_vcf_mod_patch(
             str(diploid_unphased_patch),
             str(phased_unphased),
@@ -995,6 +1220,24 @@ class DNAscopeLRPipeline(BasePipeline):
             kwargs,
         )
         diploid_patch_job = Job(cmd, "diploid-patch", self.cores)
+
+        # Transfer annotations to the diploid VCF
+        unphased_transfer_jobs: List[Job] = []
+        unphased_concat_job: Optional[Job] = None
+        if self.pop_vcf:
+            diploid_unphased_unanno = diploid_unphased_patch
+            diploid_unphased_patch = self.tmp_dir.joinpath(
+                "out_diploid_unphased_patch_anno.vcf.gz"
+            )
+            unphased_transfer_jobs, unphased_concat_job = build_transfer_jobs(
+                diploid_unphased_patch,
+                self.pop_vcf,
+                diploid_unphased_unanno,
+                *transfer_xargs,
+            )
+
+        # DNAModelApply on the unphased VCF
+        diploid_unphased = self.tmp_dir.joinpath("out_diploid_unphased.vcf.gz")
         driver = Driver(
             reference=self.reference,
             thread_count=self.cores,
@@ -1145,6 +1388,8 @@ class DNAscopeLRPipeline(BasePipeline):
                 )
         return (
             first_calling_job,
+            diploid_transfer_jobs,
+            diploid_concat_job,
             first_modelapply_job,
             phaser_job,
             bcftools_subset_phased_job,
@@ -1154,9 +1399,13 @@ class DNAscopeLRPipeline(BasePipeline):
             bcftools_subset_unphased_job,
             second_calling_job,
             haploid_patch_job,
+            patch_transfer_jobs,
+            patch_concat_jobs,
             second_modelapply_job,
             calling_unphased_job,
             diploid_patch_job,
+            unphased_transfer_jobs,
+            unphased_concat_job,
             modelapply_unphased_job,
             merge_job,
             gvcf_combine_job,

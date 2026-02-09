@@ -89,7 +89,9 @@ for line in sys.stdin:
                     val[i] = ','.join(x for x,y in zip(v, kr) if y)
                 elif n == 'G':
                     v = v.split(',')
-                    val[i] = ','.join(x for x,y in zip(v, kg) if y)
+                    kx = kr if len(v) == len(kr) else kg if len(v) == len(kg) else None
+                    assert kx
+                    val[i] = ','.join(x for x,y in zip(v, kx) if y)
                 # GT not affected, new alt alleles are added at the end
             vals[9+j] = ':'.join(val)
 
