@@ -1029,7 +1029,7 @@ class DNAscopeLRPipeline(BasePipeline):
 
         repeatmodel_job = None
         if not self.repeat_model:
-            repeat_model = self.tmp_dir.joinpath("out_repeat.model")
+            self.repeat_model = self.tmp_dir.joinpath("out_repeat.model")
             driver = Driver(
                 reference=self.reference,
                 thread_count=self.cores,
@@ -1042,7 +1042,7 @@ class DNAscopeLRPipeline(BasePipeline):
             )
             driver.add_algo(
                 RepeatModel(
-                    repeat_model,
+                    self.repeat_model,
                     phased=True,
                     read_flag_mask="drop=supplementary",
                 )
