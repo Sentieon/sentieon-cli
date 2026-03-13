@@ -99,6 +99,10 @@ class SentieonPangenome(BasePangenome):
                 ),
                 "type": path_arg(exists=True, is_file=True),
             },
+            "call_svs": {
+                "help": ("Call structural variants using PangenomeSV."),
+                "action": "store_true",
+            },
             "gvcf": {
                 "flags": ["-g", "--gvcf"],
                 "help": "Generate a gVCF output file.",
@@ -129,10 +133,6 @@ class SentieonPangenome(BasePangenome):
                 "help": argparse.SUPPRESS,
                 "action": "store_true",
             },
-            "call_svs": {
-                "help": ("Call structural variants using PangenomeSV."),
-                "action": "store_true",
-            },
             "skip_small_variants": {
                 "help": argparse.SUPPRESS,
                 "action": "store_true",
@@ -148,6 +148,7 @@ class SentieonPangenome(BasePangenome):
         self.sample_input: List[pathlib.Path] = []
         self.pop_vcf: Optional[pathlib.Path] = None
         self.bed: Optional[pathlib.Path] = None
+        self.call_svs = False
         self.gvcf = False
         self.skip_metrics = False
         self.skip_multiqc = False
@@ -155,7 +156,6 @@ class SentieonPangenome(BasePangenome):
         self.skip_pangenome_name_checks: bool = False
         self.skip_pop_vcf_id_check: bool = False
         self.skip_model_apply = False
-        self.call_svs = False
         self.skip_small_variants = False
 
     def main(self, args: argparse.Namespace) -> None:
