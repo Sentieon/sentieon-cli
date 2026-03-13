@@ -73,13 +73,15 @@ class LocalExecutor(BaseExecutor):
         self.start_new_jobs = False
         for running_job in self.running:
             for subcommand in running_job[1].commands:
-                assert subcommand.proc
+                if not subcommand.proc:
+                    continue
                 subcommand.proc.send_signal(signal=signal.SIGTERM)
         time.sleep(10)
         for running_job in self.running:
             context = running_job[1]
             for subcommand in context.commands:
-                assert subcommand.proc
+                if not subcommand.proc:
+                    continue
                 if subcommand.proc.returncode is None:
                     subcommand.proc.kill()
             asyncio.run(context.cleanup())
@@ -140,7 +142,13 @@ class LocalExecutor(BaseExecutor):
                 # Check if the command failed
                 cmd_failed = False
                 for subcommand in context.commands:
-                    assert subcommand.proc
+                    if not subcommand.proc:
+                        logger.error(
+                            "Sub-command has no process: %s",
+                            subcommand,
+                        )
+                        cmd_failed = True
+                        continue
                     ret = (
                         await subcommand.proc.wait()
                     )  # Wait on all sub-commands

@@ -41,7 +41,6 @@ from .job import Job
 from .shell_pipeline import Command, Pipeline
 from .util import __version__, check_version, parse_rg_line, path_arg, tmp
 
-
 PANGENOME_MIN_VERSIONS = {
     "kmc": None,
     "sentieon driver": packaging.version.Version("202503.01"),
@@ -327,8 +326,12 @@ class PangenomePipeline(BasePangenome):
 
     def validate(self) -> None:
         """Validate pipeline inputs"""
-        assert self.output_vcf
-        assert self.reference
+        if not self.output_vcf:
+            self.logger.error("output_vcf is required")
+            sys.exit(2)
+        if not self.reference:
+            self.logger.error("reference is required")
+            sys.exit(2)
 
         self.validate_bundle()
         self.validate_fastq_rg(r1_required=True)
@@ -642,8 +645,12 @@ class PangenomePipeline(BasePangenome):
         self, output_gbz: pathlib.Path, kmer_file: pathlib.Path
     ) -> Job:
         """Build vg haplotypes job"""
-        assert self.hapl
-        assert self.gbz
+        if not self.hapl:
+            self.logger.error("hapl is required")
+            sys.exit(2)
+        if not self.gbz:
+            self.logger.error("gbz is required")
+            sys.exit(2)
 
         haplotypes_job = Job(
             cmds.cmd_vg_haplotypes(
@@ -696,7 +703,9 @@ class PangenomePipeline(BasePangenome):
         sample_gams: List[pathlib.Path],
     ) -> Job:
         """Compute read support with vg pack"""
-        assert self.gbz
+        if not self.gbz:
+            self.logger.error("gbz is required")
+            sys.exit(2)
 
         pack_job = Job(
             cmds.cmd_vg_pack(
@@ -718,8 +727,12 @@ class PangenomePipeline(BasePangenome):
         sample_name="",
     ) -> Job:
         """Call SVs with vg call"""
-        assert self.gbz
-        assert self.snarls
+        if not self.gbz:
+            self.logger.error("gbz is required")
+            sys.exit(2)
+        if not self.snarls:
+            self.logger.error("snarls is required")
+            sys.exit(2)
 
         call_job = Job(
             cmds.cmd_sv_call(
@@ -741,7 +754,9 @@ class PangenomePipeline(BasePangenome):
         surject_paths_dict: pathlib.Path,
     ) -> Tuple[List[pathlib.Path], List[Job]]:
         """Surject gam files on the linear reference"""
-        assert self.xg
+        if not self.xg:
+            self.logger.error("xg is required")
+            sys.exit(2)
 
         aligned_bams: List[pathlib.Path] = []
         surject_jobs: List[Job] = []
@@ -771,7 +786,9 @@ class PangenomePipeline(BasePangenome):
         aligned_bams: List[pathlib.Path],
     ) -> Tuple[List[Job], Job, Job]:
         """Mark duplicates"""
-        assert self.output_vcf
+        if not self.output_vcf:
+            self.logger.error("output_vcf is required")
+            sys.exit(2)
 
         # Create .hdr files for each input file
         hdr_jobs: List[Job] = []
@@ -858,7 +875,9 @@ class PangenomePipeline(BasePangenome):
         deduped_bam: pathlib.Path,
         deduped_cram: pathlib.Path,
     ) -> Tuple[Job, Job]:
-        assert self.output_vcf
+        if not self.output_vcf:
+            self.logger.error("output_vcf is required")
+            sys.exit(2)
 
         # Output metrics
         metric_base = self.output_vcf.name.replace(".vcf.gz", "") + ".txt"
@@ -912,8 +931,12 @@ class PangenomePipeline(BasePangenome):
         realigned_cram: pathlib.Path,
     ) -> Tuple[Job, Job]:
         """Small variant calling"""
-        assert self.model_bundle
-        assert self.output_vcf
+        if not self.model_bundle:
+            self.logger.error("model_bundle is required")
+            sys.exit(2)
+        if not self.output_vcf:
+            self.logger.error("output_vcf is required")
+            sys.exit(2)
 
         model = self.model_bundle.joinpath("dnascope.model")
         interval_ctgs = list(["chr" + str(x) for x in range(1, 23)])
@@ -1024,7 +1047,9 @@ class PangenomePipeline(BasePangenome):
         realigned_cram: pathlib.Path,
     ) -> Tuple[Job, Job, Optional[Job], Optional[Job], Optional[Job]]:
         """Call CNVs with CNVscope"""
-        assert self.model_bundle
+        if not self.model_bundle:
+            self.logger.error("model_bundle is required")
+            sys.exit(2)
 
         model = self.model_bundle.joinpath("cnv.model")
 
@@ -1139,7 +1164,9 @@ class PangenomePipeline(BasePangenome):
         expansion_catalog: pathlib.Path,
     ) -> Job:
         """Identify repeat expansions"""
-        assert self.reference
+        if not self.reference:
+            self.logger.error("reference is required")
+            sys.exit(2)
 
         expansion_job = Job(
             cmds.cmd_expansion_hunter(
@@ -1185,8 +1212,12 @@ class PangenomePipeline(BasePangenome):
         genes: str,
     ) -> Job:
         """Call variants in difficult SegDups"""
-        assert self.reference
-        assert self.model_bundle
+        if not self.reference:
+            self.logger.error("reference is required")
+            sys.exit(2)
+        if not self.model_bundle:
+            self.logger.error("model_bundle is required")
+            sys.exit(2)
 
         segdup_job = Job(
             cmds.cmd_segdup_caller(

@@ -264,8 +264,12 @@ class SentieonPangenome(BasePangenome):
                     sys.exit(2)
 
     def validate_bundle(self) -> None:
-        assert self.pop_vcf
-        assert self.gbz
+        if not self.pop_vcf:
+            self.logger.error("pop_vcf is required")
+            sys.exit(2)
+        if not self.gbz:
+            self.logger.error("gbz is required")
+            sys.exit(2)
         bundle_info_bytes = ar_load(
             str(self.model_bundle) + "/bundle_info.json"
         )
@@ -379,9 +383,15 @@ class SentieonPangenome(BasePangenome):
 
     def build_first_dag(self) -> DAG:
         """Build the main DAG for the Sentieon pangenome pipeline"""
-        assert self.reference
-        assert self.model_bundle
-        assert self.output_vcf
+        if not self.reference:
+            self.logger.error("reference is required")
+            sys.exit(2)
+        if not self.model_bundle:
+            self.logger.error("model_bundle is required")
+            sys.exit(2)
+        if not self.output_vcf:
+            self.logger.error("output_vcf is required")
+            sys.exit(2)
 
         self.logger.info("Building the Sentieon pangenome DAG")
         dag = DAG()
@@ -548,8 +558,12 @@ class SentieonPangenome(BasePangenome):
         sample_fastq: pathlib.Path,
     ) -> Job:
         """Build the alignment and extract jobs"""
-        assert self.reference
-        assert self.model_bundle
+        if not self.reference:
+            self.logger.error("reference is required")
+            sys.exit(2)
+        if not self.model_bundle:
+            self.logger.error("model_bundle is required")
+            sys.exit(2)
 
         unzip = "igzip"
         if not shutil.which(unzip):
@@ -583,8 +597,12 @@ class SentieonPangenome(BasePangenome):
         self, output_gbz: pathlib.Path, kmer_file: pathlib.Path
     ) -> Job:
         """Build vg haplotypes job"""
-        assert self.hapl
-        assert self.gbz
+        if not self.hapl:
+            self.logger.error("hapl is required")
+            sys.exit(2)
+        if not self.gbz:
+            self.logger.error("gbz is required")
+            sys.exit(2)
 
         haplotypes_job = Job(
             cmds.cmd_vg_haplotypes(
@@ -642,8 +660,12 @@ class SentieonPangenome(BasePangenome):
         sample_gfa: pathlib.Path,
     ) -> Job:
         """Build minimap2 alignment with pgutil lift job"""
-        assert self.model_bundle
-        assert self.reference
+        if not self.model_bundle:
+            self.logger.error("model_bundle is required")
+            sys.exit(2)
+        if not self.reference:
+            self.logger.error("reference is required")
+            sys.exit(2)
 
         rg = (
             self.fastq_readgroup
@@ -726,7 +748,9 @@ class SentieonPangenome(BasePangenome):
         sample_input: List[pathlib.Path],
     ) -> Tuple[Job, Job]:
         """Build a metrics job"""
-        assert self.output_vcf
+        if not self.output_vcf:
+            self.logger.error("output_vcf is required")
+            sys.exit(2)
 
         # Create the metrics directory
         sample_name = self.output_vcf.name.replace(".vcf.gz", "")
@@ -797,7 +821,9 @@ class SentieonPangenome(BasePangenome):
         out_vcf: pathlib.Path,
         input_bams: List[pathlib.Path],
     ) -> Job:
-        assert self.model_bundle
+        if not self.model_bundle:
+            self.logger.error("model_bundle is required")
+            sys.exit(2)
 
         read_filters = []
         if self.tech.upper() == "ULTIMA":
@@ -827,8 +853,12 @@ class SentieonPangenome(BasePangenome):
         )
 
     def build_dnamodelapply_job(self, in_vcf) -> Job:
-        assert self.output_vcf
-        assert self.model_bundle
+        if not self.output_vcf:
+            self.logger.error("output_vcf is required")
+            sys.exit(2)
+        if not self.model_bundle:
+            self.logger.error("model_bundle is required")
+            sys.exit(2)
 
         driver = Driver(
             reference=self.reference,

@@ -84,19 +84,28 @@ class BasePipeline(ABC):
     def handle_arguments(self, args: argparse.Namespace):
         """Update self using the argparse object"""
         for k in self.params.keys():
-            assert k in self.__dict__
+            if k not in self.__dict__:
+                raise ValueError(
+                    f"Parameter '{k}' is not an attribute of "
+                    f"{self.__class__.__name__}"
+                )
             if k in args.__dict__:
                 val = getattr(args, k)
                 if val is not None:
                     setattr(self, k, val)
         for k in self.positionals.keys():
-            assert k in self.__dict__
+            if k not in self.__dict__:
+                raise ValueError(
+                    f"Positional '{k}' is not an attribute of "
+                    f"{self.__class__.__name__}"
+                )
             if k in args.__dict__:
                 setattr(self, k, getattr(args, k))
 
     def setup_logging(self, args: argparse.Namespace) -> None:
         self.logger = get_logger(__name__)
-        assert self.logger.parent
+        if not self.logger.parent:
+            raise RuntimeError("Logger has no parent logger")
         self.logger.parent.setLevel(args.loglevel)
         self.logger.info("Starting sentieon-cli version: %s", __version__)
 

@@ -59,7 +59,9 @@ class Job:
                 self.shell.run(context, stdout=sys.stdout, stderr=sys.stderr)
             )
             for subcommand in context.commands:
-                assert subcommand.proc
+                if not subcommand.proc:
+                    logger.error("subcommand has no process: %s", subcommand)
+                    continue
                 ret = asyncio.run(subcommand.proc.wait())
                 if ret != 0 and not subcommand.fail_ok:
                     logger.error(

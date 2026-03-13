@@ -597,9 +597,15 @@ class DNAscopeLRPipeline(BasePipeline):
         """
         Align reads to the reference genome using minimap2
         """
-        assert self.output_vcf
-        assert self.reference
-        assert self.model_bundle
+        if not self.output_vcf:
+            self.logger.error("output_vcf is required")
+            sys.exit(2)
+        if not self.reference:
+            self.logger.error("reference is required")
+            sys.exit(2)
+        if not self.model_bundle:
+            self.logger.error("model_bundle is required")
+            sys.exit(2)
         if not self.skip_version_check:
             for cmd, min_version in ALN_MIN_VERSIONS.items():
                 if not check_version(cmd, min_version):
@@ -646,8 +652,12 @@ class DNAscopeLRPipeline(BasePipeline):
         """
         Align fastq to the reference genome using minimap2
         """
-        assert self.reference
-        assert self.model_bundle
+        if not self.reference:
+            self.logger.error("reference is required")
+            sys.exit(2)
+        if not self.model_bundle:
+            self.logger.error("model_bundle is required")
+            sys.exit(2)
         res: List[pathlib.Path] = []
         if self.fastq is None and self.readgroups is None:
             return (res, set())
@@ -875,9 +885,15 @@ class DNAscopeLRPipeline(BasePipeline):
         """
         Call SNVs and indels using the DNAscope LongRead pipeline
         """
-        assert self.model_bundle
-        assert self.reference
-        assert self.output_vcf
+        if not self.model_bundle:
+            self.logger.error("model_bundle is required")
+            sys.exit(2)
+        if not self.reference:
+            self.logger.error("reference is required")
+            sys.exit(2)
+        if not self.output_vcf:
+            self.logger.error("output_vcf is required")
+            sys.exit(2)
         if not self.skip_version_check:
             for check_cmd, min_version in TOOL_MIN_VERSIONS.items():
                 if not check_version(check_cmd, min_version):
@@ -1424,7 +1440,9 @@ class DNAscopeLRPipeline(BasePipeline):
         """
         Call SVs using Sentieon LongReadSV
         """
-        assert self.model_bundle
+        if not self.model_bundle:
+            self.logger.error("model_bundle is required")
+            sys.exit(2)
         if not self.skip_version_check:
             for cmd, min_version in SV_MIN_VERSIONS.items():
                 if not check_version(cmd, min_version):

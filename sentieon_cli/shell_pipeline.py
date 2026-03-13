@@ -130,7 +130,8 @@ class Pipeline(ShellNode):
         file_output: Optional[pathlib.Path] = None,
     ):
         self.nodes = list(nodes)
-        assert self.nodes  # Nodes cannot be empty
+        if not self.nodes:
+            raise ValueError("Pipeline nodes cannot be empty")
         self.skip_pipe = set(skip_pipe) if skip_pipe else set()
         self.file_input = file_input
         self.file_output = file_output
@@ -302,7 +303,8 @@ class InputProcSub(ProcSub):
         # We run the open() in a thread to prevent blocking the async event
         # loop.
         def open_fifo_write():
-            assert self.fifo_path
+            if not self.fifo_path:
+                raise RuntimeError("FIFO path not set")
             return open(self.fifo_path, "w")
 
         # Start the task that waits for the open, then runs the process
@@ -339,7 +341,8 @@ class OutputProcSub(ProcSub):
         self.fifo_path = context.get_new_fifo()
 
         def open_fifo_read():
-            assert self.fifo_path
+            if not self.fifo_path:
+                raise RuntimeError("FIFO path not set")
             return open(self.fifo_path, "r")
 
         async def run_inner():

@@ -112,7 +112,8 @@ def cmd_pyexec_vcf_mod_haploid_patch(
     """
     merge dnascope and dnascope-hp variants
     """
-    assert tech.upper() in ("HIFI", "ONT")
+    if tech.upper() not in ("HIFI", "ONT"):
+        raise ValueError(f"Unsupported tech '{tech}', must be 'HIFI' or 'ONT'")
 
     cmd = f"sentieon pyexec {kwargs['vcf_mod_py']} -t {cores} "
     cmd += "haploid_patch "

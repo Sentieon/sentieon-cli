@@ -49,7 +49,6 @@ from .util import (
     total_memory,
 )
 
-
 ALN_MIN_VERSIONS = {
     "sentieon driver": packaging.version.Version("202308"),
     "samtools": packaging.version.Version("1.16"),
@@ -256,7 +255,9 @@ class DNAscopePipeline(BasePipeline):
         self.no_split_alignment = False
 
     def validate(self) -> None:
-        assert self.output_vcf
+        if not self.output_vcf:
+            self.logger.error("output_vcf is required")
+            sys.exit(2)
 
         # uniquify pipeline attributes
         self.sr_r1_fastq = self.r1_fastq
@@ -458,8 +459,12 @@ class DNAscopePipeline(BasePipeline):
 
     def sr_align_inputs(self) -> Tuple[List[pathlib.Path], Set[Job], Job]:
         """Align input BAM/CRAM/uBAM/uCRAM files with bwa"""
-        assert self.reference
-        assert self.model_bundle
+        if not self.reference:
+            self.logger.error("reference is required")
+            sys.exit(2)
+        if not self.model_bundle:
+            self.logger.error("model_bundle is required")
+            sys.exit(2)
 
         if not self.skip_version_check:
             for cmd, min_version in ALN_MIN_VERSIONS.items():
@@ -526,8 +531,12 @@ class DNAscopePipeline(BasePipeline):
         self,
     ) -> Tuple[List[pathlib.Path], Set[Job], Optional[Job]]:
         """Align fastq files to the reference genome using bwa"""
-        assert self.reference
-        assert self.model_bundle
+        if not self.reference:
+            self.logger.error("reference is required")
+            sys.exit(2)
+        if not self.model_bundle:
+            self.logger.error("model_bundle is required")
+            sys.exit(2)
 
         res: List[pathlib.Path] = []
         jobs: Set[Job] = set()
@@ -625,7 +634,9 @@ class DNAscopePipeline(BasePipeline):
         Optional[Job],
     ]:
         """Perform dedup and metrics collection"""
-        assert self.output_vcf
+        if not self.output_vcf:
+            self.logger.error("output_vcf is required")
+            sys.exit(2)
         suffix = "bam" if self.bam_format else "cram"
 
         # Create the metrics directory
@@ -790,8 +801,12 @@ class DNAscopePipeline(BasePipeline):
         deduped: List[pathlib.Path],
     ) -> Tuple[Job, Job, Job, Optional[Job], Optional[Job], Optional[Job]]:
         """Call SNVs, indels, and SVs using DNAscope"""
-        assert self.model_bundle
-        assert self.output_vcf
+        if not self.model_bundle:
+            self.logger.error("model_bundle is required")
+            sys.exit(2)
+        if not self.output_vcf:
+            self.logger.error("output_vcf is required")
+            sys.exit(2)
 
         if not self.skip_version_check:
             for cmd, min_version in VARIANTS_MIN_VERSIONS.items():

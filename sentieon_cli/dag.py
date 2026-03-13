@@ -29,10 +29,13 @@ class DAG:
         """Add a job to the DAG"""
         if dependencies:
             for dependency in dependencies:
-                assert (
-                    dependency in self.waiting_jobs
-                    or dependency in self.ready_jobs
-                )
+                if (
+                    dependency not in self.waiting_jobs
+                    and dependency not in self.ready_jobs
+                ):
+                    raise ValueError(
+                        f"Dependency '{dependency}' is not in the DAG"
+                    )
 
         if isinstance(dependencies, set) and len(dependencies) > 0:
             self.waiting_jobs[job] = dependencies.copy()
