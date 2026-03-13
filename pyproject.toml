@@ -34,14 +34,20 @@ line-length = 79
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.0.0"
+pytest-asyncio = ">=0.21.0"
 black = "*"
 flake8 = "*"
 mypy = "*"
 
 [tool.poetry.group.test.dependencies]
 pytest = "^7.0.0"
+pytest-asyncio = ">=0.21.0"
 black = "*"
 mypy = "*"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "strict"
 
 [build-system]
 requires = ["poetry-core"]
