@@ -4,6 +4,7 @@ Functionality for the DNAscope LongRead pipeline
 
 import argparse
 import copy
+from dataclasses import dataclass
 import json
 import pathlib
 import shutil
@@ -78,6 +79,39 @@ PBSV_MIN_VERSIONS = {
 HIFICNV_MIN_VERSIONS = {
     "hificnv": packaging.version.Version("1.0.0"),
 }
+
+
+@dataclass
+class LRCallVariantsResult:
+    """Results from lr_call_variants"""
+
+    first_calling_job: Job
+    diploid_transfer_jobs: List[Job]
+    diploid_concat_job: Optional[Job]
+    first_modelapply_job: Job
+    phaser_job: Job
+    bcftools_subset_phased_job: Optional[Job]
+    fai_to_bed_job: Optional[Job]
+    bcftools_subtract_job: Job
+    repeatmodel_job: Optional[Job]
+    bcftools_subset_unphased_job: Job
+    second_calling_job: Set[Job]
+    haploid_patch_job: Job
+    patch_transfer_jobs: List[List[Job]]
+    patch_concat_jobs: List[Job]
+    second_modelapply_job: Set[Job]
+    calling_unphased_job: Job
+    diploid_patch_job: Job
+    unphased_transfer_jobs: List[Job]
+    unphased_concat_job: Optional[Job]
+    modelapply_unphased_job: Job
+    merge_job: Job
+    gvcf_combine_job: Optional[Job]
+    haploid_calling_job: Optional[Job]
+    haploid_patch2_job: Optional[Job]
+    haploid_concat_job: Optional[Job]
+    haploid_gvcf_combine_job: Optional[Job]
+    haploid_gvcf_concat_job: Optional[Job]
 
 
 class DNAscopeLRPipeline(BasePipeline):
@@ -461,130 +495,120 @@ class DNAscopeLRPipeline(BasePipeline):
                     dag.add_job(hificnv_job, {merge_job})
 
         if not self.skip_small_variants:
-            (
-                first_calling_job,
-                diploid_transfer_jobs,
-                diploid_concat_job,
-                first_modelapply_job,
-                phaser_job,
-                bcftools_subset_phased_job,
-                fai_to_bed_job,
-                bcftools_subtract_job,
-                repeatmodel_job,
-                bcftools_subset_unphased_job,
-                second_calling_job,
-                haploid_patch_job,
-                patch_transfer_jobs,
-                patch_concat_jobs,
-                second_modelapply_job,
-                calling_unphased_job,
-                diploid_patch_job,
-                unphased_transfer_jobs,
-                unphased_concat_job,
-                modelapply_unphased_job,
-                merge_job,
-                gvcf_combine_job,
-                haploid_calling_job,
-                haploid_patch2_job,
-                haploid_concat_job,
-                haploid_gvcf_combine_job,
-                haploid_gvcf_concat_job,
-            ) = self.lr_call_variants(sample_input)
-            dag.add_job(first_calling_job, realign_jobs.union(align_jobs))
+            cv = self.lr_call_variants(sample_input)
+            dag.add_job(cv.first_calling_job, realign_jobs.union(align_jobs))
 
-            first_ma_deps = {first_calling_job}
-            if diploid_transfer_jobs and diploid_concat_job:
-                for job in diploid_transfer_jobs:
-                    dag.add_job(job, {first_calling_job})
-                dag.add_job(diploid_concat_job, set(diploid_transfer_jobs))
-                first_ma_deps.add(diploid_concat_job)
+            first_ma_deps = {cv.first_calling_job}
+            if cv.diploid_transfer_jobs and cv.diploid_concat_job:
+                for job in cv.diploid_transfer_jobs:
+                    dag.add_job(job, {cv.first_calling_job})
+                dag.add_job(
+                    cv.diploid_concat_job, set(cv.diploid_transfer_jobs)
+                )
+                first_ma_deps.add(cv.diploid_concat_job)
 
-            dag.add_job(first_modelapply_job, first_ma_deps)
-            dag.add_job(phaser_job, {first_modelapply_job})
+            dag.add_job(cv.first_modelapply_job, first_ma_deps)
+            dag.add_job(cv.phaser_job, {cv.first_modelapply_job})
 
-            haploid_patch_deps = set()
-            if bcftools_subset_phased_job:
-                dag.add_job(bcftools_subset_phased_job, {phaser_job})
-                haploid_patch_deps.add(bcftools_subset_phased_job)
+            haploid_patch_deps: Set[Job] = set()
+            if cv.bcftools_subset_phased_job:
+                dag.add_job(cv.bcftools_subset_phased_job, {cv.phaser_job})
+                haploid_patch_deps.add(cv.bcftools_subset_phased_job)
 
-            subtract_deps = {phaser_job}
-            if fai_to_bed_job:
-                dag.add_job(fai_to_bed_job)
-                subtract_deps.add(fai_to_bed_job)
-            dag.add_job(bcftools_subtract_job, subtract_deps)
-            dag.add_job(bcftools_subset_unphased_job, {bcftools_subtract_job})
+            subtract_deps: Set[Job] = {cv.phaser_job}
+            if cv.fai_to_bed_job:
+                dag.add_job(cv.fai_to_bed_job)
+                subtract_deps.add(cv.fai_to_bed_job)
+            dag.add_job(cv.bcftools_subtract_job, subtract_deps)
+            dag.add_job(
+                cv.bcftools_subset_unphased_job,
+                {cv.bcftools_subtract_job},
+            )
 
-            second_pass_deps = {phaser_job}
-            calling_unphased_deps = {bcftools_subtract_job}
-            haploid_calling_deps = set()
-            if repeatmodel_job:
-                dag.add_job(repeatmodel_job, {phaser_job})
-                second_pass_deps.add(repeatmodel_job)
-                calling_unphased_deps.add(repeatmodel_job)
-                haploid_calling_deps.add(repeatmodel_job)
+            second_pass_deps: Set[Job] = {cv.phaser_job}
+            calling_unphased_deps: Set[Job] = {cv.bcftools_subtract_job}
+            haploid_calling_deps: Set[Job] = set()
+            if cv.repeatmodel_job:
+                dag.add_job(cv.repeatmodel_job, {cv.phaser_job})
+                second_pass_deps.add(cv.repeatmodel_job)
+                calling_unphased_deps.add(cv.repeatmodel_job)
+                haploid_calling_deps.add(cv.repeatmodel_job)
 
-            merge_deps = set()
-            for job in second_calling_job:
+            merge_deps: Set[Job] = set()
+            for job in cv.second_calling_job:
                 dag.add_job(job, second_pass_deps)
                 haploid_patch_deps.add(job)
-            dag.add_job(haploid_patch_job, haploid_patch_deps)
+            dag.add_job(cv.haploid_patch_job, haploid_patch_deps)
 
-            second_ma_deps = {haploid_patch_job}
-            if patch_transfer_jobs:  # pop_vcf
+            second_ma_deps = {cv.haploid_patch_job}
+            if cv.patch_transfer_jobs:  # pop_vcf
                 for patch_transfer_hap, patch_concat in zip(
-                    patch_transfer_jobs, patch_concat_jobs
+                    cv.patch_transfer_jobs, cv.patch_concat_jobs
                 ):
                     for job in patch_transfer_hap:
-                        dag.add_job(job, {haploid_patch_job})
+                        dag.add_job(job, {cv.haploid_patch_job})
                     dag.add_job(patch_concat, set(patch_transfer_hap))
                     second_ma_deps.add(patch_concat)
 
-            for job in second_modelapply_job:
+            for job in cv.second_modelapply_job:
                 dag.add_job(job, second_ma_deps)
                 merge_deps.add(job)
 
-            dag.add_job(calling_unphased_job, calling_unphased_deps)
+            dag.add_job(cv.calling_unphased_job, calling_unphased_deps)
             dag.add_job(
-                diploid_patch_job,
-                {bcftools_subset_unphased_job, calling_unphased_job},
+                cv.diploid_patch_job,
+                {
+                    cv.bcftools_subset_unphased_job,
+                    cv.calling_unphased_job,
+                },
             )
 
-            unphased_ma_deps = {diploid_patch_job}
-            if unphased_transfer_jobs and unphased_concat_job:  # pop_vcf
-                for job in unphased_transfer_jobs:
-                    dag.add_job(job, {diploid_patch_job})
-                dag.add_job(unphased_concat_job, set(unphased_transfer_jobs))
-                unphased_ma_deps.add(unphased_concat_job)
+            unphased_ma_deps = {cv.diploid_patch_job}
+            if cv.unphased_transfer_jobs and cv.unphased_concat_job:  # pop_vcf
+                for job in cv.unphased_transfer_jobs:
+                    dag.add_job(job, {cv.diploid_patch_job})
+                dag.add_job(
+                    cv.unphased_concat_job, set(cv.unphased_transfer_jobs)
+                )
+                unphased_ma_deps.add(cv.unphased_concat_job)
 
-            dag.add_job(modelapply_unphased_job, unphased_ma_deps)
-            merge_deps.add(modelapply_unphased_job)
-            dag.add_job(merge_job, merge_deps)
+            dag.add_job(cv.modelapply_unphased_job, unphased_ma_deps)
+            merge_deps.add(cv.modelapply_unphased_job)
+            dag.add_job(cv.merge_job, merge_deps)
 
-            if gvcf_combine_job:  # if gvcf
-                dag.add_job(gvcf_combine_job, {merge_job})
+            if cv.gvcf_combine_job:
+                dag.add_job(cv.gvcf_combine_job, {cv.merge_job})
 
             if (
-                haploid_calling_job
-                and haploid_patch2_job
-                and haploid_concat_job
+                cv.haploid_calling_job
+                and cv.haploid_patch2_job
+                and cv.haploid_concat_job
             ):
-                # if haploid bed
-                dag.add_job(haploid_calling_job, haploid_calling_deps)
-                dag.add_job(haploid_patch2_job, {haploid_calling_job})
+                dag.add_job(cv.haploid_calling_job, haploid_calling_deps)
                 dag.add_job(
-                    haploid_concat_job, {haploid_patch2_job, merge_job}
+                    cv.haploid_patch2_job,
+                    {cv.haploid_calling_job},
+                )
+                dag.add_job(
+                    cv.haploid_concat_job,
+                    {cv.haploid_patch2_job, cv.merge_job},
                 )
 
                 if (
-                    haploid_gvcf_combine_job
-                    and haploid_gvcf_concat_job
-                    and gvcf_combine_job
+                    cv.haploid_gvcf_combine_job
+                    and cv.haploid_gvcf_concat_job
+                    and cv.gvcf_combine_job
                 ):
-                    # if gvcf
-                    dag.add_job(haploid_gvcf_combine_job, {haploid_patch2_job})
                     dag.add_job(
-                        haploid_gvcf_concat_job,
-                        {haploid_gvcf_combine_job, gvcf_combine_job},
+                        cv.haploid_gvcf_combine_job,
+                        {cv.haploid_patch2_job},
+                    )
+                    dag.add_job(
+                        cv.haploid_gvcf_concat_job,
+                        {
+                            cv.haploid_gvcf_combine_job,
+                            cv.gvcf_combine_job,
+                        },
                     )
 
         if not self.skip_svs:
@@ -853,35 +877,7 @@ class DNAscopeLRPipeline(BasePipeline):
     def lr_call_variants(
         self,
         sample_input: List[pathlib.Path],
-    ) -> Tuple[
-        Job,  # first_calling_job
-        List[Job],  # diploid_transfer_jobs
-        Optional[Job],  # diploid_concat_job
-        Job,  # first_modelapply_job
-        Job,  # phaser_job
-        Optional[Job],  # bcftools_subset_phased_job
-        Optional[Job],  # fai_to_bed_job
-        Job,  # bcftools_subtract_job
-        Optional[Job],  # repeatmodel_job
-        Job,  # bcftools_subset_unphased_job
-        Set[Job],  # second_calling_job
-        Job,  # haploid_patch_job
-        List[List[Job]],  # patch_transfer_jobs
-        List[Job],  # patch_concat_jobs
-        Set[Job],  # second_modelapply_job
-        Job,  # calling_unphased_job
-        Job,  # diploid_patch_job
-        List[Job],  # unphased_transfer_jobs
-        Optional[Job],  # unphased_concat_job
-        Job,  # modelapply_unphased_job
-        Job,  # merge_job
-        Optional[Job],  # gvcf_combine_job
-        Optional[Job],  # haploid_calling_job
-        Optional[Job],  # haploid_patch2_job
-        Optional[Job],  # haploid_concat_job
-        Optional[Job],  # haploid_gvcf_combine_job
-        Optional[Job],  # haploid_gvcf_concat_job
-    ]:
+    ) -> LRCallVariantsResult:
         """
         Call SNVs and indels using the DNAscope LongRead pipeline
         """
@@ -1402,7 +1398,7 @@ class DNAscopeLRPipeline(BasePipeline):
                     "haploid-gvcf-concat",
                     0,
                 )
-        return (
+        return LRCallVariantsResult(
             first_calling_job,
             diploid_transfer_jobs,
             diploid_concat_job,
