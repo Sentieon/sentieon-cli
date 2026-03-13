@@ -518,6 +518,30 @@ class CNVModelApply(BaseAlgo):
         self.vcf = vcf
 
 
+class PangenomeSV(BaseAlgo):
+    """algo PangenomeSV"""
+
+    name = "PangenomeSV"
+
+    def __init__(
+        self,
+        output: pathlib.Path,
+        gfa_file: pathlib.Path,
+        min_map_qual: Optional[int] = None,
+        min_sv_size: Optional[int] = None,
+        min_dp: Optional[int] = None,
+        min_af: Optional[float] = None,
+        prefix: Optional[str] = None,
+    ):
+        self.output = output
+        self.gfa_file = gfa_file
+        self.min_map_qual = min_map_qual
+        self.min_sv_size = min_sv_size
+        self.min_dp = min_dp
+        self.min_af = min_af
+        self.prefix = prefix
+
+
 class BaseDriver:
     """A base class for the Sentieon driver"""
 

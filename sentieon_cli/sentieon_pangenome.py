@@ -30,6 +30,7 @@ from .driver import (
     InsertSizeMetricAlgo,
     LocusCollector,
     MeanQualityByCycle,
+    PangenomeSV,
     QualDistribution,
     WgsMetricsAlgo,
 )
@@ -128,6 +129,14 @@ class SentieonPangenome(BasePangenome):
                 "help": argparse.SUPPRESS,
                 "action": "store_true",
             },
+            "call_svs": {
+                "help": ("Call structural variants using PangenomeSV."),
+                "action": "store_true",
+            },
+            "skip_small_variants": {
+                "help": argparse.SUPPRESS,
+                "action": "store_true",
+            },
         }
     )
 
@@ -146,6 +155,8 @@ class SentieonPangenome(BasePangenome):
         self.skip_pangenome_name_checks: bool = False
         self.skip_pop_vcf_id_check: bool = False
         self.skip_model_apply = False
+        self.call_svs = False
+        self.skip_small_variants = False
 
     def main(self, args: argparse.Namespace) -> None:
         """Run the pipeline"""
@@ -520,8 +531,33 @@ class SentieonPangenome(BasePangenome):
             dnascope_bams.append(mm2_bam)
 
         # DNAscope calling with bwa and mm2 input
+        sv_vcf = None
+        if self.call_svs:
+            sv_vcf = pathlib.Path(
+                str(self.output_vcf).replace(".vcf.gz", "_sv.vcf.gz")
+            )
+
+        if self.skip_small_variants and not self.call_svs:
+            return dag
+
+        if self.skip_small_variants and self.call_svs:
+            # Run the driver for SV calling only
+            dnascope_job = self.build_dnascope_job(
+                raw_vcf,
+                dnascope_bams,
+                sv_vcf=sv_vcf,
+                gfa_file=sample_gfa,
+            )
+            dag.add_job(dnascope_job, dnascope_dependencies)
+            return dag
+
         apply_dependencies = set()
-        dnascope_job = self.build_dnascope_job(raw_vcf, dnascope_bams)
+        dnascope_job = self.build_dnascope_job(
+            raw_vcf,
+            dnascope_bams,
+            sv_vcf=sv_vcf,
+            gfa_file=sample_gfa if self.call_svs else None,
+        )
         dag.add_job(dnascope_job, dnascope_dependencies)
         apply_dependencies.add(dnascope_job)
 
@@ -820,6 +856,8 @@ class SentieonPangenome(BasePangenome):
         self,
         out_vcf: pathlib.Path,
         input_bams: List[pathlib.Path],
+        sv_vcf: Optional[pathlib.Path] = None,
+        gfa_file: Optional[pathlib.Path] = None,
     ) -> Job:
         if not self.model_bundle:
             self.logger.error("model_bundle is required")
@@ -837,15 +875,23 @@ class SentieonPangenome(BasePangenome):
             interval=self.bed,
             read_filter=read_filters,
         )
-        driver.add_algo(
-            DNAscope(
-                out_vcf,
-                model=self.model_bundle.joinpath("dnascope.model"),
-                pcr_indel_model=pcr_indel_model,
-                dbsnp=self.dbsnp,
-                emit_mode="gvcf" if self.gvcf else "variant",
+        if not self.skip_small_variants:
+            driver.add_algo(
+                DNAscope(
+                    out_vcf,
+                    model=self.model_bundle.joinpath("dnascope.model"),
+                    pcr_indel_model=pcr_indel_model,
+                    dbsnp=self.dbsnp,
+                    emit_mode="gvcf" if self.gvcf else "variant",
+                )
             )
-        )
+        if sv_vcf and gfa_file:
+            driver.add_algo(
+                PangenomeSV(
+                    sv_vcf,
+                    gfa_file=gfa_file,
+                )
+            )
         return Job(
             Pipeline(Command(*driver.build_cmd())),
             "dnascope-raw",

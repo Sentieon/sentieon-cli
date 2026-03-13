@@ -129,3 +129,103 @@ class TestSentieonPangenome:
         args_str = " ".join([str(arg) for arg in concat_job.shell.nodes[0].args])
         assert str(pipeline.output_vcf) in args_str
 
+    def test_call_svs(self):
+        """Test that PangenomeSV is added when --call_svs is enabled"""
+        pipeline = self.create_pipeline()
+        pipeline.call_svs = True
+        dag = pipeline.build_first_dag()
+
+        assert isinstance(dag, DAG)
+
+        # The dnascope-raw job should exist
+        all_jobs = list(dag.waiting_jobs.keys()) + list(
+            dag.ready_jobs.keys()
+        )
+        job_names = [job.name for job in all_jobs]
+        assert "dnascope-raw" in job_names
+
+        # Find the dnascope-raw job and check its command includes
+        # both DNAscope and PangenomeSV
+        dnascope_job = None
+        for job in all_jobs:
+            if job.name == "dnascope-raw":
+                dnascope_job = job
+                break
+        assert dnascope_job is not None
+        cmd_str = str(dnascope_job.shell)
+        assert "--algo DNAscope" in cmd_str
+        assert "--algo PangenomeSV" in cmd_str
+        assert "--gfa_file" in cmd_str
+
+        # SV output should use _sv.vcf.gz suffix
+        sv_vcf = str(pipeline.output_vcf).replace(
+            ".vcf.gz", "_sv.vcf.gz"
+        )
+        assert sv_vcf in cmd_str
+
+    def test_call_svs_disabled_by_default(self):
+        """Test that PangenomeSV is not added by default"""
+        pipeline = self.create_pipeline()
+        dag = pipeline.build_first_dag()
+
+        all_jobs = list(dag.waiting_jobs.keys()) + list(
+            dag.ready_jobs.keys()
+        )
+        dnascope_job = None
+        for job in all_jobs:
+            if job.name == "dnascope-raw":
+                dnascope_job = job
+                break
+        assert dnascope_job is not None
+        cmd_str = str(dnascope_job.shell)
+        assert "--algo DNAscope" in cmd_str
+        assert "--algo PangenomeSV" not in cmd_str
+
+    def test_skip_small_variants(self):
+        """Test that DNAscope, transfer, and model-apply are skipped"""
+        pipeline = self.create_pipeline()
+        pipeline.skip_small_variants = True
+        dag = pipeline.build_first_dag()
+
+        assert isinstance(dag, DAG)
+
+        all_jobs = list(dag.waiting_jobs.keys()) + list(
+            dag.ready_jobs.keys()
+        )
+        job_names = [job.name for job in all_jobs]
+        assert "dnascope-raw" not in job_names
+        assert "model-apply" not in job_names
+        assert "merge-trim-concat" not in job_names
+
+    def test_skip_small_variants_with_call_svs(self):
+        """Test SV-only mode: driver runs PangenomeSV without DNAscope"""
+        pipeline = self.create_pipeline()
+        pipeline.skip_small_variants = True
+        pipeline.call_svs = True
+        dag = pipeline.build_first_dag()
+
+        assert isinstance(dag, DAG)
+
+        all_jobs = list(dag.waiting_jobs.keys()) + list(
+            dag.ready_jobs.keys()
+        )
+        job_names = [job.name for job in all_jobs]
+
+        # The driver job should still run for SV calling
+        assert "dnascope-raw" in job_names
+
+        # Transfer and model-apply should be skipped
+        assert "model-apply" not in job_names
+        assert "merge-trim-concat" not in job_names
+
+        # The driver command should have PangenomeSV but NOT DNAscope
+        dnascope_job = None
+        for job in all_jobs:
+            if job.name == "dnascope-raw":
+                dnascope_job = job
+                break
+        assert dnascope_job is not None
+        cmd_str = str(dnascope_job.shell)
+        assert "--algo PangenomeSV" in cmd_str
+        assert "--algo DNAscope" not in cmd_str
+
