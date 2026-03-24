@@ -407,6 +407,10 @@ def patch1(vcfi1, vcfi2, vcfd1, vcfd2, vcfo1, vcfo2, **kwargs):
             d1 = None
         if d2 and d2.samples[0].get('GT') is None:
             d2 = None
+        if v1 and v1.samples[0].get('GT') is None:
+            v1 = None
+        if v2 and v2.samples[0].get('GT') is None:
+            v2 = None
         if not v1 or d1 and compatible(v1, d1):
             v1 = d1
         if not v2 or d2 and compatible(v2, d2):
