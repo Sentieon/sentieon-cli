@@ -229,3 +229,136 @@ class TestSentieonPangenome:
         assert "--algo PangenomeSV" in cmd_str
         assert "--algo DNAscope" not in cmd_str
 
+    def _get_all_job_names(self, dag):
+        """Helper to get all job names from a DAG"""
+        all_jobs = list(dag.waiting_jobs.keys()) + list(
+            dag.ready_jobs.keys()
+        )
+        return [job.name for job in all_jobs], all_jobs
+
+    def test_cnv_jobs_with_call_svs(self):
+        """Test that CNV jobs are added when --call_svs is enabled"""
+        pipeline = self.create_pipeline()
+        pipeline.call_svs = True
+        dag = pipeline.build_first_dag()
+
+        job_names, all_jobs = self._get_all_job_names(dag)
+        assert "cnvscope" in job_names
+        assert "cnv-model-apply" in job_names
+        assert "indel2cnv" in job_names
+        assert "combine-cnv" in job_names
+
+    def test_cnv_jobs_not_present_without_call_svs(self):
+        """Test that CNV jobs are not added by default"""
+        pipeline = self.create_pipeline()
+        dag = pipeline.build_first_dag()
+
+        job_names, _ = self._get_all_job_names(dag)
+        assert "cnvscope" not in job_names
+        assert "cnv-model-apply" not in job_names
+        assert "indel2cnv" not in job_names
+        assert "combine-cnv" not in job_names
+
+    def test_cnv_jobs_with_skip_small_variants(self):
+        """Test CNV jobs are added in SV-only mode"""
+        pipeline = self.create_pipeline()
+        pipeline.skip_small_variants = True
+        pipeline.call_svs = True
+        dag = pipeline.build_first_dag()
+
+        job_names, _ = self._get_all_job_names(dag)
+        assert "cnvscope" in job_names
+        assert "cnv-model-apply" in job_names
+        assert "indel2cnv" in job_names
+        assert "combine-cnv" in job_names
+
+    def test_cnvscope_command(self):
+        """Test CNVscope driver command has correct algo and model"""
+        pipeline = self.create_pipeline()
+        pipeline.call_svs = True
+        dag = pipeline.build_first_dag()
+
+        _, all_jobs = self._get_all_job_names(dag)
+        cnvscope_job = None
+        for job in all_jobs:
+            if job.name == "cnvscope":
+                cnvscope_job = job
+                break
+        assert cnvscope_job is not None
+        cmd_str = str(cnvscope_job.shell)
+        assert "--algo CNVscope" in cmd_str
+        assert "cnvscope.model" in cmd_str
+        # Input should be the sample BAM (BAM input mode)
+        assert str(pipeline.sample_input[0]) in cmd_str
+
+    def test_cnv_model_apply_command(self):
+        """Test CNVModelApply driver command"""
+        pipeline = self.create_pipeline()
+        pipeline.call_svs = True
+        dag = pipeline.build_first_dag()
+
+        _, all_jobs = self._get_all_job_names(dag)
+        job = None
+        for j in all_jobs:
+            if j.name == "cnv-model-apply":
+                job = j
+                break
+        assert job is not None
+        cmd_str = str(job.shell)
+        assert "--algo CNVModelApply" in cmd_str
+        assert "cnvscope.model" in cmd_str
+
+    def test_indel2cnv_command(self):
+        """Test indel2cnv script command"""
+        pipeline = self.create_pipeline()
+        pipeline.call_svs = True
+        dag = pipeline.build_first_dag()
+
+        _, all_jobs = self._get_all_job_names(dag)
+        job = None
+        for j in all_jobs:
+            if j.name == "indel2cnv":
+                job = j
+                break
+        assert job is not None
+        cmd_str = str(job.shell)
+        assert "indel2cnv.py" in cmd_str
+        assert str(pipeline.reference) in cmd_str
+
+    def test_combine_cnv_command(self):
+        """Test combine_cnv script command"""
+        pipeline = self.create_pipeline()
+        pipeline.call_svs = True
+        dag = pipeline.build_first_dag()
+
+        _, all_jobs = self._get_all_job_names(dag)
+        job = None
+        for j in all_jobs:
+            if j.name == "combine-cnv":
+                job = j
+                break
+        assert job is not None
+        cmd_str = str(job.shell)
+        assert "combine_cnv.py" in cmd_str
+        assert "--cnv" in cmd_str
+        assert "--converted" in cmd_str
+        # Output should use _cnv.vcf.gz suffix
+        cnv_vcf = str(pipeline.output_vcf).replace(
+            ".vcf.gz", "_cnv.vcf.gz"
+        )
+        assert cnv_vcf in cmd_str
+
+    def test_cnv_with_skip_model_apply(self):
+        """Test CNV jobs are added even with skip_model_apply"""
+        pipeline = self.create_pipeline()
+        pipeline.call_svs = True
+        pipeline.skip_model_apply = True
+        dag = pipeline.build_first_dag()
+
+        job_names, _ = self._get_all_job_names(dag)
+        assert "model-apply" not in job_names
+        assert "cnvscope" in job_names
+        assert "cnv-model-apply" in job_names
+        assert "indel2cnv" in job_names
+        assert "combine-cnv" in job_names
+
