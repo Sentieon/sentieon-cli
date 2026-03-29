@@ -8,7 +8,7 @@ import json
 import pathlib
 from typing import List, Optional
 
-from importlib_resources import files
+from importlib.resources import files
 
 from . import command_strings as cmds
 from .job import Job

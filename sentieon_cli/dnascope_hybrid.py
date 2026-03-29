@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 import packaging.version
 
-from importlib_resources import files
+from importlib.resources import files
 
 from .logging import get_logger
 from .archive import ar_load

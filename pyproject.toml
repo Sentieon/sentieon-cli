@@ -18,7 +18,6 @@ classifiers = [
 include = ["LICENSE"]
 
 dependencies = [
-    "importlib-resources (>=5.0,<6.0)",
     "packaging (>=23.2)",
     "mappy (>=2.30,<3.0)",
     "scipy (>=1.17.1,<2.0.0)",
@@ -39,10 +38,12 @@ max-line-length = 79
 extend-ignore = ["E231", "E221"]
 exclude = [
     ".github/scripts/license_message.py",
+    "sentieon_cli/scripts/combine_cnv.py",
     "sentieon_cli/scripts/gvcf_combine.py",
     "sentieon_cli/scripts/vcf_mod.py",
     "sentieon_cli/scripts/hybrid_anno.py",
     "sentieon_cli/scripts/hybrid_select.py",
+    "sentieon_cli/scripts/indel2cnv.py",
     "sentieon_cli/scripts/trimalt.py",
     "sentieon_cli/archive.py",
     "playground",

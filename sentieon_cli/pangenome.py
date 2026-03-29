@@ -14,7 +14,7 @@ from typing import List, Optional, Tuple
 
 import packaging.version
 
-from importlib_resources import files
+from importlib.resources import files
 
 from . import command_strings as cmds
 from .archive import ar_load

@@ -287,7 +287,7 @@ class TestSentieonPangenome:
         assert cnvscope_job is not None
         cmd_str = str(cnvscope_job.shell)
         assert "--algo CNVscope" in cmd_str
-        assert "cnvscope.model" in cmd_str
+        assert "cnv.model" in cmd_str
         # Input should be the sample BAM (BAM input mode)
         assert str(pipeline.sample_input[0]) in cmd_str
 
@@ -306,7 +306,7 @@ class TestSentieonPangenome:
         assert job is not None
         cmd_str = str(job.shell)
         assert "--algo CNVModelApply" in cmd_str
-        assert "cnvscope.model" in cmd_str
+        assert "cnv.model" in cmd_str
 
     def test_indel2cnv_command(self):
         """Test indel2cnv script command"""

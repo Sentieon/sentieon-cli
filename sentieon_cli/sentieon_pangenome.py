@@ -12,7 +12,7 @@ from typing import Dict, List, Optional, Set, Tuple, Union
 
 import packaging.version
 
-from importlib_resources import files
+from importlib.resources import files
 
 from . import command_strings as cmds
 from .archive import ar_load
