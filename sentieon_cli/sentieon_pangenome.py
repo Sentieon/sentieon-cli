@@ -102,9 +102,7 @@ class SentieonPangenome(BasePangenome):
                 "type": path_arg(exists=True, is_file=True),
             },
             "call_svs": {
-                "help": (
-                    "Call structural and copy number variants."
-                ),
+                "help": "Call structural and copy number variants.",
                 "action": "store_true",
             },
             "gvcf": {
