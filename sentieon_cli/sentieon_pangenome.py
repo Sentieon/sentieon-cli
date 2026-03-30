@@ -1002,6 +1002,7 @@ class SentieonPangenome(BasePangenome):
             reference=self.reference,
             thread_count=self.cores,
             input=input_bams,
+            interval=self.bed,
         )
         driver.add_algo(
             CNVscope(
@@ -1048,6 +1049,7 @@ class SentieonPangenome(BasePangenome):
         indel2cnv_script = pathlib.Path(
             str(files("sentieon_cli.scripts").joinpath("indel2cnv.py"))
         )
+        # Run in background
         return Job(
             Pipeline(
                 Command(
@@ -1062,7 +1064,7 @@ class SentieonPangenome(BasePangenome):
                 )
             ),
             "indel2cnv",
-            self.cores,
+            0,
         )
 
     def _build_combine_cnv_job(
