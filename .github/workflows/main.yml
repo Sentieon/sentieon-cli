@@ -14,8 +14,8 @@ jobs:
       fail-fast: true
       max-parallel: 1
       matrix:
-        python-version: ["3.9", "3.13"]
-        sentieon-version: ["202503.01"]
+        python-version: ["3.11", "3.14"]
+        sentieon-version: ["202503.02"]
         os: [ubuntu-22.04] #, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
@@ -97,8 +97,8 @@ jobs:
       fail-fast: true
       max-parallel: 1
       matrix:
-        python-version: ["3.9", "3.13"]
-        sentieon-version: ["202503.01"]
+        python-version: ["3.11", "3.14"]
+        sentieon-version: ["202503.02"]
         os: [ubuntu-22.04] #, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
@@ -219,8 +219,8 @@ jobs:
       fail-fast: true
       max-parallel: 1
       matrix:
-        python-version: ["3.9", "3.13"]
-        sentieon-version: ["202503.01"]
+        python-version: ["3.11", "3.14"]
+        sentieon-version: ["202503.02"]
         os: [ubuntu-22.04] #, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:

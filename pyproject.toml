@@ -1,14 +1,14 @@
 
 [project]
 name = "sentieon_cli"
-version = "1.5.2"
+version = "1.6.0"
 description = "entry point for sentieon command-line tools"
 authors = [
     {name = "Don Freed", email = "don.freed@sentieon.com"},
     {name = "Brent", email = "bpederse@gmail.com"},
 ]
 readme = "README.md"
-requires-python = ">= 3.8"
+requires-python = ">= 3.11"
 
 classifiers = [
     "Development Status :: 5 - Production/Stable",
@@ -18,9 +18,10 @@ classifiers = [
 include = ["LICENSE"]
 
 dependencies = [
-    "colorlog (>=6.7.0,<7.0.0)",
-    "importlib-resources (>=5.0,<6.0)",
-    "packaging (>=23.2,<26.0)",
+    "packaging (>=23.2)",
+    "mappy (>=2.30,<3.0)",
+    "scipy (>=1.17.1,<2.0.0)",
+    "levenshtein (>=0.27.3,<0.28.0)",
 ]
 
 [project.scripts]
@@ -32,16 +33,40 @@ ignore_missing_imports = true
 [tool.black]
 line-length = 79
 
+[tool.flake8]
+max-line-length = 79
+extend-ignore = ["E231", "E221"]
+exclude = [
+    ".github/scripts/license_message.py",
+    "sentieon_cli/scripts/combine_cnv.py",
+    "sentieon_cli/scripts/gvcf_combine.py",
+    "sentieon_cli/scripts/vcf_mod.py",
+    "sentieon_cli/scripts/hybrid_anno.py",
+    "sentieon_cli/scripts/hybrid_select.py",
+    "sentieon_cli/scripts/indel2cnv.py",
+    "sentieon_cli/scripts/trimalt.py",
+    "sentieon_cli/archive.py",
+    "playground",
+    "tests",
+]
+
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.0.0"
+pytest-asyncio = ">=0.21.0"
 black = "*"
 flake8 = "*"
+Flake8-pyproject = "*"
 mypy = "*"
 
 [tool.poetry.group.test.dependencies]
 pytest = "^7.0.0"
+pytest-asyncio = ">=0.21.0"
 black = "*"
 mypy = "*"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "strict"
 
 [build-system]
 requires = ["poetry-core"]

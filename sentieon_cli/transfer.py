@@ -8,7 +8,7 @@ import subprocess as sp
 import tempfile
 from typing import Dict, List, Optional, Set, Tuple
 
-from importlib_resources import files
+from importlib.resources import files
 
 from . import command_strings as cmds
 from .job import Job

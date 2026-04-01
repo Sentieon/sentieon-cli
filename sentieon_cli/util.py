@@ -3,6 +3,7 @@ Utility functions
 """
 
 import argparse
+from importlib.metadata import PackageNotFoundError, version
 import multiprocessing as mp
 import os
 import pathlib
@@ -17,7 +18,10 @@ import packaging.version
 
 from .logging import get_logger
 
-__version__ = "1.5.2"
+try:
+    __version__ = version("sentieon_cli")
+except PackageNotFoundError:
+    __version__ = "0.0.0"
 
 logger = get_logger(__name__)
 

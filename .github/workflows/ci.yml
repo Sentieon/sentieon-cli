@@ -8,7 +8,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        python-version: ["3.9", "3.13"]
+        python-version: ["3.11", "3.14"]
         os: [ubuntu-22.04] #, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
@@ -34,7 +34,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: "3.14"
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -47,7 +47,7 @@ jobs:
       - name: Run mypy
         run: poetry run mypy sentieon_cli --exclude scripts
       - name: Run flake8
-        run: poetry run flake8 . --extend-ignore E231,E221, --exclude .github/scripts/license_message.py,sentieon_cli/scripts/gvcf_combine.py,sentieon_cli/scripts/vcf_mod.py,sentieon_cli/scripts/hybrid_anno.py,sentieon_cli/scripts/hybrid_select.py,sentieon_cli/archive.py,sentieon_cli/scripts/trimalt.py,playground,tests # false+ from python 3.12
+        run: poetry run flake8 .
       - name: Run the automated tests
         run: poetry run pytest -v
       - name: Run doct tests

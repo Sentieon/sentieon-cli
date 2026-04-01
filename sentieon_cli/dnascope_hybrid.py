@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 import packaging.version
 
-from importlib_resources import files
+from importlib.resources import files
 
 from .logging import get_logger
 from .archive import ar_load
@@ -46,7 +46,6 @@ from .shard import (
     vcf_contigs,
 )
 from .transfer import build_transfer_jobs
-
 
 logger = get_logger(__name__)
 
@@ -520,9 +519,15 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         self.logger.info("Building the DAG")
         dag = DAG()
 
-        assert self.output_vcf
-        assert self.reference
-        assert self.model_bundle
+        if not self.output_vcf:
+            self.logger.error("output_vcf is required")
+            sys.exit(2)
+        if not self.reference:
+            self.logger.error("reference is required")
+            sys.exit(2)
+        if not self.model_bundle:
+            self.logger.error("model_bundle is required")
+            sys.exit(2)
 
         rg_info = RgInfo(
             self.lr_aln_readgroups,
@@ -712,9 +717,15 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         """
         Call SNVs and indels using the DNAscope hybrid pipeline
         """
-        assert self.output_vcf
-        assert self.reference
-        assert self.model_bundle
+        if not self.output_vcf:
+            self.logger.error("output_vcf is required")
+            sys.exit(2)
+        if not self.reference:
+            self.logger.error("reference is required")
+            sys.exit(2)
+        if not self.model_bundle:
+            self.logger.error("model_bundle is required")
+            sys.exit(2)
 
         ref_fai = pathlib.Path(str(self.reference) + ".fai")
 

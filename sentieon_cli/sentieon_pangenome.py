@@ -12,7 +12,7 @@ from typing import Dict, List, Optional, Set, Tuple, Union
 
 import packaging.version
 
-from importlib_resources import files
+from importlib.resources import files
 
 from . import command_strings as cmds
 from .archive import ar_load
@@ -21,6 +21,8 @@ from .dag import DAG
 from .driver import (
     AlignmentStat,
     BaseDistributionByCycle,
+    CNVModelApply,
+    CNVscope,
     CoverageMetrics,
     Dedup,
     DNAModelApply,
@@ -30,6 +32,7 @@ from .driver import (
     InsertSizeMetricAlgo,
     LocusCollector,
     MeanQualityByCycle,
+    PangenomeSV,
     QualDistribution,
     WgsMetricsAlgo,
 )
@@ -98,6 +101,15 @@ class SentieonPangenome(BasePangenome):
                 ),
                 "type": path_arg(exists=True, is_file=True),
             },
+            "call_svs": {
+                "help": "Call structural and copy number variants.",
+                "action": "store_true",
+            },
+            "gvcf": {
+                "flags": ["-g", "--gvcf"],
+                "help": "Generate a gVCF output file.",
+                "action": "store_true",
+            },
             "skip_metrics": {
                 "help": "Skip metrics collection and multiQC",
                 "action": "store_true",
@@ -123,6 +135,10 @@ class SentieonPangenome(BasePangenome):
                 "help": argparse.SUPPRESS,
                 "action": "store_true",
             },
+            "skip_small_variants": {
+                "help": argparse.SUPPRESS,
+                "action": "store_true",
+            },
         }
     )
 
@@ -132,14 +148,17 @@ class SentieonPangenome(BasePangenome):
         super().__init__()
         self.readgroup: Optional[str] = None
         self.sample_input: List[pathlib.Path] = []
-        self.bed: Optional[pathlib.Path] = None
         self.pop_vcf: Optional[pathlib.Path] = None
+        self.bed: Optional[pathlib.Path] = None
+        self.call_svs = False
+        self.gvcf = False
         self.skip_metrics = False
         self.skip_multiqc = False
         self.skip_contig_checks: bool = False
         self.skip_pangenome_name_checks: bool = False
         self.skip_pop_vcf_id_check: bool = False
         self.skip_model_apply = False
+        self.skip_small_variants = False
 
     def main(self, args: argparse.Namespace) -> None:
         """Run the pipeline"""
@@ -258,8 +277,12 @@ class SentieonPangenome(BasePangenome):
                     sys.exit(2)
 
     def validate_bundle(self) -> None:
-        assert self.pop_vcf
-        assert self.gbz
+        if not self.pop_vcf:
+            self.logger.error("pop_vcf is required")
+            sys.exit(2)
+        if not self.gbz:
+            self.logger.error("gbz is required")
+            sys.exit(2)
         bundle_info_bytes = ar_load(
             str(self.model_bundle) + "/bundle_info.json"
         )
@@ -308,6 +331,13 @@ class SentieonPangenome(BasePangenome):
         ):
             self.logger.error(
                 "Expected model files not found in the model bundle file"
+            )
+            sys.exit(2)
+
+        if self.call_svs and "cnv.model" not in bundle_members:
+            self.logger.error(
+                "The model bundle does not contain a 'cnv.model' file "
+                "required for CNV calling with `--call_svs`."
             )
             sys.exit(2)
 
@@ -373,9 +403,15 @@ class SentieonPangenome(BasePangenome):
 
     def build_first_dag(self) -> DAG:
         """Build the main DAG for the Sentieon pangenome pipeline"""
-        assert self.reference
-        assert self.model_bundle
-        assert self.output_vcf
+        if not self.reference:
+            self.logger.error("reference is required")
+            sys.exit(2)
+        if not self.model_bundle:
+            self.logger.error("model_bundle is required")
+            sys.exit(2)
+        if not self.output_vcf:
+            self.logger.error("output_vcf is required")
+            sys.exit(2)
 
         self.logger.info("Building the Sentieon pangenome DAG")
         dag = DAG()
@@ -401,6 +437,13 @@ class SentieonPangenome(BasePangenome):
         sample_gfa = self.tmp_dir.joinpath("sample-hap.gfa")
         sample_fasta = self.tmp_dir.joinpath("sample-hap.fa")
         mm2_bam = self.tmp_dir.joinpath("sample-mm2.bam")
+        if not self.r1_fastq:
+            # with bam/cram input, output the realigned bam/cram
+            mm2_bam = pathlib.Path(
+                str(self.output_vcf).replace(
+                    ".vcf.gz", f"_mm2_deduped.{suffix}"
+                )
+            )
         raw_vcf = self.tmp_dir.joinpath("sample-dnascope.vcf.gz")
         transfer_vcf = self.tmp_dir.joinpath("sample-dnascope_transfer.vcf.gz")
         # - Ensure we have a bam file for t1k
@@ -467,6 +510,8 @@ class SentieonPangenome(BasePangenome):
         dnascope_dependencies.add(mm2_job)
 
         # With fastq input, perform dedup and metrics
+        cnv_input_bams: List[pathlib.Path] = []
+        cnvscope_deps: Set[Job] = set()
         if self.r1_fastq:
             dnascope_bams.append(out_bwa_aln)
             dnascope_bams.append(out_mm2_aln)
@@ -483,6 +528,9 @@ class SentieonPangenome(BasePangenome):
             dag.add_job(mm2_dedup_job, {mm2_lc_job})
             dnascope_dependencies.add(mm2_dedup_job)
 
+            cnv_input_bams = [out_bwa_aln]
+            cnvscope_deps = {bwa_dedup_job}
+
             if not self.skip_metrics:
                 metrics_job, rehead_job = self.build_metrics_job(
                     [out_bwa_aln, out_mm2_aln],
@@ -495,10 +543,43 @@ class SentieonPangenome(BasePangenome):
                         dag.add_job(multiqc_job, {rehead_job})
         else:
             dnascope_bams.append(mm2_bam)
+            cnv_input_bams = list(self.sample_input)
 
         # DNAscope calling with bwa and mm2 input
+        sv_vcf = None
+        if self.call_svs:
+            sv_vcf = pathlib.Path(
+                str(self.output_vcf).replace(".vcf.gz", "_sv.vcf.gz")
+            )
+
+        if self.skip_small_variants and not self.call_svs:
+            return dag
+
+        if self.skip_small_variants and self.call_svs and sv_vcf:
+            # SV calling only
+            dnascope_job = self.build_dnascope_job(
+                raw_vcf,
+                dnascope_bams,
+                sv_vcf=sv_vcf,
+                gfa_file=sample_gfa,
+            )
+            dag.add_job(dnascope_job, dnascope_dependencies)
+            self._add_cnv_jobs(
+                dag,
+                sv_vcf,
+                cnv_input_bams,
+                cnvscope_deps,
+                dnascope_job,
+            )
+            return dag
+
         apply_dependencies = set()
-        dnascope_job = self.build_dnascope_job(raw_vcf, dnascope_bams)
+        dnascope_job = self.build_dnascope_job(
+            raw_vcf,
+            dnascope_bams,
+            sv_vcf=sv_vcf,
+            gfa_file=sample_gfa if self.call_svs else None,
+        )
         dag.add_job(dnascope_job, dnascope_dependencies)
         apply_dependencies.add(dnascope_job)
 
@@ -520,12 +601,19 @@ class SentieonPangenome(BasePangenome):
             dag.add_job(concat_job, set(transfer_jobs))
             apply_dependencies.add(concat_job)
 
-        if self.skip_model_apply:
-            return dag
+        if not self.skip_model_apply:
+            # DNAModelApply
+            apply_job = self.build_dnamodelapply_job(transfer_vcf)
+            dag.add_job(apply_job, apply_dependencies)
 
-        # DNAModelApply
-        apply_job = self.build_dnamodelapply_job(transfer_vcf)
-        dag.add_job(apply_job, apply_dependencies)
+        if self.call_svs and sv_vcf:
+            self._add_cnv_jobs(
+                dag,
+                sv_vcf,
+                cnv_input_bams,
+                cnvscope_deps,
+                dnascope_job,
+            )
 
         return dag
 
@@ -535,8 +623,12 @@ class SentieonPangenome(BasePangenome):
         sample_fastq: pathlib.Path,
     ) -> Job:
         """Build the alignment and extract jobs"""
-        assert self.reference
-        assert self.model_bundle
+        if not self.reference:
+            self.logger.error("reference is required")
+            sys.exit(2)
+        if not self.model_bundle:
+            self.logger.error("model_bundle is required")
+            sys.exit(2)
 
         unzip = "igzip"
         if not shutil.which(unzip):
@@ -570,8 +662,12 @@ class SentieonPangenome(BasePangenome):
         self, output_gbz: pathlib.Path, kmer_file: pathlib.Path
     ) -> Job:
         """Build vg haplotypes job"""
-        assert self.hapl
-        assert self.gbz
+        if not self.hapl:
+            self.logger.error("hapl is required")
+            sys.exit(2)
+        if not self.gbz:
+            self.logger.error("gbz is required")
+            sys.exit(2)
 
         haplotypes_job = Job(
             cmds.cmd_vg_haplotypes(
@@ -629,8 +725,12 @@ class SentieonPangenome(BasePangenome):
         sample_gfa: pathlib.Path,
     ) -> Job:
         """Build minimap2 alignment with pgutil lift job"""
-        assert self.model_bundle
-        assert self.reference
+        if not self.model_bundle:
+            self.logger.error("model_bundle is required")
+            sys.exit(2)
+        if not self.reference:
+            self.logger.error("reference is required")
+            sys.exit(2)
 
         rg = (
             self.fastq_readgroup
@@ -713,7 +813,9 @@ class SentieonPangenome(BasePangenome):
         sample_input: List[pathlib.Path],
     ) -> Tuple[Job, Job]:
         """Build a metrics job"""
-        assert self.output_vcf
+        if not self.output_vcf:
+            self.logger.error("output_vcf is required")
+            sys.exit(2)
 
         # Create the metrics directory
         sample_name = self.output_vcf.name.replace(".vcf.gz", "")
@@ -783,8 +885,12 @@ class SentieonPangenome(BasePangenome):
         self,
         out_vcf: pathlib.Path,
         input_bams: List[pathlib.Path],
+        sv_vcf: Optional[pathlib.Path] = None,
+        gfa_file: Optional[pathlib.Path] = None,
     ) -> Job:
-        assert self.model_bundle
+        if not self.model_bundle:
+            self.logger.error("model_bundle is required")
+            sys.exit(2)
 
         read_filters = []
         if self.tech.upper() == "ULTIMA":
@@ -798,14 +904,23 @@ class SentieonPangenome(BasePangenome):
             interval=self.bed,
             read_filter=read_filters,
         )
-        driver.add_algo(
-            DNAscope(
-                out_vcf,
-                model=self.model_bundle.joinpath("dnascope.model"),
-                pcr_indel_model=pcr_indel_model,
-                dbsnp=self.dbsnp,
+        if not self.skip_small_variants:
+            driver.add_algo(
+                DNAscope(
+                    out_vcf,
+                    model=self.model_bundle.joinpath("dnascope.model"),
+                    pcr_indel_model=pcr_indel_model,
+                    dbsnp=self.dbsnp,
+                    emit_mode="gvcf" if self.gvcf else "variant",
+                )
             )
-        )
+        if sv_vcf and gfa_file:
+            driver.add_algo(
+                PangenomeSV(
+                    sv_vcf,
+                    gfa_file=gfa_file,
+                )
+            )
         return Job(
             Pipeline(Command(*driver.build_cmd())),
             "dnascope-raw",
@@ -813,8 +928,12 @@ class SentieonPangenome(BasePangenome):
         )
 
     def build_dnamodelapply_job(self, in_vcf) -> Job:
-        assert self.output_vcf
-        assert self.model_bundle
+        if not self.output_vcf:
+            self.logger.error("output_vcf is required")
+            sys.exit(2)
+        if not self.model_bundle:
+            self.logger.error("model_bundle is required")
+            sys.exit(2)
 
         driver = Driver(
             reference=self.reference,
@@ -831,4 +950,154 @@ class SentieonPangenome(BasePangenome):
             Pipeline(Command(*driver.build_cmd())),
             "model-apply",
             self.cores,
+        )
+
+    def _add_cnv_jobs(
+        self,
+        dag: DAG,
+        sv_vcf: pathlib.Path,
+        cnv_input_bams: List[pathlib.Path],
+        cnvscope_deps: Set[Job],
+        dnascope_job: Job,
+    ) -> None:
+        """Add CNV calling jobs to the DAG"""
+        if not self.model_bundle:
+            self.logger.error("model_bundle is required")
+            sys.exit(2)
+        if not self.reference:
+            self.logger.error("reference is required")
+            sys.exit(2)
+        if not self.output_vcf:
+            self.logger.error("output_vcf is required")
+            sys.exit(2)
+
+        cnvscope_vcf = self.tmp_dir.joinpath("sample-cnvscope.vcf.gz")
+        cnv_apply_vcf = self.tmp_dir.joinpath("sample-cnv_model_apply.vcf.gz")
+        indel2cnv_vcf = self.tmp_dir.joinpath("sample-sv_cnv.vcf.gz")
+        cnv_vcf = pathlib.Path(
+            str(self.output_vcf).replace(".vcf.gz", "_cnv.vcf.gz")
+        )
+
+        # CNVscope on BWA deduped BAM
+        cnvscope_job = self._build_cnvscope_job(cnvscope_vcf, cnv_input_bams)
+        dag.add_job(cnvscope_job, cnvscope_deps)
+
+        # CNVModelApply on CNVscope output
+        cnv_model_apply_job = self._build_cnv_model_apply_job(
+            cnv_apply_vcf, cnvscope_vcf
+        )
+        dag.add_job(cnv_model_apply_job, {cnvscope_job})
+
+        # Convert PangenomeSV output to CNVs
+        indel2cnv_job = self._build_indel2cnv_job(indel2cnv_vcf, sv_vcf)
+        dag.add_job(indel2cnv_job, {dnascope_job})
+
+        # Combine CNVModelApply output with converted SVs
+        combine_job = self._build_combine_cnv_job(
+            cnv_vcf, cnv_apply_vcf, indel2cnv_vcf
+        )
+        dag.add_job(combine_job, {cnv_model_apply_job, indel2cnv_job})
+
+    def _build_cnvscope_job(
+        self,
+        output_vcf: pathlib.Path,
+        input_bams: List[pathlib.Path],
+    ) -> Job:
+        """Build a CNVscope job"""
+        assert self.model_bundle is not None
+        driver = Driver(
+            reference=self.reference,
+            thread_count=self.cores,
+            input=input_bams,
+            interval=self.bed,
+        )
+        driver.add_algo(
+            CNVscope(
+                output=output_vcf,
+                model=self.model_bundle.joinpath("cnv.model"),
+            )
+        )
+        return Job(
+            Pipeline(Command(*driver.build_cmd())),
+            "cnvscope",
+            self.cores,
+        )
+
+    def _build_cnv_model_apply_job(
+        self,
+        output_vcf: pathlib.Path,
+        input_vcf: pathlib.Path,
+    ) -> Job:
+        """Build a CNVModelApply job"""
+        assert self.model_bundle is not None
+        driver = Driver(
+            reference=self.reference,
+            thread_count=self.cores,
+        )
+        driver.add_algo(
+            CNVModelApply(
+                output=output_vcf,
+                model=self.model_bundle.joinpath("cnv.model"),
+                vcf=input_vcf,
+            )
+        )
+        return Job(
+            Pipeline(Command(*driver.build_cmd())),
+            "cnv-model-apply",
+            self.cores,
+        )
+
+    def _build_indel2cnv_job(
+        self,
+        output_vcf: pathlib.Path,
+        input_vcf: pathlib.Path,
+    ) -> Job:
+        """Convert PangenomeSV INDELs to CNV calls"""
+        indel2cnv_script = pathlib.Path(
+            str(files("sentieon_cli.scripts").joinpath("indel2cnv.py"))
+        )
+        # Run in background
+        return Job(
+            Pipeline(
+                Command(
+                    "sentieon",
+                    "pyexec",
+                    str(indel2cnv_script),
+                    str(self.reference),
+                    str(input_vcf),
+                    str(output_vcf),
+                    "-t",
+                    str(self.cores),
+                )
+            ),
+            "indel2cnv",
+            0,
+        )
+
+    def _build_combine_cnv_job(
+        self,
+        output_vcf: pathlib.Path,
+        cnv_vcf: pathlib.Path,
+        converted_vcf: pathlib.Path,
+    ) -> Job:
+        """Combine CNVscope and converted SV calls"""
+        combine_script = pathlib.Path(
+            str(files("sentieon_cli.scripts").joinpath("combine_cnv.py"))
+        )
+        return Job(
+            Pipeline(
+                Command(
+                    "sentieon",
+                    "pyexec",
+                    str(combine_script),
+                    "--cnv",
+                    str(cnv_vcf),
+                    "--converted",
+                    str(converted_vcf),
+                    "-o",
+                    str(output_vcf),
+                )
+            ),
+            "combine-cnv",
+            0,
         )

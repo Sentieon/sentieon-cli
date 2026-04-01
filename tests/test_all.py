@@ -2,7 +2,7 @@ import sys
 import os
 import shutil
 
-from importlib_resources import files
+from importlib.resources import files
 
 sys.path.insert(
     0, os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
