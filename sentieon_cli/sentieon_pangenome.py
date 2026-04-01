@@ -334,6 +334,13 @@ class SentieonPangenome(BasePangenome):
             )
             sys.exit(2)
 
+        if self.call_svs and "cnv.model" not in bundle_members:
+            self.logger.error(
+                "The model bundle does not contain a 'cnv.model' file "
+                "required for CNV calling with `--call_svs`."
+            )
+            sys.exit(2)
+
         if not self.skip_pop_vcf_id_check and not self.dry_run:
             pop_vcf_id = vcf_id(self.pop_vcf)
             if bundle_vcf_id != pop_vcf_id:
