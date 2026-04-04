@@ -50,11 +50,13 @@ def main():
     pipeline.add_arguments(dnascope_hybrid_subparser)
     dnascope_hybrid_subparser.set_defaults(pipeline=pipeline.main)
 
-    # Sentieon pangenome
+    # DNAscope pangenome
     pipeline = SentieonPangenome()
-    sentieon_pangenome_subparser = subparsers.add_parser("sentieon-pangenome")
-    pipeline.add_arguments(sentieon_pangenome_subparser)
-    sentieon_pangenome_subparser.set_defaults(pipeline=pipeline.main)
+    dnascope_pangenome_subparser = subparsers.add_parser(
+        "dnascope-pangenome", aliases=["sentieon-pangenome"]
+    )
+    pipeline.add_arguments(dnascope_pangenome_subparser)
+    dnascope_pangenome_subparser.set_defaults(pipeline=pipeline.main)
 
     args = parser.parse_args()
     args.pipeline(args)
