@@ -238,6 +238,14 @@ def vcf_id(in_vcf: pathlib.Path) -> Optional[str]:
     """Collect the SentieonVcfID header"""
     cmd = ["bcftools", "view", "-h", str(in_vcf)]
     p = sp.run(cmd, capture_output=True, text=True)
+    if p.returncode != 0:
+        logger.error(
+            "`%s` failed with return code %d: %s",
+            " ".join(cmd),
+            p.returncode,
+            p.stderr.strip(),
+        )
+        return None
     for line in p.stdout.split("\n"):
         if line.startswith("##SentieonVcfID="):
             i = line.index("=")
