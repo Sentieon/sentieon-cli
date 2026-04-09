@@ -784,8 +784,7 @@ class DNAscopePipeline(BasePipeline):
             rehead_job = Job(
                 Pipeline(
                     Command(
-                        "sentieon",
-                        "pyexec",
+                        sys.executable,
                         str(rehead_script),
                         "--metrics_file",
                         str(wgs_metrics),

@@ -8,6 +8,7 @@ import os
 import pathlib
 import shlex
 import subprocess as sp
+import sys
 import typing
 from typing import Any, Dict, List, Optional, Union
 
@@ -115,7 +116,7 @@ def cmd_pyexec_vcf_mod_haploid_patch(
     if tech.upper() not in ("HIFI", "ONT"):
         raise ValueError(f"Unsupported tech '{tech}', must be 'HIFI' or 'ONT'")
 
-    cmd = f"sentieon pyexec {kwargs['vcf_mod_py']} -t {cores} "
+    cmd = f"{sys.executable} {kwargs['vcf_mod_py']} -t {cores} "
     cmd += "haploid_patch "
     cmd += f"--patch1 {hap1_patch} --patch2 {hap2_patch}"
     if tech.upper() == "HIFI":
@@ -138,8 +139,7 @@ def cmd_pyexec_vcf_mod_patch(
     """Patch DNAscope and DNAscopeHP VCF files"""
 
     cmd = [
-        "sentieon",
-        "pyexec",
+        sys.executable,
         str(kwargs["vcf_mod_py"]),
         "-t",
         str(cores),
@@ -163,8 +163,7 @@ def cmd_pyexec_gvcf_combine(
     """Combine gVCF files"""
 
     cmd1 = Command(
-        "sentieon",
-        "pyexec",
+        sys.executable,
         str(kwargs["gvcf_combine_py"]),
         "-t",
         str(cores),
@@ -196,8 +195,7 @@ def cmd_pyexec_vcf_mod_merge(
     """Merge haploid VCF files"""
 
     cmd = [
-        "sentieon",
-        "pyexec",
+        sys.executable,
         kwargs["vcf_mod_py"],
         "-t",
         str(cores),
@@ -227,8 +225,7 @@ def cmd_pyexec_vcf_mod_haploid_patch2(
     """Patch a single pair of haploid DNAscope and DNAscopeHP VCFs"""
 
     cmd = [
-        "sentieon",
-        "pyexec",
+        sys.executable,
         str(kwargs["vcf_mod_py"]),
         "-t",
         str(cores),
@@ -252,8 +249,7 @@ def cmd_pyexec_hybrid_select(
     slop_size: int = 1000,
 ) -> Pipeline:
     select_cmd = Command(
-        "sentieon",
-        "pyexec",
+        sys.executable,
         str(hybrid_select),
         "-v",
         str(vcf),
@@ -302,8 +298,7 @@ def cmd_pyexec_hybrid_anno(
     threads: int,
 ) -> Pipeline:
     cmd = [
-        "sentieon",
-        "pyexec",
+        sys.executable,
         str(hybrid_anno),
         "-v",
         str(vcf),

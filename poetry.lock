@@ -2654,6 +2654,18 @@ enabler = ["pytest-enabler (>=2.2)"]
 test = ["big-O", "jaraco.functools", "jaraco.itertools", "jaraco.test", "more_itertools", "pytest (>=6,!=8.1.*)", "pytest-ignore-flaky"]
 type = ["pytest-mypy"]
 
+[[package]]
+name = "vcflib"
+version = "1.0.1"
+description = "An open-source Python library for VCF parsing and manipulation"
+optional = false
+python-versions = "!=3.0.*,!=3.1.*,!=3.2.*,!=3.3.*,!=3.4.*,!=3.5.*,>=2.7,>=3.6"
+groups = ["main"]
+files = [
+    {file = "vcflib-1.0.1-py3-none-any.whl", hash = "sha256:26437875d441926b9fc6de2ce455c3516e6d6a4cce2e5ce638a94b05c803e705"},
+    {file = "vcflib-1.0.1.tar.gz", hash = "sha256:0b814ea000c54c9885d63713c2a631a82f4bac9fba0f42a2c9c57fa8bed04759"},
+]
+
 [metadata]
 lock-version = "2.1"
 python-versions = ">= 3.11"
