@@ -869,8 +869,7 @@ class SentieonPangenome(BasePangenome):
         rehead_job = Job(
             Pipeline(
                 Command(
-                    "sentieon",
-                    "pyexec",
+                    sys.executable,
                     str(rehead_script),
                     "--metrics_file",
                     str(wgs_metrics),
@@ -1060,8 +1059,7 @@ class SentieonPangenome(BasePangenome):
         return Job(
             Pipeline(
                 Command(
-                    "sentieon",
-                    "pyexec",
+                    sys.executable,
                     str(indel2cnv_script),
                     str(self.reference),
                     str(input_vcf),
@@ -1087,8 +1085,7 @@ class SentieonPangenome(BasePangenome):
         return Job(
             Pipeline(
                 Command(
-                    "sentieon",
-                    "pyexec",
+                    sys.executable,
                     str(combine_script),
                     "--cnv",
                     str(cnv_vcf),
