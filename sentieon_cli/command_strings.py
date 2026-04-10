@@ -1368,6 +1368,7 @@ def cmd_minimap2_lift(
     minimap2_i: str = "16G",
     threads=1,
     mm2_xargs: List[str] = [],
+    lift_prefix: str = "GRCh38#0#",
 ) -> Pipeline:
     """Minimap2 alignment with pgutil lift"""
     mm2_cmd = Command(
@@ -1398,6 +1399,8 @@ def cmd_minimap2_lift(
         str(reference_fasta) + ".fai",
         "-g",
         str(gfa_file),
+        "--prefix",
+        lift_prefix,
     )
 
     sort_cmd = Command(
