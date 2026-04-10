@@ -110,6 +110,16 @@ class SentieonPangenome(BasePangenome):
                 "help": "Generate a gVCF output file.",
                 "action": "store_true",
             },
+            "pangenome_ref_name": {
+                "default": "GRCh38",
+                "help": "Reference name in the pangenome (GRCh38)",
+            },
+            "pangenome_contig_prefix": {
+                "default": "GRCh38#0#",
+                "help": (
+                    "Prefix to strip from pangenome contig names (GRCh38#0#)"
+                ),
+            },
             "skip_metrics": {
                 "help": "Skip metrics collection and multiQC",
                 "action": "store_true",
@@ -152,6 +162,8 @@ class SentieonPangenome(BasePangenome):
         self.bed: Optional[pathlib.Path] = None
         self.call_svs = False
         self.gvcf = False
+        self.pangenome_ref_name = "GRCh38"
+        self.pangenome_contig_prefix = "GRCh38#0#"
         self.skip_metrics = False
         self.skip_multiqc = False
         self.skip_contig_checks: bool = False
@@ -680,7 +692,7 @@ class SentieonPangenome(BasePangenome):
                     "--include-reference",
                     "--diploid-sampling",
                     "--set-reference",
-                    "GRCh38",
+                    self.pangenome_ref_name,
                 ],
             ),
             "vg-haplotypes",
@@ -697,6 +709,7 @@ class SentieonPangenome(BasePangenome):
                 output_gfa,
                 input_gbz,
                 threads=self.cores,
+                reference_name=self.pangenome_ref_name,
             ),
             "vg-convert-gfa",
             0,
@@ -754,6 +767,7 @@ class SentieonPangenome(BasePangenome):
                 "@RG\\t" + "\\t".join([f"{x[0]}:{x[1]}" for x in rg2.items()]),
                 mm2_model,
                 threads=self.cores,
+                lift_prefix=self.pangenome_contig_prefix,
             ),
             "mm2-lift",
             self.cores,
