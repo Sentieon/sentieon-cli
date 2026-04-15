@@ -4,12 +4,11 @@
 
 A command-line interface for the Sentieon software
 
-## Installation from sdist (recommended)
+## Install using pip (recommended)
 
-Download the latest tar.gz file from the GitHub release page, https://github.com/sentieon/sentieon-cli/releases/ and install the package with pip:
+Install the sentieon-cli into your python environment with `pip`:
 ```sh
-curl -LO https://github.com/Sentieon/sentieon-cli/releases/download/v1.6.0/sentieon_cli-1.6.0.tar.gz
-pip install sentieon_cli-1.6.0.tar.gz
+pip install sentieon_cli
 ```
 
 ## Installation with Poetry
