@@ -160,6 +160,14 @@ class BasePipeline(ABC):
         if not str(self.output_vcf).endswith(".vcf.gz"):
             self.logger.error("The output file should end with '.vcf.gz'")
             sys.exit(2)
+        assert self.output_vcf is not None
+        parent = self.output_vcf.resolve().parent
+        if not parent.is_dir():
+            self.logger.error(
+                "The parent directory of the output VCF does not exist: %s",
+                parent,
+            )
+            sys.exit(2)
 
     def validate_ref(self) -> None:
         # Confirm the presence of the reference index file

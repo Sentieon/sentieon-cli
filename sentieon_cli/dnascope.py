@@ -278,9 +278,7 @@ class DNAscopePipeline(BasePipeline):
                 "and `--readgroups` arguments"
             )
             sys.exit(2)
-        if not str(self.output_vcf).endswith(".vcf.gz"):
-            self.logger.error("The output file should end with '.vcf.gz'")
-            sys.exit(2)
+        self.validate_output_vcf()
         self.skip_multiqc = True if self.skip_metrics else self.skip_multiqc
 
         if not library_preloaded("libjemalloc.so"):

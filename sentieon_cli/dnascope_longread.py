@@ -307,9 +307,7 @@ class DNAscopeLRPipeline(BasePipeline):
                 "files"
             )
             sys.exit(2)
-        if not str(self.output_vcf).endswith(".vcf.gz"):
-            self.logger.error("The output file should end with '.vcf.gz'")
-            sys.exit(2)
+        self.validate_output_vcf()
         if self.tech.upper() == "ONT":
             self.logger.info("Skipping CNV calling with ONT data")
             self.skip_cnv = True

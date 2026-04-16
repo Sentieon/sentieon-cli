@@ -325,9 +325,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         self.collect_readgroups()
         self.validate_readgroups()
 
-        if not str(self.output_vcf).endswith(".vcf.gz"):
-            self.logger.error("The output file should end with '.vcf.gz'")
-            sys.exit(2)
+        self.validate_output_vcf()
         if not self.sr_aln and not self.sr_r1_fastq:
             self.logger.error("Please supply a short-read input file")
             sys.exit(2)
