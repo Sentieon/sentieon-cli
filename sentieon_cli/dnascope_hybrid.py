@@ -352,6 +352,9 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             )
             sys.exit(2)
 
+        if self.sr_r1_fastq:
+            self.validate_bwa_index()
+
     def validate_bundle(self) -> None:
         bundle_info_bytes = ar_load(
             str(self.model_bundle) + "/bundle_info.json"

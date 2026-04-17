@@ -25,6 +25,8 @@ MULTIQC_MIN_VERSION = {
     "multiqc": packaging.version.Version("1.18"),
 }
 
+BWA_INDEX_SUFFIXES = (".amb", ".ann", ".bwt", ".pac", ".sa")
+
 
 class BasePipeline(ABC):
     """A pipeline base class"""
@@ -177,6 +179,23 @@ class BasePipeline(ABC):
                 "Fasta index file %s does not exist. Please index the "
                 "reference genome with 'samtools faidx'",
                 fai_file,
+            )
+            sys.exit(2)
+
+    def validate_bwa_index(self) -> None:
+        """Confirm the presence of BWA index files next to the reference."""
+        missing = [
+            str(self.reference) + suf
+            for suf in BWA_INDEX_SUFFIXES
+            if not os.path.isfile(str(self.reference) + suf)
+        ]
+        if missing:
+            self.logger.error(
+                "BWA index files are missing for reference %s: %s. Please "
+                "index the reference with 'sentieon bwa index %s'.",
+                self.reference,
+                ", ".join(missing),
+                self.reference,
             )
             sys.exit(2)
 

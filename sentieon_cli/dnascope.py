@@ -306,6 +306,9 @@ class DNAscopePipeline(BasePipeline):
             )
             sys.exit(2)
 
+        if self.sr_r1_fastq or self.align or self.collate_align:
+            self.validate_bwa_index()
+
     def configure(self) -> None:
         self.configure_alignment()
 

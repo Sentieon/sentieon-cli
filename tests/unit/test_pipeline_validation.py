@@ -43,6 +43,10 @@ class TestDNAscopePipelineValidation:
         for file_path in [self.mock_ref, self.mock_bam, self.mock_fastq, self.mock_bundle]:
             file_path.touch()
 
+        # Create BWA index files next to the reference
+        for suf in (".amb", ".ann", ".bwt", ".pac", ".sa"):
+            pathlib.Path(str(self.mock_ref) + suf).touch()
+
     def test_valid_configuration_with_bam_input(self):
         """Test valid configuration with BAM input"""
         self.pipeline.output_vcf = self.mock_vcf
@@ -441,6 +445,43 @@ class TestPipelineConfigurationHelpers:
 
         import os
         assert os.environ.get("bwt_max_mem") == "10G"
+
+
+class TestValidateBwaIndex:
+    """Test BasePipeline.validate_bwa_index()"""
+
+    BWA_SUFFIXES = (".amb", ".ann", ".bwt", ".pac", ".sa")
+
+    def setup_method(self):
+        self.pipeline = DNAscopePipeline()
+        args = create_mock_args()
+        self.pipeline.setup_logging(args)
+
+        self.temp_dir = tempfile.mkdtemp()
+        self.mock_ref = pathlib.Path(self.temp_dir) / "reference.fa"
+        self.mock_ref.touch()
+        self.pipeline.reference = self.mock_ref
+
+    def _create_indexes(self, suffixes):
+        for suf in suffixes:
+            pathlib.Path(str(self.mock_ref) + suf).touch()
+
+    def test_all_index_files_present(self):
+        self._create_indexes(self.BWA_SUFFIXES)
+        # Should not raise
+        self.pipeline.validate_bwa_index()
+
+    def test_all_index_files_missing_raises(self):
+        with pytest.raises(SystemExit) as excinfo:
+            self.pipeline.validate_bwa_index()
+        assert excinfo.value.code == 2
+
+    def test_partial_index_files_missing_raises(self):
+        # All but .sa present
+        self._create_indexes(self.BWA_SUFFIXES[:-1])
+        with pytest.raises(SystemExit) as excinfo:
+            self.pipeline.validate_bwa_index()
+        assert excinfo.value.code == 2
 
 
 if __name__ == "__main__":

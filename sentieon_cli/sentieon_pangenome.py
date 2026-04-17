@@ -221,6 +221,9 @@ class SentieonPangenome(BasePangenome):
             )
             sys.exit(2)
 
+        if self.r1_fastq:
+            self.validate_bwa_index()
+
         if not self.skip_version_check:
             for cmd, min_version in SENT_PANGENOME_MIN_VERSIONS.items():
                 if not check_version(cmd, min_version):
