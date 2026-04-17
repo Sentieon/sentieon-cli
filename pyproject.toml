@@ -64,6 +64,15 @@ pytest-asyncio = ">=0.21.0"
 black = "*"
 mypy = "*"
 
+# Dependencies that ship only in the container image (see Dockerfile).
+# Not installed by `pip install sentieon-cli` from PyPI.
+[tool.poetry.group.container]
+optional = true
+
+[tool.poetry.group.container.dependencies]
+# multiqc 1.33 explicitly excludes cp3.14.1; marker keeps resolver happy.
+multiqc = { version = "1.33", python = "!=3.14.1" }
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "strict"
