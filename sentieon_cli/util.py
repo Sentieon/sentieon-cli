@@ -187,9 +187,24 @@ def split_alignment(cores: int) -> List[str]:
 
 
 def parse_rg_line(rg_line: str) -> Dict[str, str]:
-    """Parse an @RG line"""
+    """Parse an @RG line.
+
+    Each tab-separated field after ``@RG`` must be of the form
+    ``KEY:VALUE``. Raises ``ValueError`` with the offending token if a
+    field lacks the ``KEY:`` prefix (e.g. a bare ``HG002`` instead of
+    ``SM:HG002``).
+    """
     tags = rg_line.split("\t")[1:]
-    return {tag.split(":", 1)[0]: tag.split(":", 1)[1] for tag in tags}
+    parsed: Dict[str, str] = {}
+    for tag in tags:
+        key, sep, value = tag.partition(":")
+        if not sep or not key:
+            raise ValueError(
+                f"malformed @RG field '{tag}' — expected 'KEY:VALUE' "
+                f"(e.g. 'SM:sample')"
+            )
+        parsed[key] = value
+    return parsed
 
 
 def get_read_length_aln(

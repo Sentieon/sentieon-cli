@@ -40,6 +40,7 @@ from .transfer import build_transfer_jobs
 from .util import (
     __version__,
     check_version,
+    parse_rg_line,
     path_arg,
     library_preloaded,
     vcf_id,
@@ -307,6 +308,12 @@ class DNAscopeLRPipeline(BasePipeline):
                 "files"
             )
             sys.exit(2)
+        for rg in self.readgroups:
+            try:
+                parse_rg_line(rg.replace(r"\t", "\t"))
+            except ValueError as e:
+                self.logger.error("Invalid --readgroups value '%s': %s", rg, e)
+                sys.exit(2)
         self.validate_output_vcf()
         if self.tech.upper() == "ONT":
             self.logger.info("Skipping CNV calling with ONT data")

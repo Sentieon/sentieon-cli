@@ -44,6 +44,7 @@ from .shell_pipeline import Command, Pipeline
 from .util import (
     check_version,
     library_preloaded,
+    parse_rg_line,
     path_arg,
     split_alignment,
     total_memory,
@@ -305,6 +306,13 @@ class DNAscopePipeline(BasePipeline):
                 "files"
             )
             sys.exit(2)
+
+        for rg in self.sr_readgroups:
+            try:
+                parse_rg_line(rg.replace(r"\t", "\t"))
+            except ValueError as e:
+                self.logger.error("Invalid --readgroups value '%s': %s", rg, e)
+                sys.exit(2)
 
         if self.sr_r1_fastq or self.align or self.collate_align:
             self.validate_bwa_index()

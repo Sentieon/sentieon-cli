@@ -395,7 +395,13 @@ class SentieonPangenome(BasePangenome):
         if not self.readgroup:
             return
 
-        parsed_rg = parse_rg_line(self.readgroup.replace(r"\t", "\t"))
+        try:
+            parsed_rg = parse_rg_line(self.readgroup.replace(r"\t", "\t"))
+        except ValueError as e:
+            self.logger.error(
+                "Invalid --readgroup value '%s': %s", self.readgroup, e
+            )
+            sys.exit(2)
         if not parsed_rg.get("ID"):
             self.logger.error(
                 "Readgroup '%s' does not have a RGID tag",

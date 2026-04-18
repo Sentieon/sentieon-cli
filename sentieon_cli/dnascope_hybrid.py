@@ -443,9 +443,14 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
                     self.all_readgroups[i][-1].append(parse_rg_line(rg_line))
         for rg in self.sr_readgroups:
             self.all_readgroups[2].append([])
-            self.all_readgroups[2][-1].append(
-                parse_rg_line(rg.replace(r"\t", "\t"))
-            )
+            try:
+                parsed = parse_rg_line(rg.replace(r"\t", "\t"))
+            except ValueError as e:
+                self.logger.error(
+                    "Invalid --sr_readgroups value '%s': %s", rg, e
+                )
+                sys.exit(2)
+            self.all_readgroups[2][-1].append(parsed)
 
     def validate_readgroups(self) -> None:
         # Confirm that all readgroups have the same RGSM
