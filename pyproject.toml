@@ -20,8 +20,6 @@ include = ["LICENSE"]
 dependencies = [
     "packaging (>=23.2)",
     "mappy (>=2.30,<3.0)",
-    "scipy (>=1.17.1,<2.0.0)",
-    "levenshtein (>=0.27.3,<0.28.0)",
     "vcflib (>=1.0.1,<2.0.0)",
 ]
 
