@@ -11,6 +11,16 @@ Install the sentieon-cli into your python environment with `pip`:
 pip install sentieon_cli
 ```
 
+## Install with docker/podman
+
+Install the sentieon-cli through a container image:
+```sh
+docker pull sentieon/sentieon_cli:latest
+docker run --rm -v "$PWD:/data" -w /data \
+    sentieon/sentieon_cli:latest \
+    sentieon-cli dnascope-pangenome --help
+```
+
 ## Installation with Poetry
 
 Create a new python virtual environment for the project, if needed:
