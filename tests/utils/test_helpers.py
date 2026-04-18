@@ -120,6 +120,10 @@ class PipelineTestHelper:
         # Create reference index
         self.fs.create_file("reference.fa.fai")
 
+        # Create BWA index files (required when aligning fastq or re-aligning)
+        for suf in (".amb", ".ann", ".bwt", ".pac", ".sa"):
+            self.fs.create_file("reference.fa" + suf)
+
         # Default configuration
         pipeline.cores = 2
         pipeline.dry_run = True
@@ -197,6 +201,10 @@ class PipelineTestHelper:
         pipeline.reference = self.fs.create_file("reference.fa")
         _fai = self.fs.create_file("reference.fa.fai")
         pipeline.model_bundle = self.fs.create_model_bundle("model.bundle", "DNAscope Hybrid")
+
+        # Create BWA index files (required when short-read fastq is supplied)
+        for suf in (".amb", ".ann", ".bwt", ".pac", ".sa"):
+            self.fs.create_file("reference.fa" + suf)
 
         # Default configuration
         pipeline.cores = 2
