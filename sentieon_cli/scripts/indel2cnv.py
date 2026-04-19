@@ -1,4 +1,5 @@
 import collections
+import Levenshtein
 import math
 import io
 import vcflib
@@ -17,7 +18,7 @@ import re
 # When launched as `python indel2cnv.py ...` from an arbitrary CWD,
 # `sentieon_cli` is only importable if the package root is on sys.path.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
-from sentieon_cli._indel2cnv_utils import find_peaks, ratio  # noqa: E402
+from sentieon_cli._indel2cnv_utils import find_peaks  # noqa: E402
 
 # Convert long INDELs (from assembly-based SV calls) into tandem CNV truth events.
 # Pipeline: find_repeats (detect period) -> match_ref (locate repeat on reference)
@@ -100,13 +101,13 @@ def find_repeats(var_seq, thresh):
     step = 200 if length > 2000 else 100
     start = step * 2
     scan_limit = min(length//2+step*5, length-step*1)
-    dist = [ratio(var_seq[:n], var_seq[n:n*2], threshold=thresh) for n in range(start, scan_limit, step)]
+    dist = [Levenshtein.ratio(var_seq[:n], var_seq[n:n*2]) for n in range(start, scan_limit, step)]
     if not dist or max(dist) < thresh:
         return [len(var_seq)]
     peaks = find_peaks(dist, distance=start//step, height=0.95)
     if len(peaks) == 0:
         mid = length//2
-        if ratio(var_seq[:mid], var_seq[mid:mid*2], threshold=thresh) > thresh:
+        if Levenshtein.ratio(var_seq[:mid], var_seq[mid:mid*2]) > thresh:
             peaks = [mid/step]
     else:
         peaks = [p+start//step for p in peaks]
@@ -120,14 +121,14 @@ def find_repeats(var_seq, thresh):
         p_min, p_max = int(length/(cnt+0.5)), int(length/(cnt-0.5))
         p_step = max(1, (p_max - p_min)//10)
         while True:
-            ratios = [max([ratio(var_seq[i*p:(i+1)*p], var_seq[(i+1)*p:(i+2)*p], threshold=thresh) for i in range(cnt-1)]) for p in range(p_min, p_max+1, p_step)]
+            ratios = [max([Levenshtein.ratio(var_seq[i*p:(i+1)*p], var_seq[(i+1)*p:(i+2)*p]) for i in range(cnt-1)]) for p in range(p_min, p_max+1, p_step)]
             best_ratio = max(ratios)
             best_period = p_min + (ratios.index(best_ratio))*p_step
             if p_step == 1:
                 break
             p_min, p_max = best_period - 2 * p_step, best_period + 2 * p_step
             p_step = max(1, (p_max - p_min)//10)
-        ratio_orig = max([ratio(var_seq[i*period:(i+1)*period], var_seq[(i+1)*period:(i+2)*period], threshold=thresh) for i in range(cnt-1)])
+        ratio_orig = max([Levenshtein.ratio(var_seq[i*period:(i+1)*period], var_seq[(i+1)*period:(i+2)*period]) for i in range(cnt-1)])
         if best_ratio > ratio_orig:
             period = best_period
         periods = {period: max(best_ratio, ratio_orig)}
@@ -138,7 +139,7 @@ def find_repeats(var_seq, thresh):
                 break
             cur_cnt = int(round(length/cur_period))
             if cur_cnt >= 2:
-                periods[cur_period] = max([ratio(var_seq[j*cur_period:(j+1)*cur_period], var_seq[(j+1)*cur_period:(j+2)*cur_period], threshold=thresh) for j in range(cur_cnt-1)])
+                periods[cur_period] = max([Levenshtein.ratio(var_seq[j*cur_period:(j+1)*cur_period], var_seq[(j+1)*cur_period:(j+2)*cur_period]) for j in range(cur_cnt-1)])
             i += 1
         periods = {k: v for k, v in periods.items() if k >= MIN_SEQ_LEN}
         if len(periods) > 1:
@@ -186,7 +187,7 @@ def mm2_match(seq, ref, chrom, pos, half_win, thresh):
     matched_ref_length = ref_stop - ref_start
     best_matched_ref = ref.get(chrom, ref_start, ref_stop)
     matched_seq = seq[seq_start:seq_stop]
-    best_ratio = ratio(best_matched_ref, matched_seq, threshold=thresh)
+    best_ratio = Levenshtein.ratio(best_matched_ref, matched_seq)
     if best_ratio < thresh:
         return None
     # Partial match extension: when mappy aligned only part of seq, the period boundary
@@ -206,10 +207,10 @@ def mm2_match(seq, ref, chrom, pos, half_win, thresh):
             best_ext = 0
             while True:
                 for l in range(start_i, end_i, step):
-                    r = ratio(best_matched_ref + ref_after[:l], seq[seq_start:]+seq[:l-seq_len_diff], threshold=thresh)
-                    if r > thresh:
+                    ratio = Levenshtein.ratio(best_matched_ref + ref_after[:l], seq[seq_start:]+seq[:l-seq_len_diff])
+                    if ratio > thresh:
                         last_valid = l
-                        last_valid_ratio = r
+                        last_valid_ratio = ratio
                     else:
                         last_invalid = l
                         break
@@ -239,10 +240,10 @@ def mm2_match(seq, ref, chrom, pos, half_win, thresh):
             best_ext = 0
             while True:
                 for l in range(start_i, end_i, step):
-                    r = ratio(ref_before[-l:] + best_matched_ref, seq[-l+seq_start:] + seq[:seq_stop], threshold=thresh)
-                    if r > thresh:
+                    ratio = Levenshtein.ratio(ref_before[-l:] + best_matched_ref, seq[-l+seq_start:] + seq[:seq_stop])
+                    if ratio > thresh:
                         last_valid = l
-                        last_valid_ratio = r
+                        last_valid_ratio = ratio
                     else:
                         last_invalid = l
                         break
@@ -266,11 +267,11 @@ def mm2_match(seq, ref, chrom, pos, half_win, thresh):
     ref_stop_ext = ref_stop
     for _ in range(MAX_EXTEND_ITERS):
         ref_start_ext -= matched_ref_length
-        if ref_start_ext < 0 or ratio(ref.get(chrom, ref_start_ext, ref_start_ext+matched_ref_length), best_matched_ref, threshold=thresh) < thresh:
+        if ref_start_ext < 0 or Levenshtein.ratio(ref.get(chrom, ref_start_ext, ref_start_ext+matched_ref_length), best_matched_ref) < thresh:
             break
     for _ in range(MAX_EXTEND_ITERS):
         ref_stop_ext += matched_ref_length
-        if ratio(ref.get(chrom, ref_stop_ext-matched_ref_length, ref_stop_ext), best_matched_ref, threshold=thresh) < thresh:
+        if Levenshtein.ratio(ref.get(chrom, ref_stop_ext-matched_ref_length, ref_stop_ext), best_matched_ref) < thresh:
             break
     return (ref_start, ref_stop), (ref_start_ext, ref_stop_ext), (seq_start, seq_stop), best_ratio
 
@@ -291,8 +292,8 @@ def local_match(v, ref, period, thresh):
         elif offset < 0:
             ref_after = ref_after[-offset:]
         alt_period_seq = alt_seq[:period]
-        ratios = {p: ratio(ref_after[:p] + ref_before[-(period-p):], alt_period_seq, threshold=0.8) for p in range(0, period, step)}
-        ratios[period] = ratio(ref_after, alt_period_seq, threshold=0.8)
+        ratios = {p: Levenshtein.ratio(ref_after[:p] + ref_before[-(period-p):], alt_period_seq) for p in range(0, period, step)}
+        ratios[period] = Levenshtein.ratio(ref_after, alt_period_seq)
         while True:
             best_pos = max(ratios, key=ratios.get)
             max_ratio = ratios[best_pos]
@@ -305,7 +306,7 @@ def local_match(v, ref, period, thresh):
             p_hi = min(best_pos + step, period)
             for p in (p_lo, p_hi):
                 if p not in ratios:
-                    ratios[p] = ratio(ref_after[:p] + ref_before[-(period-p):], alt_period_seq, threshold=0.8)
+                    ratios[p] = Levenshtein.ratio(ref_after[:p] + ref_before[-(period-p):], alt_period_seq)
         if max_ratio < thresh:
             return None
         ref_start = v.pos - (period - best_pos)
@@ -320,11 +321,11 @@ def local_match(v, ref, period, thresh):
     ref_end_ext = ref_end
     for _ in range(MAX_EXTEND_ITERS):
         ref_start_ext -= period
-        if ref_start_ext < 0 or ratio(ref.get(v.chrom, ref_start_ext, ref_start_ext+period), ref_seq, threshold=thresh) < thresh:
+        if ref_start_ext < 0 or Levenshtein.ratio(ref.get(v.chrom, ref_start_ext, ref_start_ext+period), ref_seq) < thresh:
             break
     for _ in range(MAX_EXTEND_ITERS):
         ref_end_ext += period
-        if ratio(ref.get(v.chrom, ref_end_ext-period, ref_end_ext), ref_seq, threshold=thresh) < thresh:
+        if Levenshtein.ratio(ref.get(v.chrom, ref_end_ext-period, ref_end_ext), ref_seq) < thresh:
             break
     return (ref_start, ref_end), (ref_start_ext, ref_end_ext), (0, period), max_ratio
 
@@ -354,11 +355,11 @@ def proc_variant(v, ref, thresh):
                 if len(v.ref) > MIN_SEQ_LEN and len(v.ref) - len(a) > MIN_SEQ_LEN:
                     v1 = copy_variant(v, alt=[a])
                     if len(a) > 1:
-                        if a == v1.ref[:len(a)] or len(a) < 10 or ratio(a, v1.ref[:len(a)], threshold=thresh) > thresh:
+                        if a == v1.ref[:len(a)] or len(a) < 10 or Levenshtein.ratio(a, v1.ref[:len(a)]) > thresh:
                             v1.pos += len(a) - 1
                             v1.ref = v.ref[len(a):]
                             v1.alt = [a[-1]]
-                        elif ratio(a, v.ref[-len(a):], threshold=thresh) > thresh:
+                        elif Levenshtein.ratio(a, v.ref[-len(a):]) > thresh:
                             v1.ref = v.ref[:-len(a)]
                             v1.alt = [v.ref[0]]
                     v1.samples[0]['GT'] = '0/1'
@@ -367,11 +368,11 @@ def proc_variant(v, ref, thresh):
             elif len(a) - len(v.ref) > MIN_SEQ_LEN:
                 v1 = copy_variant(v)
                 v1.samples[0]['GT'] = '0/1'
-                if len(v.ref) < 6 or ratio(v.alt[i][:len(v.ref)], v.ref, threshold=min(thresh, 1-5/len(v.ref))) > min(thresh, 1-5/len(v.ref)):
+                if len(v.ref) < 6 or Levenshtein.ratio(v.alt[i][:len(v.ref)], v.ref) > min(thresh, 1-5/len(v.ref)):
                     v1.alt = [v1.alt[i][len(v.ref)-1:]]
                     v1.pos += len(v.ref) - 1
                     v1.ref = v.ref[-1]
-                elif len(v.ref) < 6 or ratio(v.alt[i][-len(v.ref):], v.ref, threshold=min(thresh, 1-5/len(v.ref))) > min(thresh, 1-5/len(v.ref)):
+                elif len(v.ref) < 6 or Levenshtein.ratio(v.alt[i][-len(v.ref):], v.ref) > min(thresh, 1-5/len(v.ref)):
                     v1.alt = [v1.alt[i][:-len(v.ref)]]
                     v1.ref = v.ref[0]
                 else:
@@ -416,7 +417,7 @@ def proc_variant(v, ref, thresh):
         updated_periods = []
         for p0 in periods[0]:
             p1s = [p1 for p1 in periods[1] if abs(p0/p1-1) <= 0.05]
-            if p1s and ratio(*(a[:min(p0, p1s[0])] for a in v.alt), threshold=1 - (1-thresh)/2) > 1 - (1-thresh)/2:
+            if p1s and Levenshtein.ratio(*(a[:min(p0, p1s[0])] for a in v.alt)) > 1 - (1-thresh)/2:
                 updated_periods.append(min(p0, p1s[0]))
         if updated_periods:
             periods = [updated_periods]
