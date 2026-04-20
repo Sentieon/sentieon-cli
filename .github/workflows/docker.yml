@@ -1,0 +1,56 @@
+name: Docker
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      build_tag:
+        description: "Build tag suffix (appended after the cli version)"
+        default: "0"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-push:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Verify SENTIEON_VERSION repo variable
+        env:
+          SENTIEON_VERSION: ${{ vars.SENTIEON_VERSION }}
+        run: |
+          if [ -z "$SENTIEON_VERSION" ]; then
+            echo "::error::Repository variable SENTIEON_VERSION is not set." >&2
+            exit 1
+          fi
+          echo "Building against Sentieon $SENTIEON_VERSION"
+      - name: Resolve build metadata
+        id: meta
+        run: |
+          version=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: |
+            sentieon/sentieon-cli:${{ steps.meta.outputs.version }}-${{ inputs.build_tag || '0' }}
+            sentieon/sentieon-cli:latest
+          build-args: |
+            SENTIEON_VERSION=${{ vars.SENTIEON_VERSION }}
+            VCS_REF=${{ github.sha }}
+            BUILD_DATE=${{ steps.meta.outputs.build_date }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
