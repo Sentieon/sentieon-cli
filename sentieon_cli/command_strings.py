@@ -1236,7 +1236,7 @@ def cmd_segdup_caller(
     sr_alignments: pathlib.Path,
     reference: pathlib.Path,
     sr_bundle: pathlib.Path,
-    genes="CFH,CFHR3,CYP11B1,CYP2D6,GBA,NCF1,PMS2,SMN1,STRC",
+    genes: Optional[str] = None,
 ) -> Pipeline:
     cmd = [
         "segdup-caller",
@@ -1246,11 +1246,10 @@ def cmd_segdup_caller(
         str(reference),
         "--sr_model",
         str(sr_bundle),
-        "--genes",
-        genes,
-        "--outdir",
-        str(out_segdup),
     ]
+    if genes:
+        cmd.extend(["--genes", genes])
+    cmd.extend(["--outdir", str(out_segdup)])
     return Pipeline(Command(*cmd))
 
 

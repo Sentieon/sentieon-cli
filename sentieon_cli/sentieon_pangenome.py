@@ -65,6 +65,10 @@ SENT_PANGENOME_MIN_VERSIONS = {
     "samtools": packaging.version.Version("1.16"),
 }
 
+SEGDUP_MIN_VERSION = {
+    "segdup-caller": None,
+}
+
 logger = get_logger(__name__)
 
 
@@ -128,6 +132,16 @@ class SentieonPangenome(BasePangenome):
                 "help": "Skip multiQC report generation",
                 "action": "store_true",
             },
+            "segdup_caller": {
+                "nargs": "*",
+                "help": (
+                    "Call variants in difficult segmental duplications with "
+                    "segdup-caller. Supply the flag with no arguments to run "
+                    "the caller's default gene set. Supply a comma-separated "
+                    "list of gene names (e.g. 'CFH,CYP2D6,SMN1') to restrict "
+                    "calling to those genes."
+                ),
+            },
             # Hidden arguments
             "skip_contig_checks": {
                 "help": argparse.SUPPRESS,
@@ -166,6 +180,7 @@ class SentieonPangenome(BasePangenome):
         self.pangenome_contig_prefix = "GRCh38#0#"
         self.skip_metrics = False
         self.skip_multiqc = False
+        self.segdup_caller: Optional[List[str]] = None
         self.skip_contig_checks: bool = False
         self.skip_pangenome_name_checks: bool = False
         self.skip_pop_vcf_id_check: bool = False
@@ -223,6 +238,8 @@ class SentieonPangenome(BasePangenome):
 
         if self.r1_fastq:
             self.validate_bwa_index()
+
+        self.validate_segdup()
 
         if not self.skip_version_check:
             for cmd, min_version in SENT_PANGENOME_MIN_VERSIONS.items():
@@ -289,6 +306,22 @@ class SentieonPangenome(BasePangenome):
                         "Pop VCF contigs with unexpected lengths: %s",
                         mismatch_contigs_s,
                     )
+                    sys.exit(2)
+
+    def validate_segdup(self) -> None:
+        if self.segdup_caller is None:
+            return
+
+        if len(self.sample_input) > 1:
+            self.logger.error(
+                "`--segdup_caller` accepts only a single `--sample_input` "
+                "BAM/CRAM file."
+            )
+            sys.exit(2)
+
+        if not self.skip_version_check:
+            for cmd, min_version in SEGDUP_MIN_VERSION.items():
+                if not check_version(cmd, min_version):
                     sys.exit(2)
 
     def validate_bundle(self) -> None:
@@ -565,6 +598,17 @@ class SentieonPangenome(BasePangenome):
         else:
             dnascope_bams.append(mm2_bam)
             cnv_input_bams = list(self.sample_input)
+
+        # SegDup calling on the short-read alignment
+        if self.segdup_caller is not None:
+            out_segdup = pathlib.Path(
+                str(self.output_vcf).replace(".vcf.gz", "_segdups")
+            )
+            genes = ",".join(self.segdup_caller) or None
+            segdup_job = self.build_segdup_job(
+                out_segdup, cnv_input_bams[0], genes
+            )
+            dag.add_job(segdup_job, cnvscope_deps)
 
         # DNAscope calling with bwa and mm2 input
         sv_vcf = None
@@ -971,6 +1015,32 @@ class SentieonPangenome(BasePangenome):
         return Job(
             Pipeline(Command(*driver.build_cmd())),
             "model-apply",
+            self.cores,
+        )
+
+    def build_segdup_job(
+        self,
+        out_segdup: pathlib.Path,
+        sr_alignment: pathlib.Path,
+        genes: Optional[str],
+    ) -> Job:
+        """Call variants in difficult SegDups"""
+        if not self.reference:
+            self.logger.error("reference is required")
+            sys.exit(2)
+        if not self.model_bundle:
+            self.logger.error("model_bundle is required")
+            sys.exit(2)
+
+        return Job(
+            cmds.cmd_segdup_caller(
+                out_segdup,
+                sr_alignment,
+                reference=self.reference,
+                sr_bundle=self.model_bundle,
+                genes=genes,
+            ),
+            "segdup-caller",
             self.cores,
         )
 
