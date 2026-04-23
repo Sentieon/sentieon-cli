@@ -16,7 +16,7 @@ from importlib.resources import files
 
 from . import command_strings as cmds
 from .archive import ar_load
-from .base_pangenome import BasePangenome
+from .base_pangenome import BasePangenome, SampleSex
 from .dag import DAG
 from .driver import (
     AlignmentStat,
@@ -67,6 +67,10 @@ SENT_PANGENOME_MIN_VERSIONS = {
 
 SEGDUP_MIN_VERSION = {
     "segdup-caller": None,
+}
+
+EXPANSION_MIN_VERSION = {
+    "ExpansionHunter": None,
 }
 
 logger = get_logger(__name__)
@@ -142,6 +146,13 @@ class SentieonPangenome(BasePangenome):
                     "calling to those genes."
                 ),
             },
+            "expansion_catalog": {
+                "help": (
+                    "An ExpansionHunter variant catalog. Required for short "
+                    "tandem repeat expansion calling."
+                ),
+                "type": path_arg(exists=True, is_file=True),
+            },
             # Hidden arguments
             "skip_contig_checks": {
                 "help": argparse.SUPPRESS,
@@ -181,6 +192,7 @@ class SentieonPangenome(BasePangenome):
         self.skip_metrics = False
         self.skip_multiqc = False
         self.segdup_caller: Optional[List[str]] = None
+        self.expansion_catalog: Optional[pathlib.Path] = None
         self.skip_contig_checks: bool = False
         self.skip_pangenome_name_checks: bool = False
         self.skip_pop_vcf_id_check: bool = False
@@ -211,6 +223,12 @@ class SentieonPangenome(BasePangenome):
         executor = self.run(dag)
         self.check_execution(dag, executor)
 
+        if self.expansion_catalog:
+            self.get_sex(self.ploidy_json)
+            dag = self.build_second_dag()
+            executor = self.run(dag)
+            self.check_execution(dag, executor)
+
         if not self.retain_tmpdir:
             shutil.rmtree(tmp_dir_str)
 
@@ -240,6 +258,7 @@ class SentieonPangenome(BasePangenome):
             self.validate_bwa_index()
 
         self.validate_segdup()
+        self.validate_expansion()
 
         if not self.skip_version_check:
             for cmd, min_version in SENT_PANGENOME_MIN_VERSIONS.items():
@@ -321,6 +340,22 @@ class SentieonPangenome(BasePangenome):
 
         if not self.skip_version_check:
             for cmd, min_version in SEGDUP_MIN_VERSION.items():
+                if not check_version(cmd, min_version):
+                    sys.exit(2)
+
+    def validate_expansion(self) -> None:
+        if self.expansion_catalog is None:
+            return
+
+        if len(self.sample_input) > 1:
+            self.logger.error(
+                "`--expansion_catalog` accepts only a single `--sample_input` "
+                "BAM/CRAM file."
+            )
+            sys.exit(2)
+
+        if not self.skip_version_check:
+            for cmd, min_version in EXPANSION_MIN_VERSION.items():
                 if not check_version(cmd, min_version):
                     sys.exit(2)
 
@@ -599,6 +634,9 @@ class SentieonPangenome(BasePangenome):
             dnascope_bams.append(mm2_bam)
             cnv_input_bams = list(self.sample_input)
 
+        # Stash the short-read alignment for the second DAG
+        self.sr_alignment = cnv_input_bams[0]
+
         # SegDup calling on the short-read alignment
         if self.segdup_caller is not None:
             out_segdup = pathlib.Path(
@@ -609,6 +647,13 @@ class SentieonPangenome(BasePangenome):
                 out_segdup, cnv_input_bams[0], genes
             )
             dag.add_job(segdup_job, cnvscope_deps)
+
+        # Estimate ploidy when needed for sex-aware downstream tools
+        if self.expansion_catalog:
+            ploidy_job = self.build_ploidy_job(
+                self.ploidy_json, [cnv_input_bams[0]]
+            )
+            dag.add_job(ploidy_job, cnvscope_deps)
 
         # DNAscope calling with bwa and mm2 input
         sv_vcf = None
@@ -1041,6 +1086,46 @@ class SentieonPangenome(BasePangenome):
                 genes=genes,
             ),
             "segdup-caller",
+            self.cores,
+        )
+
+    def build_second_dag(self) -> DAG:
+        """Build the second DAG for sex-aware downstream tools"""
+        self.logger.info("Building the second pangenome DAG")
+        dag = DAG()
+
+        if self.expansion_catalog and self.sr_alignment:
+            out_expansions = pathlib.Path(
+                str(self.output_vcf).replace(".vcf.gz", "_expansion")
+            )
+            expansion_job = self.build_expansion_job(
+                out_expansions, self.sr_alignment, self.expansion_catalog
+            )
+            dag.add_job(expansion_job)
+
+        return dag
+
+    def build_expansion_job(
+        self,
+        out_expansions: pathlib.Path,
+        sr_alignment: pathlib.Path,
+        expansion_catalog: pathlib.Path,
+    ) -> Job:
+        """Identify repeat expansions"""
+        if not self.reference:
+            self.logger.error("reference is required")
+            sys.exit(2)
+
+        return Job(
+            cmds.cmd_expansion_hunter(
+                out_expansions,
+                sr_alignment,
+                reference=self.reference,
+                variant_catalog=expansion_catalog,
+                sex="male" if self.sample_sex == SampleSex.MALE else "female",
+                threads=self.cores,
+            ),
+            "expansion-hunter",
             self.cores,
         )
 
