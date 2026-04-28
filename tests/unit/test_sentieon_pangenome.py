@@ -86,6 +86,7 @@ class TestSentieonPangenome:
         pipeline.bam_readgroups = [{"ID": "rg1", "SM": "sample1"}]
         pipeline.fastq_readgroup = {}
         pipeline.tech = "Illumina"
+        pipeline.has_cnv_model = True
         pipeline.pcr_free = False
 
         return pipeline
@@ -271,6 +272,42 @@ class TestSentieonPangenome:
         assert "cnv-model-apply" in job_names
         assert "indel2cnv" in job_names
         assert "combine-cnv" in job_names
+
+    def test_call_svs_without_cnv_model(self):
+        """SVs run but CNV jobs are skipped when bundle lacks cnv.model"""
+        pipeline = self.create_pipeline()
+        pipeline.call_svs = True
+        pipeline.has_cnv_model = False
+        dag = pipeline.build_first_dag()
+
+        job_names, all_jobs = self._get_all_job_names(dag)
+
+        # PangenomeSV still runs
+        assert "dnascope-raw" in job_names
+        dnascope_job = next(j for j in all_jobs if j.name == "dnascope-raw")
+        cmd_str = str(dnascope_job.shell)
+        assert "--algo PangenomeSV" in cmd_str
+
+        # CNV jobs are skipped
+        assert "cnvscope" not in job_names
+        assert "cnv-model-apply" not in job_names
+        assert "indel2cnv" not in job_names
+        assert "combine-cnv" not in job_names
+
+    def test_call_svs_without_cnv_model_skip_small_variants(self):
+        """SV-only mode: SVs run but CNV jobs are skipped without cnv.model"""
+        pipeline = self.create_pipeline()
+        pipeline.skip_small_variants = True
+        pipeline.call_svs = True
+        pipeline.has_cnv_model = False
+        dag = pipeline.build_first_dag()
+
+        job_names, _ = self._get_all_job_names(dag)
+        assert "dnascope-raw" in job_names
+        assert "cnvscope" not in job_names
+        assert "cnv-model-apply" not in job_names
+        assert "indel2cnv" not in job_names
+        assert "combine-cnv" not in job_names
 
     def test_cnvscope_command(self):
         """Test CNVscope driver command has correct algo and model"""

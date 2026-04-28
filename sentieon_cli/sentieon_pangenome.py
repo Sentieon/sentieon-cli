@@ -417,12 +417,13 @@ class SentieonPangenome(BasePangenome):
             )
             sys.exit(2)
 
-        if self.call_svs and "cnv.model" not in bundle_members:
-            self.logger.error(
-                "The model bundle does not contain a 'cnv.model' file "
-                "required for CNV calling with `--call_svs`."
+        self.has_cnv_model = "cnv.model" in bundle_members
+        if self.call_svs and not self.has_cnv_model:
+            self.logger.warning(
+                "The model bundle does not contain a 'cnv.model' file. "
+                "CNV calling with CNVscope will be skipped; SV calling with "
+                "PangenomeSV will still run."
             )
-            sys.exit(2)
 
         if not self.skip_pop_vcf_id_check and not self.dry_run:
             pop_vcf_id = vcf_id(self.pop_vcf)
@@ -674,13 +675,14 @@ class SentieonPangenome(BasePangenome):
                 gfa_file=sample_gfa,
             )
             dag.add_job(dnascope_job, dnascope_dependencies)
-            self._add_cnv_jobs(
-                dag,
-                sv_vcf,
-                cnv_input_bams,
-                cnvscope_deps,
-                dnascope_job,
-            )
+            if self.has_cnv_model:
+                self._add_cnv_jobs(
+                    dag,
+                    sv_vcf,
+                    cnv_input_bams,
+                    cnvscope_deps,
+                    dnascope_job,
+                )
             return dag
 
         apply_dependencies = set()
@@ -716,7 +718,7 @@ class SentieonPangenome(BasePangenome):
             apply_job = self.build_dnamodelapply_job(transfer_vcf)
             dag.add_job(apply_job, apply_dependencies)
 
-        if self.call_svs and sv_vcf:
+        if self.call_svs and sv_vcf and self.has_cnv_model:
             self._add_cnv_jobs(
                 dag,
                 sv_vcf,
