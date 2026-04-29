@@ -34,6 +34,7 @@ from .driver import (
     MeanQualityByCycle,
     PangenomeSV,
     QualDistribution,
+    ReadWriter,
     WgsMetricsAlgo,
 )
 from .job import Job
@@ -72,6 +73,13 @@ SEGDUP_MIN_VERSION = {
 EXPANSION_MIN_VERSION = {
     "ExpansionHunter": None,
 }
+
+T1K_MIN_VERSION = {
+    "run-t1k": None,
+}
+
+DEFAULT_T1K_HLA_LOCUS = "chr6:28510020-33480577"
+DEFAULT_T1K_KIR_LOCUS = "chr19:53100000-55800000"
 
 logger = get_logger(__name__)
 
@@ -153,6 +161,50 @@ class SentieonPangenome(BasePangenome):
                 ),
                 "type": path_arg(exists=True, is_file=True),
             },
+            "t1k_hla_seq": {
+                "help": (
+                    "The DNA HLA seq FASTA file for T1K. Required for HLA "
+                    "calling."
+                ),
+                "type": path_arg(exists=True, is_file=True),
+            },
+            "t1k_hla_coord": {
+                "help": (
+                    "The DNA HLA coord FASTA file for T1K. Required for HLA "
+                    "calling."
+                ),
+                "type": path_arg(exists=True, is_file=True),
+            },
+            "t1k_hla_locus": {
+                "default": DEFAULT_T1K_HLA_LOCUS,
+                "help": (
+                    "Reference interval covering the HLA locus. Reads "
+                    "overlapping this region are extracted before being "
+                    f"passed to T1K (default: {DEFAULT_T1K_HLA_LOCUS})."
+                ),
+            },
+            "t1k_kir_seq": {
+                "help": (
+                    "The DNA KIR seq FASTA file for T1K. Required for KIR "
+                    "calling."
+                ),
+                "type": path_arg(exists=True, is_file=True),
+            },
+            "t1k_kir_coord": {
+                "help": (
+                    "The DNA KIR coord FASTA file for T1K. Required for KIR "
+                    "calling."
+                ),
+                "type": path_arg(exists=True, is_file=True),
+            },
+            "t1k_kir_locus": {
+                "default": DEFAULT_T1K_KIR_LOCUS,
+                "help": (
+                    "Reference interval covering the KIR locus. Reads "
+                    "overlapping this region are extracted before being "
+                    f"passed to T1K (default: {DEFAULT_T1K_KIR_LOCUS})."
+                ),
+            },
             # Hidden arguments
             "skip_contig_checks": {
                 "help": argparse.SUPPRESS,
@@ -193,6 +245,12 @@ class SentieonPangenome(BasePangenome):
         self.skip_multiqc = False
         self.segdup_caller: Optional[List[str]] = None
         self.expansion_catalog: Optional[pathlib.Path] = None
+        self.t1k_hla_seq: Optional[pathlib.Path] = None
+        self.t1k_hla_coord: Optional[pathlib.Path] = None
+        self.t1k_hla_locus: str = DEFAULT_T1K_HLA_LOCUS
+        self.t1k_kir_seq: Optional[pathlib.Path] = None
+        self.t1k_kir_coord: Optional[pathlib.Path] = None
+        self.t1k_kir_locus: str = DEFAULT_T1K_KIR_LOCUS
         self.skip_contig_checks: bool = False
         self.skip_pangenome_name_checks: bool = False
         self.skip_pop_vcf_id_check: bool = False
@@ -259,6 +317,7 @@ class SentieonPangenome(BasePangenome):
 
         self.validate_segdup()
         self.validate_expansion()
+        self.validate_t1k()
 
         if not self.skip_version_check:
             for cmd, min_version in SENT_PANGENOME_MIN_VERSIONS.items():
@@ -356,6 +415,35 @@ class SentieonPangenome(BasePangenome):
 
         if not self.skip_version_check:
             for cmd, min_version in EXPANSION_MIN_VERSION.items():
+                if not check_version(cmd, min_version):
+                    sys.exit(2)
+
+    def validate_t1k(self) -> None:
+        hla_requested = self.t1k_hla_seq is not None or (
+            self.t1k_hla_coord is not None
+        )
+        if hla_requested and not (self.t1k_hla_seq and self.t1k_hla_coord):
+            self.logger.error(
+                "For HLA calling, both `--t1k_hla_seq` and `--t1k_hla_coord` "
+                "must be supplied."
+            )
+            sys.exit(2)
+
+        kir_requested = self.t1k_kir_seq is not None or (
+            self.t1k_kir_coord is not None
+        )
+        if kir_requested and not (self.t1k_kir_seq and self.t1k_kir_coord):
+            self.logger.error(
+                "For KIR calling, both `--t1k_kir_seq` and `--t1k_kir_coord` "
+                "must be supplied."
+            )
+            sys.exit(2)
+
+        if not (hla_requested or kir_requested):
+            return
+
+        if not self.skip_version_check:
+            for cmd, min_version in T1K_MIN_VERSION.items():
                 if not check_version(cmd, min_version):
                     sys.exit(2)
 
@@ -655,6 +743,38 @@ class SentieonPangenome(BasePangenome):
                 self.ploidy_json, [cnv_input_bams[0]]
             )
             dag.add_job(ploidy_job, cnvscope_deps)
+
+        # T1K HLA/KIR calling
+        if self.t1k_hla_seq and self.t1k_hla_coord:
+            out_hla = pathlib.Path(
+                str(self.output_vcf).replace(".vcf.gz", "_hla")
+            )
+            extract_job, t1k_job = self.build_t1k_jobs(
+                out_hla,
+                cnv_input_bams,
+                self.t1k_hla_seq,
+                self.t1k_hla_coord,
+                self.t1k_hla_locus,
+                "hla-wgs",
+                tag="hla",
+            )
+            dag.add_job(extract_job, cnvscope_deps)
+            dag.add_job(t1k_job, {extract_job})
+        if self.t1k_kir_seq and self.t1k_kir_coord:
+            out_kir = pathlib.Path(
+                str(self.output_vcf).replace(".vcf.gz", "_kir")
+            )
+            extract_job, t1k_job = self.build_t1k_jobs(
+                out_kir,
+                cnv_input_bams,
+                self.t1k_kir_seq,
+                self.t1k_kir_coord,
+                self.t1k_kir_locus,
+                "kir-wgs",
+                tag="kir",
+            )
+            dag.add_job(extract_job, cnvscope_deps)
+            dag.add_job(t1k_job, {extract_job})
 
         # DNAscope calling with bwa and mm2 input
         sv_vcf = None
@@ -1106,6 +1226,50 @@ class SentieonPangenome(BasePangenome):
             dag.add_job(expansion_job)
 
         return dag
+
+    def build_t1k_jobs(
+        self,
+        out_basename: pathlib.Path,
+        sr_alignments: List[pathlib.Path],
+        gene_seq: pathlib.Path,
+        gene_coord: pathlib.Path,
+        locus: str,
+        preset: str,
+        tag: str,
+    ) -> Tuple[Job, Job]:
+        """Extract reads at the T1K locus and genotype them with T1K"""
+        if not self.reference:
+            self.logger.error("reference is required")
+            sys.exit(2)
+
+        # Extract reads overlapping the locus to a BAM file with ReadWriter
+        extracted_bam = self.tmp_dir.joinpath(f"sample_{tag}.bam")
+        driver = Driver(
+            reference=self.reference,
+            thread_count=self.cores,
+            input=sr_alignments,
+            interval=locus,
+        )
+        driver.add_algo(ReadWriter(extracted_bam))
+        extract_job = Job(
+            Pipeline(Command(*driver.build_cmd())),
+            f"t1k-{tag}-extract",
+            self.cores,
+        )
+
+        t1k_job = Job(
+            cmds.cmd_t1k(
+                out_basename,
+                extracted_bam,
+                gene_seq=gene_seq,
+                gene_coord=gene_coord,
+                preset=preset,
+                threads=self.cores,
+            ),
+            f"t1k-{tag}",
+            self.cores,
+        )
+        return (extract_job, t1k_job)
 
     def build_expansion_job(
         self,
