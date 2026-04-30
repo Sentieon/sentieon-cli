@@ -19,6 +19,16 @@ ARG VG_SHA256=d5752977237e801d971f0d044f43fde4f3005da35f0451b4f452d1c1c9b8414b
 ARG KMC_VERSION=3.2.4
 ARG KMC_RELEASE_TAG=v3.2.4-pipe2
 ARG KMC_SHA256=d8bdf8edcd0577dba32e86e8f194b2eb04eb168c75a3e6d46721d5bef515ac96
+ARG EXPANSIONHUNTER_VERSION=5.0.0
+ARG EXPANSIONHUNTER_SHA256=ebf3ec0ace6e6e3bbce12c26463da5d9f8e16374eff1ad10f0f1a9123050fa86
+# T1K and segdup-caller are built from git; pin the tag and verify the
+# resolved commit SHA after checkout.
+ARG T1K_VERSION=1.0.9
+ARG T1K_GIT_TAG=v1.0.9
+ARG T1K_COMMIT=9376b555c1d8d2f8ca357c2656f49f450462dbc3
+ARG SEGDUP_CALLER_VERSION=0.5.0
+ARG SEGDUP_CALLER_GIT_TAG=v0.5.0
+ARG SEGDUP_CALLER_COMMIT=cc8ddfb7d8a18ff254c5126ec879e8a18ee28389
 # Pinned Poetry toolchain; should match the version used to generate poetry.lock.
 ARG POETRY_VERSION=2.3.4
 ARG POETRY_PLUGIN_EXPORT_VERSION=1.9.0
@@ -27,7 +37,7 @@ RUN test -n "$SENTIEON_VERSION"
 
 # Install all build dependencies for the downloader stage in one pass.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      curl ca-certificates bzip2 autoconf automake libtool make gcc perl \
+      curl ca-certificates bzip2 autoconf automake libtool make gcc g++ perl \
       nasm git python3 python3-venv zlib1g-dev libbz2-dev liblzma-dev \
       libcurl4-gnutls-dev libssl-dev libncurses5-dev libdeflate-dev \
       libperl-dev libgsl0-dev && \
@@ -94,6 +104,31 @@ RUN mkdir -p /opt/kmc-${KMC_VERSION} && \
       /usr/local/bin/kmc_tools-${KMC_VERSION} \
       /usr/local/bin/kmc_dump-${KMC_VERSION}
 
+# Install ExpansionHunter
+RUN mkdir -p /tmp/eh && \
+    curl -fL -o /tmp/eh.tar.gz "https://github.com/Illumina/ExpansionHunter/releases/download/v${EXPANSIONHUNTER_VERSION}/ExpansionHunter-v${EXPANSIONHUNTER_VERSION}-linux_x86_64.tar.gz" && \
+    echo "${EXPANSIONHUNTER_SHA256}  /tmp/eh.tar.gz" | sha256sum -c - && \
+    tar -C /tmp/eh --strip-components=1 -zxf /tmp/eh.tar.gz && \
+    cp /tmp/eh/bin/ExpansionHunter /usr/local/bin/ExpansionHunter-${EXPANSIONHUNTER_VERSION} && \
+    chmod +x /usr/local/bin/ExpansionHunter-${EXPANSIONHUNTER_VERSION} && \
+    rm -rf /tmp/eh /tmp/eh.tar.gz
+
+# Build T1K from source.
+RUN git clone --branch ${T1K_GIT_TAG} https://github.com/mourisl/T1K.git /tmp/t1k-src && \
+    cd /tmp/t1k-src && \
+    test "$(git rev-parse HEAD)" = "${T1K_COMMIT}" && \
+    make -j"$(nproc)" && \
+    mkdir -p /opt/t1k-${T1K_VERSION} && \
+    cp run-t1k bam-extractor fastq-extractor genotyper analyzer \
+       /opt/t1k-${T1K_VERSION}/ && \
+    rm -rf /tmp/t1k-src
+
+# Clone segdup-caller. The actual `pip install` happens in the
+# python-builder stage so the venv lives in a clean image.
+RUN git clone --branch ${SEGDUP_CALLER_GIT_TAG} https://github.com/Sentieon/segdup-caller.git /opt/segdup-caller-src && \
+    cd /opt/segdup-caller-src && \
+    test "$(git rev-parse HEAD)" = "${SEGDUP_CALLER_COMMIT}"
+
 # Download the Sentieon software
 RUN mkdir -p /opt/sentieon/ && \
     curl -fL "https://s3.amazonaws.com/sentieon-release/software/sentieon-genomics-${SENTIEON_VERSION}.tar.gz" | \
@@ -124,12 +159,16 @@ FROM debian:13.4-slim AS python-builder
 ARG SENTIEON_VERSION
 
 COPY --from=downloader /opt/sentieon-cli/dist /opt/sentieon-cli/dist
+COPY --from=downloader /opt/segdup-caller-src /opt/segdup-caller-src
 
+# Build the sentieon-cli venv and a separate venv for segdup-caller.
+# segdup-caller pulls in whatshap/pysam/scipy/pandas which would otherwise
+# bloat (and risk version-conflicting with) the sentieon-cli env.
 # Remove the kaleido and pyarrow packages to reduce image size.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
       python3 python3-venv python3-dev \
-      gcc g++ make zlib1g-dev && \
+      gcc g++ make zlib1g-dev libbz2-dev liblzma-dev libcurl4-gnutls-dev && \
     rm -rf /var/lib/apt/lists/* && \
     python3 -m venv /opt/sentieon-cli-venv && \
     /opt/sentieon-cli-venv/bin/pip install --no-cache-dir \
@@ -138,7 +177,12 @@ RUN apt-get update && \
       /opt/sentieon-cli/dist/*.whl && \
     /opt/sentieon-cli-venv/bin/pip uninstall -y kaleido pyarrow && \
     /opt/sentieon-cli-venv/bin/pip uninstall -y pip setuptools wheel && \
-    find /opt/sentieon-cli-venv -depth -type d -name __pycache__ -exec rm -rf {} +
+    python3 -m venv /opt/segdup-caller-venv && \
+    /opt/segdup-caller-venv/bin/pip install --no-cache-dir \
+      /opt/segdup-caller-src && \
+    /opt/segdup-caller-venv/bin/pip uninstall -y pip setuptools wheel && \
+    find /opt/sentieon-cli-venv /opt/segdup-caller-venv \
+      -depth -type d -name __pycache__ -exec rm -rf {} +
 
 # Build the container
 FROM debian:13.4-slim
@@ -147,6 +191,8 @@ ARG BEDTOOLS_VERSION=2.30.0
 ARG MOSDEPTH_VERSION=0.3.9
 ARG VG_VERSION=1.73.0
 ARG KMC_VERSION=3.2.4
+ARG EXPANSIONHUNTER_VERSION=5.0.0
+ARG T1K_VERSION=1.0.9
 ARG VCS_REF
 ARG BUILD_DATE
 
@@ -175,10 +221,14 @@ COPY --from=downloader /usr/local/bin/vg-${VG_VERSION} /usr/local/bin/vg-${VG_VE
 COPY --from=downloader /usr/local/bin/kmc-${KMC_VERSION} /usr/local/bin/kmc-${KMC_VERSION}
 COPY --from=downloader /usr/local/bin/kmc_tools-${KMC_VERSION} /usr/local/bin/kmc_tools-${KMC_VERSION}
 COPY --from=downloader /usr/local/bin/kmc_dump-${KMC_VERSION} /usr/local/bin/kmc_dump-${KMC_VERSION}
+COPY --from=downloader /usr/local/bin/ExpansionHunter-${EXPANSIONHUNTER_VERSION} /usr/local/bin/ExpansionHunter-${EXPANSIONHUNTER_VERSION}
+COPY --from=downloader /opt/t1k-${T1K_VERSION} /opt/t1k-${T1K_VERSION}
 COPY --from=downloader /opt/sentieon-cli/dist /opt/sentieon-cli/dist
 
 # Create symlinks for libisal (the .so lives on the default linker path in
 # /usr/lib) and for the unversioned names of the third-party tools.
+# `run-t1k` resolves its sibling binaries via abs_path($0), so symlinking
+# it from /usr/local/bin keeps the binaries discoverable in /opt/t1k-*/.
 RUN cd /usr/lib && \
     ln -s libisal.so.2.0.30 libisal.so.2 && \
     ln -s libisal.so.2 libisal.so && \
@@ -188,13 +238,16 @@ RUN cd /usr/lib && \
     ln -s vg-${VG_VERSION} vg && \
     ln -s kmc-${KMC_VERSION} kmc && \
     ln -s kmc_tools-${KMC_VERSION} kmc_tools && \
-    ln -s kmc_dump-${KMC_VERSION} kmc_dump
+    ln -s kmc_dump-${KMC_VERSION} kmc_dump && \
+    ln -s ExpansionHunter-${EXPANSIONHUNTER_VERSION} ExpansionHunter && \
+    ln -s /opt/t1k-${T1K_VERSION}/run-t1k run-t1k
 
 # Install runtime dependencies.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
       libjemalloc2 procps libdeflate0 libbz2-1.0 liblzma5 \
       libcurl3-gnutls libssl3 libperl5.40 libgsl28 libncurses6 \
+      libstdc++6 perl \
       curl python3 && \
     rm -rf /var/lib/apt/lists/*
 
@@ -205,9 +258,12 @@ ENV LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2
 # A default jemalloc configuration that should work well for most use-cases, see http://jemalloc.net/jemalloc.3.html
 ENV MALLOC_CONF=metadata_thp:auto,background_thread:true,dirty_decay_ms:30000,muzzy_decay_ms:30000
 
-# Copy the pre-built venv from the python-builder stage. No compilers
-# are installed in this stage.
+# Copy the pre-built venvs from the python-builder stage. No compilers
+# are installed in this stage. The segdup-caller venv stays isolated;
+# only its CLI entry point is exposed on PATH.
 COPY --from=python-builder /opt/sentieon-cli-venv /opt/sentieon-cli-venv
+COPY --from=python-builder /opt/segdup-caller-venv /opt/segdup-caller-venv
+RUN ln -s /opt/segdup-caller-venv/bin/segdup-caller /usr/local/bin/segdup-caller
 ENV VIRTUAL_ENV=/opt/sentieon-cli-venv
 ENV PATH=/opt/sentieon-cli-venv/bin:$PATH
 
@@ -226,4 +282,7 @@ RUN sentieon driver --help && \
     mosdepth -h && \
     vg version && \
     kmc --help && \
+    ExpansionHunter --help && \
+    perl -c "$(command -v run-t1k)" && \
+    segdup-caller --version && \
     sentieon-cli -h
