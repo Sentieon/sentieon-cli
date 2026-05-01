@@ -67,7 +67,7 @@ SENT_PANGENOME_MIN_VERSIONS = {
 }
 
 SEGDUP_MIN_VERSION = {
-    "segdup-caller": None,
+    "segdup-caller": packaging.version.Version("0.5.1"),
 }
 
 EXPANSION_MIN_VERSION = {
@@ -281,7 +281,7 @@ class SentieonPangenome(BasePangenome):
         executor = self.run(dag)
         self.check_execution(dag, executor)
 
-        if self.expansion_catalog:
+        if self.expansion_catalog or self.segdup_caller is not None:
             self.get_sex(self.ploidy_json)
             dag = self.build_second_dag()
             executor = self.run(dag)
@@ -394,6 +394,14 @@ class SentieonPangenome(BasePangenome):
             self.logger.error(
                 "`--segdup_caller` accepts only a single `--sample_input` "
                 "BAM/CRAM file."
+            )
+            sys.exit(2)
+
+        if self.skip_small_variants:
+            self.logger.error(
+                "`--segdup_caller` requires the small-variant VCF as "
+                "`--input_vcf` and cannot be combined with "
+                "`--skip_small_variants`."
             )
             sys.exit(2)
 
@@ -726,19 +734,8 @@ class SentieonPangenome(BasePangenome):
         # Stash the short-read alignment for the second DAG
         self.sr_alignment = cnv_input_bams[0]
 
-        # SegDup calling on the short-read alignment
-        if self.segdup_caller is not None:
-            out_segdup = pathlib.Path(
-                str(self.output_vcf).replace(".vcf.gz", "_segdups")
-            )
-            genes = ",".join(self.segdup_caller) or None
-            segdup_job = self.build_segdup_job(
-                out_segdup, cnv_input_bams[0], genes
-            )
-            dag.add_job(segdup_job, cnvscope_deps)
-
         # Estimate ploidy when needed for sex-aware downstream tools
-        if self.expansion_catalog:
+        if self.expansion_catalog or self.segdup_caller is not None:
             ploidy_job = self.build_ploidy_job(
                 self.ploidy_json, [cnv_input_bams[0]]
             )
@@ -1189,6 +1186,7 @@ class SentieonPangenome(BasePangenome):
         self,
         out_segdup: pathlib.Path,
         sr_alignment: pathlib.Path,
+        input_vcf: pathlib.Path,
         genes: Optional[str],
     ) -> Job:
         """Call variants in difficult SegDups"""
@@ -1199,12 +1197,15 @@ class SentieonPangenome(BasePangenome):
             self.logger.error("model_bundle is required")
             sys.exit(2)
 
+        sex = "male" if self.sample_sex == SampleSex.MALE else "female"
         return Job(
             cmds.cmd_segdup_caller(
                 out_segdup,
                 sr_alignment,
                 reference=self.reference,
                 sr_bundle=self.model_bundle,
+                input_vcf=input_vcf,
+                sex=sex,
                 genes=genes,
             ),
             "segdup-caller",
@@ -1224,6 +1225,24 @@ class SentieonPangenome(BasePangenome):
                 out_expansions, self.sr_alignment, self.expansion_catalog
             )
             dag.add_job(expansion_job)
+
+        # SegDup calling consumes the small-variant VCF and the inferred sex
+        if (
+            self.segdup_caller is not None
+            and self.sr_alignment
+            and self.output_vcf
+        ):
+            out_segdup = pathlib.Path(
+                str(self.output_vcf).replace(".vcf.gz", "_segdups")
+            )
+            genes = ",".join(self.segdup_caller) or None
+            segdup_job = self.build_segdup_job(
+                out_segdup,
+                self.sr_alignment,
+                self.output_vcf,
+                genes,
+            )
+            dag.add_job(segdup_job)
 
         return dag
 

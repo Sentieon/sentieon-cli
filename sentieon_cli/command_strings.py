@@ -1236,6 +1236,8 @@ def cmd_segdup_caller(
     sr_alignments: pathlib.Path,
     reference: pathlib.Path,
     sr_bundle: pathlib.Path,
+    input_vcf: Optional[pathlib.Path] = None,
+    sex: Optional[str] = None,
     genes: Optional[str] = None,
 ) -> Pipeline:
     cmd = [
@@ -1247,6 +1249,10 @@ def cmd_segdup_caller(
         "--sr_model",
         str(sr_bundle),
     ]
+    if input_vcf is not None:
+        cmd.extend(["--input_vcf", str(input_vcf)])
+    if sex is not None:
+        cmd.extend(["--sex", sex])
     if genes:
         cmd.extend(["--genes", genes])
     cmd.extend(["--outdir", str(out_segdup)])
