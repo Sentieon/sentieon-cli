@@ -229,6 +229,10 @@ COPY --from=downloader /opt/sentieon-cli/dist /opt/sentieon-cli/dist
 # /usr/lib) and for the unversioned names of the third-party tools.
 # `run-t1k` resolves its sibling binaries via abs_path($0), so symlinking
 # it from /usr/local/bin keeps the binaries discoverable in /opt/t1k-*/.
+# `ExpansionHunter` goes through a wrapper that strips LD_PRELOAD: the
+# pre-built EH binary crashes with `std::bad_cast` while parsing its JSON
+# variant catalog when the global jemalloc preload (set further down) is
+# active.
 RUN cd /usr/lib && \
     ln -s libisal.so.2.0.30 libisal.so.2 && \
     ln -s libisal.so.2 libisal.so && \
@@ -239,8 +243,10 @@ RUN cd /usr/lib && \
     ln -s kmc-${KMC_VERSION} kmc && \
     ln -s kmc_tools-${KMC_VERSION} kmc_tools && \
     ln -s kmc_dump-${KMC_VERSION} kmc_dump && \
-    ln -s ExpansionHunter-${EXPANSIONHUNTER_VERSION} ExpansionHunter && \
-    ln -s /opt/t1k-${T1K_VERSION}/run-t1k run-t1k
+    ln -s /opt/t1k-${T1K_VERSION}/run-t1k run-t1k && \
+    printf '#!/bin/sh\nexec env -u LD_PRELOAD /usr/local/bin/ExpansionHunter-%s "$@"\n' \
+        "${EXPANSIONHUNTER_VERSION}" > ExpansionHunter && \
+    chmod +x ExpansionHunter
 
 # Install runtime dependencies.
 RUN apt-get update && \

@@ -12,7 +12,7 @@ import sys
 import typing
 from typing import Any, Dict, List, Optional, Union
 
-from .driver import BaseDriver
+from .driver import BaseDriver, Driver, ReadWriter
 from .logging import get_logger
 from .shell_pipeline import Command, InputProcSub, Pipeline
 
@@ -895,30 +895,36 @@ def cmd_extract_kmc(
     reference: pathlib.Path,
     extract_model: pathlib.Path,
     tmp_dir: pathlib.Path,
-    threads=1,
+    threads: int = 1,
 ) -> Pipeline:
-    merge_cmd = Command(
-        "samtools",
-        "merge",
-        "--reference",
-        str(reference),
-        "-@",
-        str(threads),
-        "-u",
-        "-o",
-        "/dev/stdout",
-        *[str(x) for x in input_aln],
+    rw_bam = tmp_dir.joinpath("extract-kmc-rw.bam")
+
+    driver = Driver(
+        reference=reference,
+        thread_count=threads,
+        input=input_aln,
     )
-    view_cmd = Command(
-        "samtools",
-        "view",
-        "-@",
-        str(threads),
-        "-ub",
-        "-F",
-        "0xf00",
-        "-",
+    driver.add_algo(
+        ReadWriter(
+            rw_bam,
+            bam_compression=1,
+            output_flag_filter="0xf00:0",
+        )
     )
+    driver_cmd_str = shlex.join(driver.build_cmd())
+
+    # ReadWriter cannot write to /dev/stdout; symlink rw_bam -> /dev/stdout
+    # so the driver's writes hit the pipe to pgutil. `exec` so signals/exit
+    # codes propagate from the driver instead of the wrapping shell.
+    readwriter_cmd = Command(
+        "sh",
+        "-c",
+        (
+            f"ln -sf /dev/stdout {shlex.quote(str(rw_bam))} && "
+            f"exec {driver_cmd_str}"
+        ),
+    )
+
     extract_cmd = Command(
         "sentieon",
         "pgutil",
@@ -949,7 +955,7 @@ def cmd_extract_kmc(
         str(output_prefix),
         str(tmp_dir),
     )
-    return Pipeline(merge_cmd, view_cmd, extract_cmd, kmc_cmd)
+    return Pipeline(readwriter_cmd, extract_cmd, kmc_cmd)
 
 
 def cmd_vg_haplotypes(

@@ -271,9 +271,9 @@ class ReadWriter(BaseAlgo):
         output_flag_filter: Optional[str] = None,
     ):
         self.output = output
-        bam_compression = bam_compression
-        cram_write_options = cram_write_options
-        output_flag_filter = output_flag_filter
+        self.bam_compression = bam_compression
+        self.cram_write_options = cram_write_options
+        self.output_flag_filter = output_flag_filter
 
 
 class InsertSizeMetricAlgo(BaseAlgo):
