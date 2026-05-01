@@ -26,9 +26,9 @@ ARG EXPANSIONHUNTER_SHA256=ebf3ec0ace6e6e3bbce12c26463da5d9f8e16374eff1ad10f0f1a
 ARG T1K_VERSION=1.0.9
 ARG T1K_GIT_TAG=v1.0.9
 ARG T1K_COMMIT=9376b555c1d8d2f8ca357c2656f49f450462dbc3
-ARG SEGDUP_CALLER_VERSION=0.5.0
-ARG SEGDUP_CALLER_GIT_TAG=v0.5.0
-ARG SEGDUP_CALLER_COMMIT=cc8ddfb7d8a18ff254c5126ec879e8a18ee28389
+ARG SEGDUP_CALLER_VERSION=0.5.1
+ARG SEGDUP_CALLER_GIT_TAG=v0.5.1
+ARG SEGDUP_CALLER_COMMIT=82bb80f65f28436c4d28c5aa17f99b4e36bd6fe9
 # Pinned Poetry toolchain; should match the version used to generate poetry.lock.
 ARG POETRY_VERSION=2.3.4
 ARG POETRY_PLUGIN_EXPORT_VERSION=1.9.0
@@ -291,4 +291,8 @@ RUN sentieon driver --help && \
     ExpansionHunter --help && \
     perl -c "$(command -v run-t1k)" && \
     segdup-caller --version && \
+    python -c "import sys; from packaging.version import Version; \
+from sentieon_cli.sentieon_pangenome import SEGDUP_MIN_VERSION; \
+from sentieon_cli.util import check_version; \
+sys.exit(0 if all(check_version(c, v) for c, v in SEGDUP_MIN_VERSION.items()) else 1)" && \
     sentieon-cli -h
