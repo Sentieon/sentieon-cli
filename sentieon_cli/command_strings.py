@@ -895,10 +895,12 @@ def cmd_extract_kmc(
     reference: pathlib.Path,
     extract_model: pathlib.Path,
     tmp_dir: pathlib.Path,
+    rw_bam: pathlib.Path,
     threads: int = 1,
 ) -> Pipeline:
-    rw_bam = tmp_dir.joinpath("extract-kmc-rw.bam")
-
+    # `rw_bam` must already be a symlink to /dev/stdout;
+    # ReadWriter writes to it, which resolves to the driver's stdout (= the
+    # pipe to pgutil extract).
     driver = Driver(
         reference=reference,
         thread_count=threads,
@@ -911,19 +913,7 @@ def cmd_extract_kmc(
             output_flag_filter="0xf00:0",
         )
     )
-    driver_cmd_str = shlex.join(driver.build_cmd())
-
-    # ReadWriter cannot write to /dev/stdout; symlink rw_bam -> /dev/stdout
-    # so the driver's writes hit the pipe to pgutil. `exec` so signals/exit
-    # codes propagate from the driver instead of the wrapping shell.
-    readwriter_cmd = Command(
-        "sh",
-        "-c",
-        (
-            f"ln -sf /dev/stdout {shlex.quote(str(rw_bam))} && "
-            f"exec {driver_cmd_str}"
-        ),
-    )
+    driver_cmd = Command(*driver.build_cmd())
 
     extract_cmd = Command(
         "sentieon",
@@ -955,7 +945,7 @@ def cmd_extract_kmc(
         str(output_prefix),
         str(tmp_dir),
     )
-    return Pipeline(readwriter_cmd, extract_cmd, kmc_cmd)
+    return Pipeline(driver_cmd, extract_cmd, kmc_cmd)
 
 
 def cmd_vg_haplotypes(

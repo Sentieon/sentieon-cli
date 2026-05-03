@@ -28,7 +28,7 @@ ARG T1K_GIT_TAG=v1.0.9
 ARG T1K_COMMIT=9376b555c1d8d2f8ca357c2656f49f450462dbc3
 ARG SEGDUP_CALLER_VERSION=0.5.1
 ARG SEGDUP_CALLER_GIT_TAG=v0.5.1
-ARG SEGDUP_CALLER_COMMIT=82bb80f65f28436c4d28c5aa17f99b4e36bd6fe9
+ARG SEGDUP_CALLER_COMMIT=0406ea78b7ff53d7a169b9aa945d7fcc7257ff12
 # Pinned Poetry toolchain; should match the version used to generate poetry.lock.
 ARG POETRY_VERSION=2.3.4
 ARG POETRY_PLUGIN_EXPORT_VERSION=1.9.0
@@ -269,9 +269,10 @@ ENV MALLOC_CONF=metadata_thp:auto,background_thread:true,dirty_decay_ms:30000,mu
 # only its CLI entry point is exposed on PATH.
 COPY --from=python-builder /opt/sentieon-cli-venv /opt/sentieon-cli-venv
 COPY --from=python-builder /opt/segdup-caller-venv /opt/segdup-caller-venv
-RUN ln -s /opt/segdup-caller-venv/bin/segdup-caller /usr/local/bin/segdup-caller
 ENV VIRTUAL_ENV=/opt/sentieon-cli-venv
 ENV PATH=/opt/sentieon-cli-venv/bin:$PATH
+# Append (not prepend) the segdup-caller venv
+ENV PATH=$PATH:/opt/segdup-caller-venv/bin
 
 # Create a non-root user for running the pipelines
 RUN useradd --create-home --uid 1001 --shell /bin/bash sentieon

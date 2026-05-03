@@ -658,6 +658,17 @@ class SentieonPangenome(BasePangenome):
                 haplotype_dependencies.add(bwa_job)
         else:
             dnascope_bams = copy.deepcopy(self.sample_input)
+            # ReadWriter cannot write to /dev/stdout directly; pre-create a
+            # symlink so the driver writes to a real path that resolves to
+            # its stdout (the pipe to pgutil extract).
+            rw_bam = self.tmp_dir.joinpath("extract-kmc-rw.bam")
+            ln_job = Job(
+                Pipeline(Command("ln", "-sf", "/dev/stdout", str(rw_bam))),
+                "extract-kmc-symlink",
+                1,
+            )
+            dag.add_job(ln_job)
+
             extract_kmc_job = Job(
                 cmds.cmd_extract_kmc(
                     kmer_prefix,
@@ -666,12 +677,13 @@ class SentieonPangenome(BasePangenome):
                     self.reference,
                     self.model_bundle.joinpath("extract.model"),
                     self.tmp_dir,
+                    rw_bam,
                     threads=self.cores,
                 ),
                 "extract-kmc",
                 self.cores,
             )
-            dag.add_job(extract_kmc_job)
+            dag.add_job(extract_kmc_job, {ln_job})
             haplotype_dependencies.add(extract_kmc_job)
 
         # vg haplotypes - create a sample-specific pangenome
