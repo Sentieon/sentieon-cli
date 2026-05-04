@@ -414,6 +414,13 @@ class SentieonPangenome(BasePangenome):
         if self.expansion_catalog is None:
             return
 
+        if self.tech.upper() == "ULTIMA":
+            self.logger.error(
+                "`--expansion_catalog` is not supported with single-end "
+                "(Ultima) input."
+            )
+            sys.exit(2)
+
         if len(self.sample_input) > 1:
             self.logger.error(
                 "`--expansion_catalog` accepts only a single `--sample_input` "
