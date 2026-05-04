@@ -16,7 +16,7 @@ from importlib.resources import files
 
 from . import command_strings as cmds
 from .archive import ar_load
-from .base_pangenome import BasePangenome
+from .base_pangenome import BasePangenome, SampleSex
 from .dag import DAG
 from .driver import (
     AlignmentStat,
@@ -34,6 +34,7 @@ from .driver import (
     MeanQualityByCycle,
     PangenomeSV,
     QualDistribution,
+    ReadWriter,
     WgsMetricsAlgo,
 )
 from .job import Job
@@ -64,6 +65,21 @@ SENT_PANGENOME_MIN_VERSIONS = {
     "bcftools": packaging.version.Version("1.22"),
     "samtools": packaging.version.Version("1.16"),
 }
+
+SEGDUP_MIN_VERSION = {
+    "segdup-caller": packaging.version.Version("0.5.1"),
+}
+
+EXPANSION_MIN_VERSION = {
+    "ExpansionHunter": None,
+}
+
+T1K_MIN_VERSION = {
+    "run-t1k": None,
+}
+
+DEFAULT_T1K_HLA_LOCUS = "chr6:28510020-33480577"
+DEFAULT_T1K_KIR_LOCUS = "chr19:53100000-55800000"
 
 logger = get_logger(__name__)
 
@@ -110,6 +126,16 @@ class SentieonPangenome(BasePangenome):
                 "help": "Generate a gVCF output file.",
                 "action": "store_true",
             },
+            "pangenome_ref_name": {
+                "default": "GRCh38",
+                "help": "Reference name in the pangenome (GRCh38)",
+            },
+            "pangenome_contig_prefix": {
+                "default": "GRCh38#0#",
+                "help": (
+                    "Prefix to strip from pangenome contig names (GRCh38#0#)"
+                ),
+            },
             "skip_metrics": {
                 "help": "Skip metrics collection and multiQC",
                 "action": "store_true",
@@ -117,6 +143,67 @@ class SentieonPangenome(BasePangenome):
             "skip_multiqc": {
                 "help": "Skip multiQC report generation",
                 "action": "store_true",
+            },
+            "segdup_caller": {
+                "nargs": "*",
+                "help": (
+                    "Call variants in difficult segmental duplications with "
+                    "segdup-caller. Supply the flag with no arguments to run "
+                    "the caller's default gene set. Supply a comma-separated "
+                    "list of gene names (e.g. 'CFH,CYP2D6,SMN1') to restrict "
+                    "calling to those genes."
+                ),
+            },
+            "expansion_catalog": {
+                "help": (
+                    "An ExpansionHunter variant catalog. Required for short "
+                    "tandem repeat expansion calling."
+                ),
+                "type": path_arg(exists=True, is_file=True),
+            },
+            "t1k_hla_seq": {
+                "help": (
+                    "The DNA HLA seq FASTA file for T1K. Required for HLA "
+                    "calling."
+                ),
+                "type": path_arg(exists=True, is_file=True),
+            },
+            "t1k_hla_coord": {
+                "help": (
+                    "The DNA HLA coord FASTA file for T1K. Required for HLA "
+                    "calling."
+                ),
+                "type": path_arg(exists=True, is_file=True),
+            },
+            "t1k_hla_locus": {
+                "default": DEFAULT_T1K_HLA_LOCUS,
+                "help": (
+                    "Reference interval covering the HLA locus. Reads "
+                    "overlapping this region are extracted before being "
+                    f"passed to T1K (default: {DEFAULT_T1K_HLA_LOCUS})."
+                ),
+            },
+            "t1k_kir_seq": {
+                "help": (
+                    "The DNA KIR seq FASTA file for T1K. Required for KIR "
+                    "calling."
+                ),
+                "type": path_arg(exists=True, is_file=True),
+            },
+            "t1k_kir_coord": {
+                "help": (
+                    "The DNA KIR coord FASTA file for T1K. Required for KIR "
+                    "calling."
+                ),
+                "type": path_arg(exists=True, is_file=True),
+            },
+            "t1k_kir_locus": {
+                "default": DEFAULT_T1K_KIR_LOCUS,
+                "help": (
+                    "Reference interval covering the KIR locus. Reads "
+                    "overlapping this region are extracted before being "
+                    f"passed to T1K (default: {DEFAULT_T1K_KIR_LOCUS})."
+                ),
             },
             # Hidden arguments
             "skip_contig_checks": {
@@ -152,8 +239,18 @@ class SentieonPangenome(BasePangenome):
         self.bed: Optional[pathlib.Path] = None
         self.call_svs = False
         self.gvcf = False
+        self.pangenome_ref_name = "GRCh38"
+        self.pangenome_contig_prefix = "GRCh38#0#"
         self.skip_metrics = False
         self.skip_multiqc = False
+        self.segdup_caller: Optional[List[str]] = None
+        self.expansion_catalog: Optional[pathlib.Path] = None
+        self.t1k_hla_seq: Optional[pathlib.Path] = None
+        self.t1k_hla_coord: Optional[pathlib.Path] = None
+        self.t1k_hla_locus: str = DEFAULT_T1K_HLA_LOCUS
+        self.t1k_kir_seq: Optional[pathlib.Path] = None
+        self.t1k_kir_coord: Optional[pathlib.Path] = None
+        self.t1k_kir_locus: str = DEFAULT_T1K_KIR_LOCUS
         self.skip_contig_checks: bool = False
         self.skip_pangenome_name_checks: bool = False
         self.skip_pop_vcf_id_check: bool = False
@@ -184,6 +281,12 @@ class SentieonPangenome(BasePangenome):
         executor = self.run(dag)
         self.check_execution(dag, executor)
 
+        if self.expansion_catalog or self.segdup_caller is not None:
+            self.get_sex(self.ploidy_json)
+            dag = self.build_second_dag()
+            executor = self.run(dag)
+            self.check_execution(dag, executor)
+
         if not self.retain_tmpdir:
             shutil.rmtree(tmp_dir_str)
 
@@ -208,6 +311,13 @@ class SentieonPangenome(BasePangenome):
                 "supported"
             )
             sys.exit(2)
+
+        if self.r1_fastq:
+            self.validate_bwa_index()
+
+        self.validate_segdup()
+        self.validate_expansion()
+        self.validate_t1k()
 
         if not self.skip_version_check:
             for cmd, min_version in SENT_PANGENOME_MIN_VERSIONS.items():
@@ -276,6 +386,75 @@ class SentieonPangenome(BasePangenome):
                     )
                     sys.exit(2)
 
+    def validate_segdup(self) -> None:
+        if self.segdup_caller is None:
+            return
+
+        if len(self.sample_input) > 1:
+            self.logger.error(
+                "`--segdup_caller` accepts only a single `--sample_input` "
+                "BAM/CRAM file."
+            )
+            sys.exit(2)
+
+        if self.skip_small_variants:
+            self.logger.error(
+                "`--segdup_caller` requires the small-variant VCF as "
+                "`--input_vcf` and cannot be combined with "
+                "`--skip_small_variants`."
+            )
+            sys.exit(2)
+
+        if not self.skip_version_check:
+            for cmd, min_version in SEGDUP_MIN_VERSION.items():
+                if not check_version(cmd, min_version):
+                    sys.exit(2)
+
+    def validate_expansion(self) -> None:
+        if self.expansion_catalog is None:
+            return
+
+        if len(self.sample_input) > 1:
+            self.logger.error(
+                "`--expansion_catalog` accepts only a single `--sample_input` "
+                "BAM/CRAM file."
+            )
+            sys.exit(2)
+
+        if not self.skip_version_check:
+            for cmd, min_version in EXPANSION_MIN_VERSION.items():
+                if not check_version(cmd, min_version):
+                    sys.exit(2)
+
+    def validate_t1k(self) -> None:
+        hla_requested = self.t1k_hla_seq is not None or (
+            self.t1k_hla_coord is not None
+        )
+        if hla_requested and not (self.t1k_hla_seq and self.t1k_hla_coord):
+            self.logger.error(
+                "For HLA calling, both `--t1k_hla_seq` and `--t1k_hla_coord` "
+                "must be supplied."
+            )
+            sys.exit(2)
+
+        kir_requested = self.t1k_kir_seq is not None or (
+            self.t1k_kir_coord is not None
+        )
+        if kir_requested and not (self.t1k_kir_seq and self.t1k_kir_coord):
+            self.logger.error(
+                "For KIR calling, both `--t1k_kir_seq` and `--t1k_kir_coord` "
+                "must be supplied."
+            )
+            sys.exit(2)
+
+        if not (hla_requested or kir_requested):
+            return
+
+        if not self.skip_version_check:
+            for cmd, min_version in T1K_MIN_VERSION.items():
+                if not check_version(cmd, min_version):
+                    sys.exit(2)
+
     def validate_bundle(self) -> None:
         if not self.pop_vcf:
             self.logger.error("pop_vcf is required")
@@ -334,12 +513,13 @@ class SentieonPangenome(BasePangenome):
             )
             sys.exit(2)
 
-        if self.call_svs and "cnv.model" not in bundle_members:
-            self.logger.error(
-                "The model bundle does not contain a 'cnv.model' file "
-                "required for CNV calling with `--call_svs`."
+        self.has_cnv_model = "cnv.model" in bundle_members
+        if self.call_svs and not self.has_cnv_model:
+            self.logger.warning(
+                "The model bundle does not contain a 'cnv.model' file. "
+                "CNV calling with CNVscope will be skipped; SV calling with "
+                "PangenomeSV will still run."
             )
-            sys.exit(2)
 
         if not self.skip_pop_vcf_id_check and not self.dry_run:
             pop_vcf_id = vcf_id(self.pop_vcf)
@@ -380,7 +560,13 @@ class SentieonPangenome(BasePangenome):
         if not self.readgroup:
             return
 
-        parsed_rg = parse_rg_line(self.readgroup.replace(r"\t", "\t"))
+        try:
+            parsed_rg = parse_rg_line(self.readgroup.replace(r"\t", "\t"))
+        except ValueError as e:
+            self.logger.error(
+                "Invalid --readgroup value '%s': %s", self.readgroup, e
+            )
+            sys.exit(2)
         if not parsed_rg.get("ID"):
             self.logger.error(
                 "Readgroup '%s' does not have a RGID tag",
@@ -472,6 +658,17 @@ class SentieonPangenome(BasePangenome):
                 haplotype_dependencies.add(bwa_job)
         else:
             dnascope_bams = copy.deepcopy(self.sample_input)
+            # ReadWriter cannot write to /dev/stdout directly; pre-create a
+            # symlink so the driver writes to a real path that resolves to
+            # its stdout (the pipe to pgutil extract).
+            rw_bam = self.tmp_dir.joinpath("extract-kmc-rw.bam")
+            ln_job = Job(
+                Pipeline(Command("ln", "-sf", "/dev/stdout", str(rw_bam))),
+                "extract-kmc-symlink",
+                1,
+            )
+            dag.add_job(ln_job)
+
             extract_kmc_job = Job(
                 cmds.cmd_extract_kmc(
                     kmer_prefix,
@@ -480,12 +677,13 @@ class SentieonPangenome(BasePangenome):
                     self.reference,
                     self.model_bundle.joinpath("extract.model"),
                     self.tmp_dir,
+                    rw_bam,
                     threads=self.cores,
                 ),
                 "extract-kmc",
                 self.cores,
             )
-            dag.add_job(extract_kmc_job)
+            dag.add_job(extract_kmc_job, {ln_job})
             haplotype_dependencies.add(extract_kmc_job)
 
         # vg haplotypes - create a sample-specific pangenome
@@ -545,6 +743,48 @@ class SentieonPangenome(BasePangenome):
             dnascope_bams.append(mm2_bam)
             cnv_input_bams = list(self.sample_input)
 
+        # Stash the short-read alignment for the second DAG
+        self.sr_alignment = cnv_input_bams[0]
+
+        # Estimate ploidy when needed for sex-aware downstream tools
+        if self.expansion_catalog or self.segdup_caller is not None:
+            ploidy_job = self.build_ploidy_job(
+                self.ploidy_json, [cnv_input_bams[0]]
+            )
+            dag.add_job(ploidy_job, cnvscope_deps)
+
+        # T1K HLA/KIR calling
+        if self.t1k_hla_seq and self.t1k_hla_coord:
+            out_hla = pathlib.Path(
+                str(self.output_vcf).replace(".vcf.gz", "_hla")
+            )
+            extract_job, t1k_job = self.build_t1k_jobs(
+                out_hla,
+                cnv_input_bams,
+                self.t1k_hla_seq,
+                self.t1k_hla_coord,
+                self.t1k_hla_locus,
+                "hla-wgs",
+                tag="hla",
+            )
+            dag.add_job(extract_job, cnvscope_deps)
+            dag.add_job(t1k_job, {extract_job})
+        if self.t1k_kir_seq and self.t1k_kir_coord:
+            out_kir = pathlib.Path(
+                str(self.output_vcf).replace(".vcf.gz", "_kir")
+            )
+            extract_job, t1k_job = self.build_t1k_jobs(
+                out_kir,
+                cnv_input_bams,
+                self.t1k_kir_seq,
+                self.t1k_kir_coord,
+                self.t1k_kir_locus,
+                "kir-wgs",
+                tag="kir",
+            )
+            dag.add_job(extract_job, cnvscope_deps)
+            dag.add_job(t1k_job, {extract_job})
+
         # DNAscope calling with bwa and mm2 input
         sv_vcf = None
         if self.call_svs:
@@ -564,13 +804,14 @@ class SentieonPangenome(BasePangenome):
                 gfa_file=sample_gfa,
             )
             dag.add_job(dnascope_job, dnascope_dependencies)
-            self._add_cnv_jobs(
-                dag,
-                sv_vcf,
-                cnv_input_bams,
-                cnvscope_deps,
-                dnascope_job,
-            )
+            if self.has_cnv_model:
+                self._add_cnv_jobs(
+                    dag,
+                    sv_vcf,
+                    cnv_input_bams,
+                    cnvscope_deps,
+                    dnascope_job,
+                )
             return dag
 
         apply_dependencies = set()
@@ -606,7 +847,7 @@ class SentieonPangenome(BasePangenome):
             apply_job = self.build_dnamodelapply_job(transfer_vcf)
             dag.add_job(apply_job, apply_dependencies)
 
-        if self.call_svs and sv_vcf:
+        if self.call_svs and sv_vcf and self.has_cnv_model:
             self._add_cnv_jobs(
                 dag,
                 sv_vcf,
@@ -680,7 +921,7 @@ class SentieonPangenome(BasePangenome):
                     "--include-reference",
                     "--diploid-sampling",
                     "--set-reference",
-                    "GRCh38",
+                    self.pangenome_ref_name,
                 ],
             ),
             "vg-haplotypes",
@@ -697,6 +938,7 @@ class SentieonPangenome(BasePangenome):
                 output_gfa,
                 input_gbz,
                 threads=self.cores,
+                reference_name=self.pangenome_ref_name,
             ),
             "vg-convert-gfa",
             0,
@@ -754,6 +996,7 @@ class SentieonPangenome(BasePangenome):
                 "@RG\\t" + "\\t".join([f"{x[0]}:{x[1]}" for x in rg2.items()]),
                 mm2_model,
                 threads=self.cores,
+                lift_prefix=self.pangenome_contig_prefix,
             ),
             "mm2-lift",
             self.cores,
@@ -869,8 +1112,7 @@ class SentieonPangenome(BasePangenome):
         rehead_job = Job(
             Pipeline(
                 Command(
-                    "sentieon",
-                    "pyexec",
+                    sys.executable,
                     str(rehead_script),
                     "--metrics_file",
                     str(wgs_metrics),
@@ -949,6 +1191,138 @@ class SentieonPangenome(BasePangenome):
         return Job(
             Pipeline(Command(*driver.build_cmd())),
             "model-apply",
+            self.cores,
+        )
+
+    def build_segdup_job(
+        self,
+        out_segdup: pathlib.Path,
+        sr_alignment: pathlib.Path,
+        input_vcf: pathlib.Path,
+        genes: Optional[str],
+    ) -> Job:
+        """Call variants in difficult SegDups"""
+        if not self.reference:
+            self.logger.error("reference is required")
+            sys.exit(2)
+        if not self.model_bundle:
+            self.logger.error("model_bundle is required")
+            sys.exit(2)
+
+        sex = "male" if self.sample_sex == SampleSex.MALE else "female"
+        return Job(
+            cmds.cmd_segdup_caller(
+                out_segdup,
+                sr_alignment,
+                reference=self.reference,
+                sr_bundle=self.model_bundle,
+                input_vcf=input_vcf,
+                sex=sex,
+                genes=genes,
+            ),
+            "segdup-caller",
+            self.cores,
+        )
+
+    def build_second_dag(self) -> DAG:
+        """Build the second DAG for sex-aware downstream tools"""
+        self.logger.info("Building the second pangenome DAG")
+        dag = DAG()
+
+        if self.expansion_catalog and self.sr_alignment:
+            out_expansions = pathlib.Path(
+                str(self.output_vcf).replace(".vcf.gz", "_expansion")
+            )
+            expansion_job = self.build_expansion_job(
+                out_expansions, self.sr_alignment, self.expansion_catalog
+            )
+            dag.add_job(expansion_job)
+
+        # SegDup calling consumes the small-variant VCF and the inferred sex
+        if (
+            self.segdup_caller is not None
+            and self.sr_alignment
+            and self.output_vcf
+        ):
+            out_segdup = pathlib.Path(
+                str(self.output_vcf).replace(".vcf.gz", "_segdups")
+            )
+            genes = ",".join(self.segdup_caller) or None
+            segdup_job = self.build_segdup_job(
+                out_segdup,
+                self.sr_alignment,
+                self.output_vcf,
+                genes,
+            )
+            dag.add_job(segdup_job)
+
+        return dag
+
+    def build_t1k_jobs(
+        self,
+        out_basename: pathlib.Path,
+        sr_alignments: List[pathlib.Path],
+        gene_seq: pathlib.Path,
+        gene_coord: pathlib.Path,
+        locus: str,
+        preset: str,
+        tag: str,
+    ) -> Tuple[Job, Job]:
+        """Extract reads at the T1K locus and genotype them with T1K"""
+        if not self.reference:
+            self.logger.error("reference is required")
+            sys.exit(2)
+
+        # Extract reads overlapping the locus to a BAM file with ReadWriter
+        extracted_bam = self.tmp_dir.joinpath(f"sample_{tag}.bam")
+        driver = Driver(
+            reference=self.reference,
+            thread_count=self.cores,
+            input=sr_alignments,
+            interval=locus,
+        )
+        driver.add_algo(ReadWriter(extracted_bam))
+        extract_job = Job(
+            Pipeline(Command(*driver.build_cmd())),
+            f"t1k-{tag}-extract",
+            self.cores,
+        )
+
+        t1k_job = Job(
+            cmds.cmd_t1k(
+                out_basename,
+                extracted_bam,
+                gene_seq=gene_seq,
+                gene_coord=gene_coord,
+                preset=preset,
+                threads=self.cores,
+            ),
+            f"t1k-{tag}",
+            self.cores,
+        )
+        return (extract_job, t1k_job)
+
+    def build_expansion_job(
+        self,
+        out_expansions: pathlib.Path,
+        sr_alignment: pathlib.Path,
+        expansion_catalog: pathlib.Path,
+    ) -> Job:
+        """Identify repeat expansions"""
+        if not self.reference:
+            self.logger.error("reference is required")
+            sys.exit(2)
+
+        return Job(
+            cmds.cmd_expansion_hunter(
+                out_expansions,
+                sr_alignment,
+                reference=self.reference,
+                variant_catalog=expansion_catalog,
+                sex="male" if self.sample_sex == SampleSex.MALE else "female",
+                threads=self.cores,
+            ),
+            "expansion-hunter",
             self.cores,
         )
 
@@ -1060,8 +1434,7 @@ class SentieonPangenome(BasePangenome):
         return Job(
             Pipeline(
                 Command(
-                    "sentieon",
-                    "pyexec",
+                    sys.executable,
                     str(indel2cnv_script),
                     str(self.reference),
                     str(input_vcf),
@@ -1087,8 +1460,7 @@ class SentieonPangenome(BasePangenome):
         return Job(
             Pipeline(
                 Command(
-                    "sentieon",
-                    "pyexec",
+                    sys.executable,
                     str(combine_script),
                     "--cnv",
                     str(cnv_vcf),

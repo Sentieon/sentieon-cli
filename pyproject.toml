@@ -1,7 +1,7 @@
 
 [project]
 name = "sentieon_cli"
-version = "1.6.1"
+version = "1.6.2"
 description = "Pipeline implementations for the Sentieon software"
 authors = [
     {name = "Don Freed", email = "don.freed@sentieon.com"},
@@ -20,7 +20,7 @@ include = ["LICENSE"]
 dependencies = [
     "packaging (>=23.2)",
     "mappy (>=2.30,<3.0)",
-    "scipy (>=1.17.1,<2.0.0)",
+    "vcflib (>=1.0.1,<2.0.0)",
     "levenshtein (>=0.27.3,<0.28.0)",
 ]
 

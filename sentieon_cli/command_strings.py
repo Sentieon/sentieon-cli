@@ -8,10 +8,11 @@ import os
 import pathlib
 import shlex
 import subprocess as sp
+import sys
 import typing
 from typing import Any, Dict, List, Optional, Union
 
-from .driver import BaseDriver
+from .driver import BaseDriver, Driver, ReadWriter
 from .logging import get_logger
 from .shell_pipeline import Command, InputProcSub, Pipeline
 
@@ -115,7 +116,7 @@ def cmd_pyexec_vcf_mod_haploid_patch(
     if tech.upper() not in ("HIFI", "ONT"):
         raise ValueError(f"Unsupported tech '{tech}', must be 'HIFI' or 'ONT'")
 
-    cmd = f"sentieon pyexec {kwargs['vcf_mod_py']} -t {cores} "
+    cmd = f"{sys.executable} {kwargs['vcf_mod_py']} -t {cores} "
     cmd += "haploid_patch "
     cmd += f"--patch1 {hap1_patch} --patch2 {hap2_patch}"
     if tech.upper() == "HIFI":
@@ -138,8 +139,7 @@ def cmd_pyexec_vcf_mod_patch(
     """Patch DNAscope and DNAscopeHP VCF files"""
 
     cmd = [
-        "sentieon",
-        "pyexec",
+        sys.executable,
         str(kwargs["vcf_mod_py"]),
         "-t",
         str(cores),
@@ -163,8 +163,7 @@ def cmd_pyexec_gvcf_combine(
     """Combine gVCF files"""
 
     cmd1 = Command(
-        "sentieon",
-        "pyexec",
+        sys.executable,
         str(kwargs["gvcf_combine_py"]),
         "-t",
         str(cores),
@@ -196,8 +195,7 @@ def cmd_pyexec_vcf_mod_merge(
     """Merge haploid VCF files"""
 
     cmd = [
-        "sentieon",
-        "pyexec",
+        sys.executable,
         kwargs["vcf_mod_py"],
         "-t",
         str(cores),
@@ -227,8 +225,7 @@ def cmd_pyexec_vcf_mod_haploid_patch2(
     """Patch a single pair of haploid DNAscope and DNAscopeHP VCFs"""
 
     cmd = [
-        "sentieon",
-        "pyexec",
+        sys.executable,
         str(kwargs["vcf_mod_py"]),
         "-t",
         str(cores),
@@ -252,8 +249,7 @@ def cmd_pyexec_hybrid_select(
     slop_size: int = 1000,
 ) -> Pipeline:
     select_cmd = Command(
-        "sentieon",
-        "pyexec",
+        sys.executable,
         str(hybrid_select),
         "-v",
         str(vcf),
@@ -302,8 +298,7 @@ def cmd_pyexec_hybrid_anno(
     threads: int,
 ) -> Pipeline:
     cmd = [
-        "sentieon",
-        "pyexec",
+        sys.executable,
         str(hybrid_anno),
         "-v",
         str(vcf),
@@ -900,30 +895,26 @@ def cmd_extract_kmc(
     reference: pathlib.Path,
     extract_model: pathlib.Path,
     tmp_dir: pathlib.Path,
-    threads=1,
+    rw_bam: pathlib.Path,
+    threads: int = 1,
 ) -> Pipeline:
-    merge_cmd = Command(
-        "samtools",
-        "merge",
-        "--reference",
-        str(reference),
-        "-@",
-        str(threads),
-        "-u",
-        "-o",
-        "/dev/stdout",
-        *[str(x) for x in input_aln],
+    # `rw_bam` must already be a symlink to /dev/stdout;
+    # ReadWriter writes to it, which resolves to the driver's stdout (= the
+    # pipe to pgutil extract).
+    driver = Driver(
+        reference=reference,
+        thread_count=threads,
+        input=input_aln,
     )
-    view_cmd = Command(
-        "samtools",
-        "view",
-        "-@",
-        str(threads),
-        "-ub",
-        "-F",
-        "0xf00",
-        "-",
+    driver.add_algo(
+        ReadWriter(
+            rw_bam,
+            bam_compression=1,
+            output_flag_filter="0xf00:0",
+        )
     )
+    driver_cmd = Command(*driver.build_cmd())
+
     extract_cmd = Command(
         "sentieon",
         "pgutil",
@@ -954,7 +945,7 @@ def cmd_extract_kmc(
         str(output_prefix),
         str(tmp_dir),
     )
-    return Pipeline(merge_cmd, view_cmd, extract_cmd, kmc_cmd)
+    return Pipeline(driver_cmd, extract_cmd, kmc_cmd)
 
 
 def cmd_vg_haplotypes(
@@ -1241,7 +1232,9 @@ def cmd_segdup_caller(
     sr_alignments: pathlib.Path,
     reference: pathlib.Path,
     sr_bundle: pathlib.Path,
-    genes="CFH,CFHR3,CYP11B1,CYP2D6,GBA,NCF1,PMS2,SMN1,STRC",
+    input_vcf: Optional[pathlib.Path] = None,
+    sex: Optional[str] = None,
+    genes: Optional[str] = None,
 ) -> Pipeline:
     cmd = [
         "segdup-caller",
@@ -1251,11 +1244,14 @@ def cmd_segdup_caller(
         str(reference),
         "--sr_model",
         str(sr_bundle),
-        "--genes",
-        genes,
-        "--outdir",
-        str(out_segdup),
     ]
+    if input_vcf is not None:
+        cmd.extend(["--input_vcf", str(input_vcf)])
+    if sex is not None:
+        cmd.extend(["--sex", sex])
+    if genes:
+        cmd.extend(["--genes", genes])
+    cmd.extend(["--outdir", str(out_segdup)])
     return Pipeline(Command(*cmd))
 
 
@@ -1373,6 +1369,7 @@ def cmd_minimap2_lift(
     minimap2_i: str = "16G",
     threads=1,
     mm2_xargs: List[str] = [],
+    lift_prefix: str = "GRCh38#0#",
 ) -> Pipeline:
     """Minimap2 alignment with pgutil lift"""
     mm2_cmd = Command(
@@ -1403,6 +1400,8 @@ def cmd_minimap2_lift(
         str(reference_fasta) + ".fai",
         "-g",
         str(gfa_file),
+        "--prefix",
+        lift_prefix,
     )
 
     sort_cmd = Command(

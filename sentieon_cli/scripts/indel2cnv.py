@@ -3,7 +3,6 @@ import Levenshtein
 import math
 import io
 import vcflib
-from scipy.signal import find_peaks
 from multiprocessing import Pool
 import argparse
 import logging
@@ -13,7 +12,13 @@ import sys
 import platform
 import mappy
 import os
+import pathlib
 import re
+
+# When launched as `python indel2cnv.py ...` from an arbitrary CWD,
+# `sentieon_cli` is only importable if the package root is on sys.path.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
+from sentieon_cli._indel2cnv_utils import find_peaks  # noqa: E402
 
 # Convert long INDELs (from assembly-based SV calls) into tandem CNV truth events.
 # Pipeline: find_repeats (detect period) -> match_ref (locate repeat on reference)
@@ -99,8 +104,8 @@ def find_repeats(var_seq, thresh):
     dist = [Levenshtein.ratio(var_seq[:n], var_seq[n:n*2]) for n in range(start, scan_limit, step)]
     if not dist or max(dist) < thresh:
         return [len(var_seq)]
-    peaks, _ = find_peaks(dist, distance=start//step, height=0.95)
-    if peaks.size == 0:
+    peaks = find_peaks(dist, distance=start//step, height=0.95)
+    if len(peaks) == 0:
         mid = length//2
         if Levenshtein.ratio(var_seq[:mid], var_seq[mid:mid*2]) > thresh:
             peaks = [mid/step]

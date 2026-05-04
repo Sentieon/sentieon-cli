@@ -325,9 +325,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         self.collect_readgroups()
         self.validate_readgroups()
 
-        if not str(self.output_vcf).endswith(".vcf.gz"):
-            self.logger.error("The output file should end with '.vcf.gz'")
-            sys.exit(2)
+        self.validate_output_vcf()
         if not self.sr_aln and not self.sr_r1_fastq:
             self.logger.error("Please supply a short-read input file")
             sys.exit(2)
@@ -353,6 +351,9 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
                 "files"
             )
             sys.exit(2)
+
+        if self.sr_r1_fastq:
+            self.validate_bwa_index()
 
     def validate_bundle(self) -> None:
         bundle_info_bytes = ar_load(
@@ -442,9 +443,14 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
                     self.all_readgroups[i][-1].append(parse_rg_line(rg_line))
         for rg in self.sr_readgroups:
             self.all_readgroups[2].append([])
-            self.all_readgroups[2][-1].append(
-                parse_rg_line(rg.replace(r"\t", "\t"))
-            )
+            try:
+                parsed = parse_rg_line(rg.replace(r"\t", "\t"))
+            except ValueError as e:
+                self.logger.error(
+                    "Invalid --sr_readgroups value '%s': %s", rg, e
+                )
+                sys.exit(2)
+            self.all_readgroups[2][-1].append(parsed)
 
     def validate_readgroups(self) -> None:
         # Confirm that all readgroups have the same RGSM

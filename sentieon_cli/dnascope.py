@@ -44,6 +44,7 @@ from .shell_pipeline import Command, Pipeline
 from .util import (
     check_version,
     library_preloaded,
+    parse_rg_line,
     path_arg,
     split_alignment,
     total_memory,
@@ -278,9 +279,7 @@ class DNAscopePipeline(BasePipeline):
                 "and `--readgroups` arguments"
             )
             sys.exit(2)
-        if not str(self.output_vcf).endswith(".vcf.gz"):
-            self.logger.error("The output file should end with '.vcf.gz'")
-            sys.exit(2)
+        self.validate_output_vcf()
         self.skip_multiqc = True if self.skip_metrics else self.skip_multiqc
 
         if not library_preloaded("libjemalloc.so"):
@@ -307,6 +306,16 @@ class DNAscopePipeline(BasePipeline):
                 "files"
             )
             sys.exit(2)
+
+        for rg in self.sr_readgroups:
+            try:
+                parse_rg_line(rg.replace(r"\t", "\t"))
+            except ValueError as e:
+                self.logger.error("Invalid --readgroups value '%s': %s", rg, e)
+                sys.exit(2)
+
+        if self.sr_r1_fastq or self.align or self.collate_align:
+            self.validate_bwa_index()
 
     def configure(self) -> None:
         self.configure_alignment()
@@ -784,8 +793,7 @@ class DNAscopePipeline(BasePipeline):
             rehead_job = Job(
                 Pipeline(
                     Command(
-                        "sentieon",
-                        "pyexec",
+                        sys.executable,
                         str(rehead_script),
                         "--metrics_file",
                         str(wgs_metrics),
