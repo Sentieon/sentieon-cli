@@ -29,6 +29,7 @@ from .driver import (
     DNAscope,
     Driver,
     GCBias,
+    GVCFtyper,
     InsertSizeMetricAlgo,
     LocusCollector,
     MeanQualityByCycle,
@@ -620,6 +621,9 @@ class SentieonPangenome(BasePangenome):
         self.ploidy_json = pathlib.Path(
             str(self.output_vcf).replace(".vcf.gz", "_ploidy.json")
         )
+        out_gvcf = pathlib.Path(
+            str(self.output_vcf).replace(".vcf.gz", ".g.vcf.gz")
+        )
 
         # Intermediate file paths
         bwa_bam = self.tmp_dir.joinpath("sample-bwa.bam")
@@ -831,10 +835,18 @@ class SentieonPangenome(BasePangenome):
         dag.add_job(dnascope_job, dnascope_dependencies)
         apply_dependencies.add(dnascope_job)
 
+        # When --gvcf is set, the model-apply / transfer outputs are
+        # gVCFs; GVCFtyper produces the final VCF at self.output_vcf.
+        small_variants_out = out_gvcf if self.gvcf else self.output_vcf
+
         # transfer annotations from the pop_vcf
         if self.pop_vcf:
             transfer_jobs, concat_job = build_transfer_jobs(
-                transfer_vcf if not self.skip_model_apply else self.output_vcf,
+                (
+                    transfer_vcf
+                    if not self.skip_model_apply
+                    else (small_variants_out)
+                ),
                 self.pop_vcf,
                 raw_vcf,
                 self.tmp_dir,
@@ -849,10 +861,21 @@ class SentieonPangenome(BasePangenome):
             dag.add_job(concat_job, set(transfer_jobs))
             apply_dependencies.add(concat_job)
 
+        small_variants_last_job: Optional[Job] = None
         if not self.skip_model_apply:
             # DNAModelApply
-            apply_job = self.build_dnamodelapply_job(transfer_vcf)
+            apply_job = self.build_dnamodelapply_job(
+                transfer_vcf, small_variants_out
+            )
             dag.add_job(apply_job, apply_dependencies)
+            small_variants_last_job = apply_job
+        elif self.pop_vcf:
+            small_variants_last_job = concat_job
+
+        # Genotype the gVCF to also produce a regular VCF at output_vcf
+        if self.gvcf and small_variants_last_job is not None:
+            gvcftyper_job = self.build_gvcftyper_job(self.output_vcf, out_gvcf)
+            dag.add_job(gvcftyper_job, {small_variants_last_job})
 
         if self.call_svs and sv_vcf and self.has_cnv_model:
             self._add_cnv_jobs(
@@ -1176,10 +1199,11 @@ class SentieonPangenome(BasePangenome):
             self.cores,
         )
 
-    def build_dnamodelapply_job(self, in_vcf) -> Job:
-        if not self.output_vcf:
-            self.logger.error("output_vcf is required")
-            sys.exit(2)
+    def build_dnamodelapply_job(
+        self,
+        in_vcf: pathlib.Path,
+        out_vcf: pathlib.Path,
+    ) -> Job:
         if not self.model_bundle:
             self.logger.error("model_bundle is required")
             sys.exit(2)
@@ -1192,12 +1216,39 @@ class SentieonPangenome(BasePangenome):
             DNAModelApply(
                 model=self.model_bundle.joinpath("dnascope.model"),
                 vcf=in_vcf,
-                output=self.output_vcf,
+                output=out_vcf,
             )
         )
         return Job(
             Pipeline(Command(*driver.build_cmd())),
             "model-apply",
+            self.cores,
+        )
+
+    def build_gvcftyper_job(
+        self,
+        out_vcf: pathlib.Path,
+        in_gvcf: pathlib.Path,
+    ) -> Job:
+        """Genotype a gVCF to produce a VCF"""
+        if not self.reference:
+            self.logger.error("reference is required")
+            sys.exit(2)
+
+        driver = Driver(
+            reference=self.reference,
+            thread_count=self.cores,
+            interval=self.bed,
+        )
+        driver.add_algo(
+            GVCFtyper(
+                output=out_vcf,
+                vcf=in_gvcf,
+            )
+        )
+        return Job(
+            Pipeline(Command(*driver.build_cmd())),
+            "gvcftyper",
             self.cores,
         )
 
