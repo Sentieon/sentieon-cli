@@ -128,11 +128,13 @@ class SentieonPangenome(BasePangenome):
                 "action": "store_true",
             },
             "pangenome_ref_name": {
-                "default": None,
+                "default": "GRCh38",
                 "help": (
-                    "Reference name in the pangenome (GRCh38). When supplied, "
-                    "the 'extract.<pangenome_ref_name>.model' member of the "
-                    "model bundle is used in place of 'extract.model'."
+                    "Reference name in the pangenome (GRCh38). The "
+                    "'extract.<pangenome_ref_name>.model' member of the model "
+                    "bundle is preferred; if it is absent and the reference "
+                    "name is 'GRCh38', the pipeline falls back to "
+                    "'extract.model'."
                 ),
             },
             "pangenome_contig_prefix": {
@@ -266,10 +268,6 @@ class SentieonPangenome(BasePangenome):
     def main(self, args: argparse.Namespace) -> None:
         """Run the pipeline"""
         self.handle_arguments(args)
-        if args.pangenome_ref_name is not None:
-            self.extract_model_name = (
-                f"extract.{args.pangenome_ref_name}.model"
-            )
         self.setup_logging(args)
         self.validate_ref()
 
@@ -520,6 +518,18 @@ class SentieonPangenome(BasePangenome):
             )
 
         bundle_members = set(ar_load(str(self.model_bundle)))
+
+        # Prefer a reference-specific extract model. Fall back to the generic
+        # 'extract.model' only for the default 'GRCh38' reference so that
+        # existing bundles continue to work.
+        extract_candidate = f"extract.{self.pangenome_ref_name}.model"
+        if extract_candidate in bundle_members:
+            self.extract_model_name = extract_candidate
+        elif self.pangenome_ref_name == "GRCh38":
+            self.extract_model_name = "extract.model"
+        else:
+            self.extract_model_name = extract_candidate
+
         if (
             "dnascope.model" not in bundle_members
             or self.extract_model_name not in bundle_members
