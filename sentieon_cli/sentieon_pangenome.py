@@ -128,8 +128,12 @@ class SentieonPangenome(BasePangenome):
                 "action": "store_true",
             },
             "pangenome_ref_name": {
-                "default": "GRCh38",
-                "help": "Reference name in the pangenome (GRCh38)",
+                "default": None,
+                "help": (
+                    "Reference name in the pangenome (GRCh38). When supplied, "
+                    "the 'extract.<pangenome_ref_name>.model' member of the "
+                    "model bundle is used in place of 'extract.model'."
+                ),
             },
             "pangenome_contig_prefix": {
                 "default": "GRCh38#0#",
@@ -241,6 +245,7 @@ class SentieonPangenome(BasePangenome):
         self.call_svs = False
         self.gvcf = False
         self.pangenome_ref_name = "GRCh38"
+        self.extract_model_name = "extract.model"
         self.pangenome_contig_prefix = "GRCh38#0#"
         self.skip_metrics = False
         self.skip_multiqc = False
@@ -261,6 +266,10 @@ class SentieonPangenome(BasePangenome):
     def main(self, args: argparse.Namespace) -> None:
         """Run the pipeline"""
         self.handle_arguments(args)
+        if args.pangenome_ref_name is not None:
+            self.extract_model_name = (
+                f"extract.{args.pangenome_ref_name}.model"
+            )
         self.setup_logging(args)
         self.validate_ref()
 
@@ -513,7 +522,7 @@ class SentieonPangenome(BasePangenome):
         bundle_members = set(ar_load(str(self.model_bundle)))
         if (
             "dnascope.model" not in bundle_members
-            or "extract.model" not in bundle_members
+            or self.extract_model_name not in bundle_members
             or "minimap2.model" not in bundle_members
         ):
             self.logger.error(
@@ -686,7 +695,7 @@ class SentieonPangenome(BasePangenome):
                     ext_fastq,
                     self.sample_input,
                     self.reference,
-                    self.model_bundle.joinpath("extract.model"),
+                    self.model_bundle.joinpath(self.extract_model_name),
                     self.tmp_dir,
                     rw_bam,
                     threads=self.cores,
@@ -919,7 +928,7 @@ class SentieonPangenome(BasePangenome):
                 self.r1_fastq,
                 self.r2_fastq,
                 "@RG\\t" + "\\t".join([f"{x[0]}:{x[1]}" for x in rg.items()]),
-                self.model_bundle.joinpath("extract.model"),
+                self.model_bundle.joinpath(self.extract_model_name),
                 self.model_bundle.joinpath("bwa.model"),
                 self.cores,
                 unzip=unzip,
