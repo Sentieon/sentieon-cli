@@ -130,6 +130,47 @@ class TestSentieonPangenome:
         args_str = " ".join([str(arg) for arg in concat_job.shell.nodes[0].args])
         assert str(pipeline.output_vcf) in args_str
 
+    def test_gvcf_adds_gvcftyper_and_routes_outputs(self):
+        """--gvcf produces a .g.vcf.gz from model-apply and runs
+        GVCFtyper to produce the final VCF at output_vcf."""
+        pipeline = self.create_pipeline()
+        pipeline.gvcf = True
+        dag = pipeline.build_first_dag()
+
+        all_jobs = list(dag.waiting_jobs.keys()) + list(dag.ready_jobs.keys())
+        job_names = [job.name for job in all_jobs]
+        assert "model-apply" in job_names
+        assert "gvcftyper" in job_names
+
+        expected_gvcf = str(pipeline.output_vcf).replace(
+            ".vcf.gz", ".g.vcf.gz"
+        )
+
+        # DNAscope emits gVCF and model-apply writes to .g.vcf.gz
+        for name in ("dnascope-raw", "model-apply"):
+            job = next(j for j in all_jobs if j.name == name)
+            cmd_str = str(job.shell)
+            if name == "dnascope-raw":
+                assert "--emit_mode gvcf" in cmd_str
+            else:
+                assert expected_gvcf in cmd_str
+
+        # GVCFtyper reads the gVCF and writes the final output VCF
+        gvcftyper_job = next(j for j in all_jobs if j.name == "gvcftyper")
+        cmd_str = str(gvcftyper_job.shell)
+        assert "--algo GVCFtyper" in cmd_str
+        assert expected_gvcf in cmd_str
+        assert str(pipeline.output_vcf) in cmd_str
+
+    def test_no_gvcftyper_without_gvcf(self):
+        """Without --gvcf, no GVCFtyper job is added"""
+        pipeline = self.create_pipeline()
+        dag = pipeline.build_first_dag()
+
+        all_jobs = list(dag.waiting_jobs.keys()) + list(dag.ready_jobs.keys())
+        job_names = [job.name for job in all_jobs]
+        assert "gvcftyper" not in job_names
+
     def test_call_svs(self):
         """Test that PangenomeSV is added when --call_svs is enabled"""
         pipeline = self.create_pipeline()

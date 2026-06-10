@@ -1,7 +1,7 @@
 
 [project]
 name = "sentieon_cli"
-version = "1.6.2"
+version = "1.6.3"
 description = "Pipeline implementations for the Sentieon software"
 authors = [
     {name = "Don Freed", email = "don.freed@sentieon.com"},

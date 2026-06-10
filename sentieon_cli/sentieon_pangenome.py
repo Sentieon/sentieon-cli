@@ -29,6 +29,7 @@ from .driver import (
     DNAscope,
     Driver,
     GCBias,
+    GVCFtyper,
     InsertSizeMetricAlgo,
     LocusCollector,
     MeanQualityByCycle,
@@ -128,7 +129,13 @@ class SentieonPangenome(BasePangenome):
             },
             "pangenome_ref_name": {
                 "default": "GRCh38",
-                "help": "Reference name in the pangenome (GRCh38)",
+                "help": (
+                    "Reference name in the pangenome (GRCh38). The "
+                    "'extract.<pangenome_ref_name>.model' member of the model "
+                    "bundle is preferred; if it is absent and the reference "
+                    "name is 'GRCh38', the pipeline falls back to "
+                    "'extract.model'."
+                ),
             },
             "pangenome_contig_prefix": {
                 "default": "GRCh38#0#",
@@ -240,6 +247,7 @@ class SentieonPangenome(BasePangenome):
         self.call_svs = False
         self.gvcf = False
         self.pangenome_ref_name = "GRCh38"
+        self.extract_model_name = "extract.model"
         self.pangenome_contig_prefix = "GRCh38#0#"
         self.skip_metrics = False
         self.skip_multiqc = False
@@ -414,6 +422,13 @@ class SentieonPangenome(BasePangenome):
         if self.expansion_catalog is None:
             return
 
+        if self.tech.upper() == "ULTIMA":
+            self.logger.error(
+                "`--expansion_catalog` is not supported with single-end "
+                "(Ultima) input."
+            )
+            sys.exit(2)
+
         if len(self.sample_input) > 1:
             self.logger.error(
                 "`--expansion_catalog` accepts only a single `--sample_input` "
@@ -503,9 +518,21 @@ class SentieonPangenome(BasePangenome):
             )
 
         bundle_members = set(ar_load(str(self.model_bundle)))
+
+        # Prefer a reference-specific extract model. Fall back to the generic
+        # 'extract.model' only for the default 'GRCh38' reference so that
+        # existing bundles continue to work.
+        extract_candidate = f"extract.{self.pangenome_ref_name}.model"
+        if extract_candidate in bundle_members:
+            self.extract_model_name = extract_candidate
+        elif self.pangenome_ref_name == "GRCh38":
+            self.extract_model_name = "extract.model"
+        else:
+            self.extract_model_name = extract_candidate
+
         if (
             "dnascope.model" not in bundle_members
-            or "extract.model" not in bundle_members
+            or self.extract_model_name not in bundle_members
             or "minimap2.model" not in bundle_members
         ):
             self.logger.error(
@@ -613,6 +640,9 @@ class SentieonPangenome(BasePangenome):
         self.ploidy_json = pathlib.Path(
             str(self.output_vcf).replace(".vcf.gz", "_ploidy.json")
         )
+        out_gvcf = pathlib.Path(
+            str(self.output_vcf).replace(".vcf.gz", ".g.vcf.gz")
+        )
 
         # Intermediate file paths
         bwa_bam = self.tmp_dir.joinpath("sample-bwa.bam")
@@ -675,7 +705,7 @@ class SentieonPangenome(BasePangenome):
                     ext_fastq,
                     self.sample_input,
                     self.reference,
-                    self.model_bundle.joinpath("extract.model"),
+                    self.model_bundle.joinpath(self.extract_model_name),
                     self.tmp_dir,
                     rw_bam,
                     threads=self.cores,
@@ -824,10 +854,18 @@ class SentieonPangenome(BasePangenome):
         dag.add_job(dnascope_job, dnascope_dependencies)
         apply_dependencies.add(dnascope_job)
 
+        # When --gvcf is set, the model-apply / transfer outputs are
+        # gVCFs; GVCFtyper produces the final VCF at self.output_vcf.
+        small_variants_out = out_gvcf if self.gvcf else self.output_vcf
+
         # transfer annotations from the pop_vcf
         if self.pop_vcf:
             transfer_jobs, concat_job = build_transfer_jobs(
-                transfer_vcf if not self.skip_model_apply else self.output_vcf,
+                (
+                    transfer_vcf
+                    if not self.skip_model_apply
+                    else (small_variants_out)
+                ),
                 self.pop_vcf,
                 raw_vcf,
                 self.tmp_dir,
@@ -842,10 +880,21 @@ class SentieonPangenome(BasePangenome):
             dag.add_job(concat_job, set(transfer_jobs))
             apply_dependencies.add(concat_job)
 
+        small_variants_last_job: Optional[Job] = None
         if not self.skip_model_apply:
             # DNAModelApply
-            apply_job = self.build_dnamodelapply_job(transfer_vcf)
+            apply_job = self.build_dnamodelapply_job(
+                transfer_vcf, small_variants_out
+            )
             dag.add_job(apply_job, apply_dependencies)
+            small_variants_last_job = apply_job
+        elif self.pop_vcf:
+            small_variants_last_job = concat_job
+
+        # Genotype the gVCF to also produce a regular VCF at output_vcf
+        if self.gvcf and small_variants_last_job is not None:
+            gvcftyper_job = self.build_gvcftyper_job(self.output_vcf, out_gvcf)
+            dag.add_job(gvcftyper_job, {small_variants_last_job})
 
         if self.call_svs and sv_vcf and self.has_cnv_model:
             self._add_cnv_jobs(
@@ -889,7 +938,7 @@ class SentieonPangenome(BasePangenome):
                 self.r1_fastq,
                 self.r2_fastq,
                 "@RG\\t" + "\\t".join([f"{x[0]}:{x[1]}" for x in rg.items()]),
-                self.model_bundle.joinpath("extract.model"),
+                self.model_bundle.joinpath(self.extract_model_name),
                 self.model_bundle.joinpath("bwa.model"),
                 self.cores,
                 unzip=unzip,
@@ -1169,10 +1218,11 @@ class SentieonPangenome(BasePangenome):
             self.cores,
         )
 
-    def build_dnamodelapply_job(self, in_vcf) -> Job:
-        if not self.output_vcf:
-            self.logger.error("output_vcf is required")
-            sys.exit(2)
+    def build_dnamodelapply_job(
+        self,
+        in_vcf: pathlib.Path,
+        out_vcf: pathlib.Path,
+    ) -> Job:
         if not self.model_bundle:
             self.logger.error("model_bundle is required")
             sys.exit(2)
@@ -1185,12 +1235,39 @@ class SentieonPangenome(BasePangenome):
             DNAModelApply(
                 model=self.model_bundle.joinpath("dnascope.model"),
                 vcf=in_vcf,
-                output=self.output_vcf,
+                output=out_vcf,
             )
         )
         return Job(
             Pipeline(Command(*driver.build_cmd())),
             "model-apply",
+            self.cores,
+        )
+
+    def build_gvcftyper_job(
+        self,
+        out_vcf: pathlib.Path,
+        in_gvcf: pathlib.Path,
+    ) -> Job:
+        """Genotype a gVCF to produce a VCF"""
+        if not self.reference:
+            self.logger.error("reference is required")
+            sys.exit(2)
+
+        driver = Driver(
+            reference=self.reference,
+            thread_count=self.cores,
+            interval=self.bed,
+        )
+        driver.add_algo(
+            GVCFtyper(
+                output=out_vcf,
+                vcf=in_gvcf,
+            )
+        )
+        return Job(
+            Pipeline(Command(*driver.build_cmd())),
+            "gvcftyper",
             self.cores,
         )
 
