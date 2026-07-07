@@ -91,6 +91,57 @@ class TestSentieonPangenome:
 
         return pipeline
 
+    def create_fastq_pipeline(self):
+        """Create a fastq-input SentieonPangenome pipeline for testing.
+
+        The default fixture uses BAM/CRAM input, which does not exercise the
+        dedup/metrics branch of ``build_first_dag``. This variant provides
+        FASTQ input so the bwa/mm2 dedup jobs are created.
+        """
+        mock_r1 = self.mock_dir / "sample_R1.fastq.gz"
+        mock_r2 = self.mock_dir / "sample_R2.fastq.gz"
+        for fq in (mock_r1, mock_r2):
+            fq.touch()
+
+        pipeline = self.create_pipeline()
+        pipeline.sample_input = []
+        pipeline.r1_fastq = [mock_r1]
+        pipeline.r2_fastq = [mock_r2]
+        pipeline.fastq_readgroup = {"ID": "rg1", "SM": "sample1"}
+        pipeline.skip_metrics = False
+        pipeline.skip_multiqc = True
+        return pipeline
+
+    def test_dedup_metrics_output(self):
+        """Dedup on the primary (bwa) alignment emits a --metrics file that
+        lands in the metrics directory scanned by MultiQC."""
+        pipeline = self.create_fastq_pipeline()
+        dag = pipeline.build_first_dag()
+
+        job_names, all_jobs = self._get_all_job_names(dag)
+        assert "dedup-bwa" in job_names
+        assert "dedup-mm2" in job_names
+
+        bwa_dedup = next(j for j in all_jobs if j.name == "dedup-bwa")
+        bwa_cmd = str(bwa_dedup.shell)
+        assert "--algo Dedup" in bwa_cmd
+        assert "--metrics" in bwa_cmd
+        assert "output_metrics/output.txt.dedup_metrics.txt" in bwa_cmd
+
+        # The mm2 dedup does not emit a duplicate-metrics file
+        mm2_dedup = next(j for j in all_jobs if j.name == "dedup-mm2")
+        assert "--metrics" not in str(mm2_dedup.shell)
+
+    def test_dedup_metrics_skipped(self):
+        """No Dedup --metrics output when metrics collection is skipped."""
+        pipeline = self.create_fastq_pipeline()
+        pipeline.skip_metrics = True
+        dag = pipeline.build_first_dag()
+
+        _, all_jobs = self._get_all_job_names(dag)
+        bwa_dedup = next(j for j in all_jobs if j.name == "dedup-bwa")
+        assert "--metrics" not in str(bwa_dedup.shell)
+
     def test_model_apply_default(self):
         """Test that model apply job is created by default"""
         pipeline = self.create_pipeline()
