@@ -68,7 +68,7 @@ SENT_PANGENOME_MIN_VERSIONS = {
 }
 
 SEGDUP_MIN_VERSION = {
-    "segdup-caller": packaging.version.Version("0.5.1"),
+    "segdup-caller": packaging.version.Version("0.7.0"),
 }
 
 EXPANSION_MIN_VERSION = {
@@ -1303,6 +1303,13 @@ class SentieonPangenome(BasePangenome):
             sys.exit(2)
 
         sex = "male" if self.sample_sex == SampleSex.MALE else "female"
+
+        # segdup-caller's default `main.min_map_qual` of 45 is too strict
+        # for Ultima alignments.
+        overrides = []
+        if self.tech.upper() == "ULTIMA":
+            overrides.append("main.min_map_qual=30")
+
         return Job(
             cmds.cmd_segdup_caller(
                 out_segdup,
@@ -1312,6 +1319,7 @@ class SentieonPangenome(BasePangenome):
                 input_vcf=input_vcf,
                 sex=sex,
                 genes=genes,
+                overrides=overrides,
             ),
             "segdup-caller",
             self.cores,

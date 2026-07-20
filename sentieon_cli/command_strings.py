@@ -1235,6 +1235,7 @@ def cmd_segdup_caller(
     input_vcf: Optional[pathlib.Path] = None,
     sex: Optional[str] = None,
     genes: Optional[str] = None,
+    overrides: Optional[List[str]] = None,
 ) -> Pipeline:
     cmd = [
         "segdup-caller",
@@ -1251,6 +1252,8 @@ def cmd_segdup_caller(
         cmd.extend(["--sex", sex])
     if genes:
         cmd.extend(["--genes", genes])
+    for override in overrides or []:
+        cmd.extend(["--set", override])
     cmd.extend(["--outdir", str(out_segdup)])
     return Pipeline(Command(*cmd))
 

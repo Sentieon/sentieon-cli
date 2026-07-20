@@ -14,6 +14,7 @@ from unittest.mock import patch, MagicMock
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from sentieon_cli.sentieon_pangenome import SentieonPangenome
+from sentieon_cli.base_pangenome import SampleSex
 from sentieon_cli.dag import DAG
 
 
@@ -221,6 +222,27 @@ class TestSentieonPangenome:
         all_jobs = list(dag.waiting_jobs.keys()) + list(dag.ready_jobs.keys())
         job_names = [job.name for job in all_jobs]
         assert "gvcftyper" not in job_names
+
+    def build_segdup_cmd(self, tech):
+        """Build the segdup-caller command string for a given platform"""
+        pipeline = self.create_pipeline()
+        pipeline.tech = tech
+        pipeline.sample_sex = SampleSex.FEMALE
+        job = pipeline.build_segdup_job(
+            self.mock_dir / "output_segdups",
+            self.mock_bam,
+            self.mock_vcf,
+            None,
+        )
+        return str(job.shell)
+
+    def test_segdup_ultima_lowers_min_map_qual(self):
+        """Ultima input overrides segdup-caller's default min_map_qual"""
+        assert "--set main.min_map_qual=30" in self.build_segdup_cmd("Ultima")
+
+    def test_segdup_no_override_for_short_reads(self):
+        """Non-Ultima input leaves the segdup-caller defaults alone"""
+        assert "--set" not in self.build_segdup_cmd("Illumina")
 
     def test_call_svs(self):
         """Test that PangenomeSV is added when --call_svs is enabled"""
