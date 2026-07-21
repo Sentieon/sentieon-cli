@@ -368,9 +368,11 @@ def hybrid_stage1(
 
 
 def hybrid_stage3(
-    out_bam: pathlib.Path,
+    out_aln: pathlib.Path,
+    reference: pathlib.Path,
     driver: BaseDriver,
     cores: int,
+    util_sort_args: str = "",
 ) -> Pipeline:
     sort_cmd = Command(
         "sentieon",
@@ -380,8 +382,11 @@ def hybrid_stage3(
         "-",
         "-t",
         str(cores),
+        "--reference",
+        str(reference),
         "-o",
-        str(out_bam),
+        str(out_aln),
+        *util_sort_args.split(),
     )
     return Pipeline(Command(*driver.build_cmd()), sort_cmd)
 
