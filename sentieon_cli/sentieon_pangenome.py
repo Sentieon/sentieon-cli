@@ -68,7 +68,7 @@ SENT_PANGENOME_MIN_VERSIONS = {
 }
 
 SEGDUP_MIN_VERSION = {
-    "segdup-caller": packaging.version.Version("0.5.1"),
+    "segdup-caller": packaging.version.Version("0.7.0"),
 }
 
 EXPANSION_MIN_VERSION = {
@@ -743,8 +743,23 @@ class SentieonPangenome(BasePangenome):
         if self.r1_fastq:
             dnascope_bams.append(out_bwa_aln)
             dnascope_bams.append(out_mm2_aln)
+
+            # Emit Dedup metrics for the primary (bwa) short-read alignment so
+            # they land in the metrics directory scanned by MultiQC.
+            dedup_metrics: Optional[pathlib.Path] = None
+            if not self.skip_metrics:
+                metrics_dir = pathlib.Path(
+                    str(self.output_vcf).replace(".vcf.gz", "_metrics")
+                )
+                if not self.dry_run:
+                    metrics_dir.mkdir(exist_ok=True)
+                sample_name = self.output_vcf.name.replace(".vcf.gz", "")
+                dedup_metrics = metrics_dir.joinpath(
+                    sample_name + ".txt.dedup_metrics.txt"
+                )
+
             bwa_lc_job, bwa_dedup_job = self.build_dedup_job(
-                out_bwa_aln, [bwa_bam], "bwa"
+                out_bwa_aln, [bwa_bam], "bwa", metrics=dedup_metrics
             )
             mm2_lc_job, mm2_dedup_job = self.build_dedup_job(
                 out_mm2_aln, [mm2_bam], "mm2", left_align=True
@@ -1058,6 +1073,7 @@ class SentieonPangenome(BasePangenome):
         input_bam: List[pathlib.Path],
         tag: str,
         left_align=False,
+        metrics: Optional[pathlib.Path] = None,
     ) -> Tuple[Job, Job]:
         """Build deduplication job"""
         score_file = self.tmp_dir.joinpath(f"sample-{tag}-score.txt.gz")
@@ -1090,7 +1106,7 @@ class SentieonPangenome(BasePangenome):
             input=input_bam,
             read_filter=read_filters,
         )
-        driver2.add_algo(Dedup(output_bam, score_file))
+        driver2.add_algo(Dedup(output_bam, score_file, metrics=metrics))
 
         dedup_job = Job(
             Pipeline(Command(*driver2.build_cmd())),
@@ -1287,6 +1303,13 @@ class SentieonPangenome(BasePangenome):
             sys.exit(2)
 
         sex = "male" if self.sample_sex == SampleSex.MALE else "female"
+
+        # segdup-caller's default `main.min_map_qual` of 45 is too strict
+        # for Ultima alignments.
+        overrides = []
+        if self.tech.upper() == "ULTIMA":
+            overrides.append("main.min_map_qual=30")
+
         return Job(
             cmds.cmd_segdup_caller(
                 out_segdup,
@@ -1296,6 +1319,7 @@ class SentieonPangenome(BasePangenome):
                 input_vcf=input_vcf,
                 sex=sex,
                 genes=genes,
+                overrides=overrides,
             ),
             "segdup-caller",
             self.cores,

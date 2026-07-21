@@ -916,7 +916,10 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         rm_cmd = ["rm", str(stage1_bam), str(stage1_hap_bam)]
         rm_job3 = Job(Pipeline(Command(*rm_cmd, fail_ok=True)), "rm-tmp3", 0)
 
-        stage3_bam = self.tmp_dir.joinpath("hybrid_stage3.bam")
+        suffix = "bam" if self.bam_format else "cram"
+        stage3_aln = pathlib.Path(
+            str(self.output_vcf).replace(".vcf.gz", f"_sr_realigned.{suffix}")
+        )
         driver = Driver(
             reference=self.reference,
             thread_count=self.cores,
@@ -933,7 +936,8 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         )
         third_stage_job = Job(
             cmds.hybrid_stage3(
-                stage3_bam,
+                stage3_aln,
+                reference=self.reference,
                 driver=driver,
                 cores=self.cores,
             ),
@@ -949,7 +953,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             reference=self.reference,
             thread_count=self.cores,
             replace_rg=rg_info.replace_rg_args[0],
-            input=lr_aln + [stage3_bam],
+            input=lr_aln + [stage3_aln],
             interval=stage2_bed,
             read_filter=rg_info.ultima_read_filter + rg_info.lr_rg_read_filter,
         )

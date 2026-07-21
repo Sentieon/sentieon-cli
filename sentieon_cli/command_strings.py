@@ -368,9 +368,11 @@ def hybrid_stage1(
 
 
 def hybrid_stage3(
-    out_bam: pathlib.Path,
+    out_aln: pathlib.Path,
+    reference: pathlib.Path,
     driver: BaseDriver,
     cores: int,
+    util_sort_args: str = "",
 ) -> Pipeline:
     sort_cmd = Command(
         "sentieon",
@@ -380,8 +382,11 @@ def hybrid_stage3(
         "-",
         "-t",
         str(cores),
+        "--reference",
+        str(reference),
         "-o",
-        str(out_bam),
+        str(out_aln),
+        *util_sort_args.split(),
     )
     return Pipeline(Command(*driver.build_cmd()), sort_cmd)
 
@@ -1235,6 +1240,7 @@ def cmd_segdup_caller(
     input_vcf: Optional[pathlib.Path] = None,
     sex: Optional[str] = None,
     genes: Optional[str] = None,
+    overrides: Optional[List[str]] = None,
 ) -> Pipeline:
     cmd = [
         "segdup-caller",
@@ -1251,6 +1257,8 @@ def cmd_segdup_caller(
         cmd.extend(["--sex", sex])
     if genes:
         cmd.extend(["--genes", genes])
+    for override in overrides or []:
+        cmd.extend(["--set", override])
     cmd.extend(["--outdir", str(out_segdup)])
     return Pipeline(Command(*cmd))
 

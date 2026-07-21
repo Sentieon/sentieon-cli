@@ -14,6 +14,7 @@ from unittest.mock import patch, MagicMock
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from sentieon_cli.sentieon_pangenome import SentieonPangenome
+from sentieon_cli.base_pangenome import SampleSex
 from sentieon_cli.dag import DAG
 
 
@@ -90,6 +91,57 @@ class TestSentieonPangenome:
         pipeline.pcr_free = False
 
         return pipeline
+
+    def create_fastq_pipeline(self):
+        """Create a fastq-input SentieonPangenome pipeline for testing.
+
+        The default fixture uses BAM/CRAM input, which does not exercise the
+        dedup/metrics branch of ``build_first_dag``. This variant provides
+        FASTQ input so the bwa/mm2 dedup jobs are created.
+        """
+        mock_r1 = self.mock_dir / "sample_R1.fastq.gz"
+        mock_r2 = self.mock_dir / "sample_R2.fastq.gz"
+        for fq in (mock_r1, mock_r2):
+            fq.touch()
+
+        pipeline = self.create_pipeline()
+        pipeline.sample_input = []
+        pipeline.r1_fastq = [mock_r1]
+        pipeline.r2_fastq = [mock_r2]
+        pipeline.fastq_readgroup = {"ID": "rg1", "SM": "sample1"}
+        pipeline.skip_metrics = False
+        pipeline.skip_multiqc = True
+        return pipeline
+
+    def test_dedup_metrics_output(self):
+        """Dedup on the primary (bwa) alignment emits a --metrics file that
+        lands in the metrics directory scanned by MultiQC."""
+        pipeline = self.create_fastq_pipeline()
+        dag = pipeline.build_first_dag()
+
+        job_names, all_jobs = self._get_all_job_names(dag)
+        assert "dedup-bwa" in job_names
+        assert "dedup-mm2" in job_names
+
+        bwa_dedup = next(j for j in all_jobs if j.name == "dedup-bwa")
+        bwa_cmd = str(bwa_dedup.shell)
+        assert "--algo Dedup" in bwa_cmd
+        assert "--metrics" in bwa_cmd
+        assert "output_metrics/output.txt.dedup_metrics.txt" in bwa_cmd
+
+        # The mm2 dedup does not emit a duplicate-metrics file
+        mm2_dedup = next(j for j in all_jobs if j.name == "dedup-mm2")
+        assert "--metrics" not in str(mm2_dedup.shell)
+
+    def test_dedup_metrics_skipped(self):
+        """No Dedup --metrics output when metrics collection is skipped."""
+        pipeline = self.create_fastq_pipeline()
+        pipeline.skip_metrics = True
+        dag = pipeline.build_first_dag()
+
+        _, all_jobs = self._get_all_job_names(dag)
+        bwa_dedup = next(j for j in all_jobs if j.name == "dedup-bwa")
+        assert "--metrics" not in str(bwa_dedup.shell)
 
     def test_model_apply_default(self):
         """Test that model apply job is created by default"""
@@ -170,6 +222,27 @@ class TestSentieonPangenome:
         all_jobs = list(dag.waiting_jobs.keys()) + list(dag.ready_jobs.keys())
         job_names = [job.name for job in all_jobs]
         assert "gvcftyper" not in job_names
+
+    def build_segdup_cmd(self, tech):
+        """Build the segdup-caller command string for a given platform"""
+        pipeline = self.create_pipeline()
+        pipeline.tech = tech
+        pipeline.sample_sex = SampleSex.FEMALE
+        job = pipeline.build_segdup_job(
+            self.mock_dir / "output_segdups",
+            self.mock_bam,
+            self.mock_vcf,
+            None,
+        )
+        return str(job.shell)
+
+    def test_segdup_ultima_lowers_min_map_qual(self):
+        """Ultima input overrides segdup-caller's default min_map_qual"""
+        assert "--set main.min_map_qual=30" in self.build_segdup_cmd("Ultima")
+
+    def test_segdup_no_override_for_short_reads(self):
+        """Non-Ultima input leaves the segdup-caller defaults alone"""
+        assert "--set" not in self.build_segdup_cmd("Illumina")
 
     def test_call_svs(self):
         """Test that PangenomeSV is added when --call_svs is enabled"""

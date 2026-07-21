@@ -1,5 +1,9 @@
 import os
+import subprocess as sp
 import sys
+from unittest.mock import patch
+
+import packaging.version
 
 sys.path.insert(
     0, os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -28,3 +32,63 @@ def test_split_numa_nodes():
         "48-55",
         "56-63",
     ]
+
+
+def test_check_version_parses_version():
+    """A well-behaved `--version` is compared against the minimum"""
+    min_version = packaging.version.Version("0.9.0")
+    with (
+        patch.object(
+            sentieon_cli.util.shutil,
+            "which",
+            return_value="/bin/segdup-caller",
+        ),
+        patch.object(
+            sentieon_cli.util.sp,
+            "check_output",
+            return_value=b"segdup-caller 0.9.0\n",
+        ),
+    ):
+        assert sentieon_cli.util.check_version("segdup-caller", min_version)
+
+    with (
+        patch.object(
+            sentieon_cli.util.shutil,
+            "which",
+            return_value="/bin/segdup-caller",
+        ),
+        patch.object(
+            sentieon_cli.util.sp,
+            "check_output",
+            return_value=b"segdup-caller 0.8.0\n",
+        ),
+    ):
+        assert not sentieon_cli.util.check_version(
+            "segdup-caller", min_version
+        )
+
+
+def test_check_version_handles_failed_command():
+    """A non-zero `--version` reports False rather than raising.
+
+    segdup-caller >=0.6.0 exits non-zero on `--version` when
+    SENTIEON_LICENSE is unset.
+    """
+    min_version = packaging.version.Version("0.9.0")
+    for err in (
+        sp.CalledProcessError(1, ["segdup-caller", "--version"]),
+        OSError("Exec format error"),
+    ):
+        with (
+            patch.object(
+                sentieon_cli.util.shutil,
+                "which",
+                return_value="/bin/segdup-caller",
+            ),
+            patch.object(
+                sentieon_cli.util.sp, "check_output", side_effect=err
+            ),
+        ):
+            assert not sentieon_cli.util.check_version(
+                "segdup-caller", min_version
+            )

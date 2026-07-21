@@ -54,9 +54,15 @@ def check_version(
         return True
 
     cmd_list.append("--version")
-    cmd_version_str = (
-        sp.check_output(cmd_list).decode("utf-8", "ignore").strip()
-    )
+    try:
+        cmd_version_str = (
+            sp.check_output(cmd_list).decode("utf-8", "ignore").strip()
+        )
+    except (sp.CalledProcessError, OSError) as e:
+        logger.error(
+            "Error: could not determine the version of '%s': %s", cmd, e
+        )
+        return False
     if cmd_list[0] == "sentieon":
         cmd_version_str = cmd_version_str.split("-")[-1]
     elif cmd_list[0] == "pbsv":
