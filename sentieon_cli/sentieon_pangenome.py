@@ -1226,6 +1226,7 @@ class SentieonPangenome(BasePangenome):
                 PangenomeSV(
                     sv_vcf,
                     gfa_file=gfa_file,
+                    prefix=self.pangenome_contig_prefix,
                 )
             )
         return Job(
