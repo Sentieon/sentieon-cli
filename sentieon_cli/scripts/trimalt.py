@@ -76,11 +76,11 @@ for line in sys.stdin:
 
     if info:
         for i,(k,v) in enumerate(info):
-            n = infos.get(k) if v != '.' else None
-            if n == 'A':
+            number = infos.get(k) if v != '.' else None
+            if number == 'A':
                 v = v.split(',')
                 info[i] = k + '=' + ','.join(x for x,y in zip(v, ka) if y)
-            elif n == 'R':
+            elif number == 'R':
                 v = v.split(',')
                 info[i] = k + '=' + ','.join(x for x,y in zip(v, kr) if y)
             elif v is True:
@@ -95,14 +95,14 @@ for line in sys.stdin:
         for j,val in enumerate(vals[9:]):
             val = val.split(':')
             for i,v in enumerate(val):
-                n = fmts.get(fmt[i]) if v != '.' else None
-                if n == 'A':
+                number = fmts.get(fmt[i]) if v != '.' else None
+                if number == 'A':
                     v = v.split(',')
                     val[i] = ','.join(x for x,y in zip(v, ka) if y)
-                elif n == 'R':
+                elif number == 'R':
                     v = v.split(',')
                     val[i] = ','.join(x for x,y in zip(v, kr) if y)
-                elif n == 'G':
+                elif number == 'G':
                     v = v.split(',')
                     kx = kr if len(v) == len(kr) else kg if len(v) == len(kg) else None
                     assert kx

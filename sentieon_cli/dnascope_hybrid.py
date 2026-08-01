@@ -45,7 +45,6 @@ from .shard import (
     parse_fai,
     vcf_contigs,
 )
-from .transfer import build_transfer_jobs
 
 logger = get_logger(__name__)
 
@@ -60,6 +59,9 @@ CALLING_MIN_VERSIONS = {
 MIN_BUNDLE_VERSION = {
     "ONT": packaging.version.Version("1.2"),
 }
+
+HYBRID_TRANSFER_WORKERS = 32
+FINAL_NORM_PROCESSES = 3
 
 
 class RgInfo:
@@ -651,8 +653,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             concat_job,
             rm_job5,
             anno_job,
-            transfer_jobs,
-            transfer_concat,
+            transfer_job,
             apply_job,
             norm_job,
         ) = self.call_variants(sr_aln, lr_aln, rg_info)
@@ -670,11 +671,9 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         dag.add_job(anno_job, {concat_job})
 
         apply_dependencies = {anno_job}
-        if transfer_jobs and transfer_concat:
-            for job in transfer_jobs:
-                dag.add_job(job, {anno_job})
-            dag.add_job(transfer_concat, set(transfer_jobs))
-            apply_dependencies = {transfer_concat}
+        if transfer_job:
+            dag.add_job(transfer_job, {anno_job})
+            apply_dependencies = {transfer_job}
 
         if apply_job:
             dag.add_job(apply_job, apply_dependencies)
@@ -715,7 +714,6 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         Job,
         Job,
         Job,
-        Optional[List[Job]],
         Optional[Job],
         Optional[Job],
         Optional[Job],
@@ -781,7 +779,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
                 threads=self.cores,
             ),
             "hybrid-select",
-            0,
+            self.cores,
         )
 
         mapq0_bed = self.tmp_dir.joinpath("hybrid_mapq0.bed")
@@ -1010,11 +1008,10 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
                 self.cores,
             ),
             "anno-calls",
-            0,
+            self.cores,
         )
 
-        transfer_jobs: Optional[List[Job]] = None
-        transfer_concat_job: Optional[Job] = None
+        transfer_job: Optional[Job] = None
         input_to_apply = anno_target
 
         if self.pop_vcf:
@@ -1024,15 +1021,29 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             if self.skip_model_apply:
                 transfer_target = self.output_vcf
 
-            transfer_jobs, transfer_concat_job = build_transfer_jobs(
-                transfer_target,
-                self.pop_vcf,
-                anno_target,
-                self.tmp_dir,
-                self.shards,
-                self.pop_vcf_contigs,
-                self.fai_data,
-                self.dry_run,
+            hybrid_transfer = pathlib.Path(
+                str(
+                    files("sentieon_cli.scripts").joinpath(
+                        "hybrid_transfer.py"
+                    )
+                )
+            ).resolve()
+            transfer_workers = min(
+                HYBRID_TRANSFER_WORKERS,
+                max(1, self.cores - 1),
+            )
+            transfer_job = Job(
+                cmds.cmd_pyexec_hybrid_transfer(
+                    out_vcf=transfer_target,
+                    raw_vcf=anno_target,
+                    population_vcf=self.pop_vcf,
+                    reference_fai=ref_fai,
+                    temp_dir=self.tmp_dir,
+                    hybrid_transfer=hybrid_transfer,
+                    threads=self.cores,
+                    workers=transfer_workers,
+                ),
+                "population-transfer",
                 self.cores,
             )
             input_to_apply = transfer_target
@@ -1056,8 +1067,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
                 concat_job,
                 rm_job5,
                 anno_job,
-                transfer_jobs,
-                transfer_concat_job,
+                transfer_job,
                 None,
                 None,
             )
@@ -1089,7 +1099,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
                 exclude_homref=not self.gvcf,
             ),
             "final-norm",
-            0,
+            min(FINAL_NORM_PROCESSES, self.cores),
         )
         return (
             call_job,
@@ -1109,8 +1119,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             concat_job,
             rm_job5,
             anno_job,
-            transfer_jobs,
-            transfer_concat_job,
+            transfer_job,
             apply_job,
             norm_job,
         )

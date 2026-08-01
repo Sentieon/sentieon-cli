@@ -18,6 +18,7 @@ from sentieon_cli.dnascope import DNAscopePipeline
 from sentieon_cli.dnascope_longread import DNAscopeLRPipeline
 from sentieon_cli.dag import DAG
 from sentieon_cli.job import Job
+from sentieon_cli.scheduler import ThreadScheduler
 from sentieon_cli.shell_pipeline import Pipeline, Command
 
 
@@ -245,6 +246,22 @@ class TestDAGJobProperties:
             4,
         )
         assert job.shell.nodes[0].fail_ok is False
+
+    def test_full_budget_jobs_do_not_oversubscribe(self):
+        """Two full-budget worker pools cannot be scheduled together."""
+
+        dag = DAG()
+        first = Job(Pipeline(Command("first")), "first", 8)
+        second = Job(Pipeline(Command("second")), "second", 8)
+        trivial = Job(Pipeline(Command("trivial")), "trivial", 0)
+        dag.add_job(first)
+        dag.add_job(second)
+        dag.add_job(trivial)
+
+        scheduler = ThreadScheduler(dag, threads=8).schedule()
+        scheduled = scheduler.send(None)
+        assert trivial in scheduled
+        assert len({first, second} & scheduled) == 1
 
 
 class TestLongReadDAGConstruction:

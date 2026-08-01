@@ -248,45 +248,20 @@ def cmd_pyexec_hybrid_select(
     threads: int,
     slop_size: int = 1000,
 ) -> Pipeline:
-    select_cmd = Command(
-        sys.executable,
-        str(hybrid_select),
-        "-v",
-        str(vcf),
-        "-t",
-        str(threads),
-        "-",
-    )
-    view_cmd = Command(
-        "bcftools",
-        "view",
-        "-f",
-        "PASS,.",
-        "-",
-    )
-    query_cmd = Command(
-        "bcftools",
-        "query",
-        "-f",
-        "%CHROM\\t%POS0\\t%END\\n",
-        "-",
-    )
-    slop_cmd = Command(
-        "bedtools",
-        "slop",
-        "-b",
-        str(slop_size),
-        "-g",
-        str(ref_fai),
-        "-i",
-        "-",
-    )
     return Pipeline(
-        select_cmd,
-        view_cmd,
-        query_cmd,
-        slop_cmd,
-        file_output=out_bed,
+        Command(
+            sys.executable,
+            str(hybrid_select),
+            "-v",
+            str(vcf),
+            "-t",
+            str(threads),
+            "--reference-fai",
+            str(ref_fai),
+            "--slop-size",
+            str(slop_size),
+            str(out_bed),
+        )
     )
 
 
@@ -309,6 +284,39 @@ def cmd_pyexec_hybrid_anno(
         str(out_vcf),
     ]
     return Pipeline(Command(*cmd))
+
+
+def cmd_pyexec_hybrid_transfer(
+    out_vcf: pathlib.Path,
+    raw_vcf: pathlib.Path,
+    population_vcf: pathlib.Path,
+    reference_fai: pathlib.Path,
+    temp_dir: pathlib.Path,
+    hybrid_transfer: pathlib.Path,
+    threads: int,
+    workers: int,
+) -> Pipeline:
+    """Transfer population annotations in one bounded ordered job."""
+
+    return Pipeline(
+        Command(
+            sys.executable,
+            str(hybrid_transfer),
+            "--raw-vcf",
+            str(raw_vcf),
+            "--population-vcf",
+            str(population_vcf),
+            "--reference-fai",
+            str(reference_fai),
+            "--temp-dir",
+            str(temp_dir),
+            "--threads",
+            str(threads),
+            "--workers",
+            str(workers),
+            str(out_vcf),
+        )
+    )
 
 
 def hybrid_stage1(
