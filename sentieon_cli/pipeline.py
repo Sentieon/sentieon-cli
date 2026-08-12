@@ -15,9 +15,10 @@ import packaging.version
 
 from . import command_strings as cmds
 from .dag import DAG
+from .exceptions import DagExecutionError
 from .executor import BaseExecutor, DryRunExecutor, LocalExecutor
 from .job import Job
-from .logging import get_logger
+from .logging import get_logger, set_level
 from .scheduler import ThreadScheduler
 from .util import __version__, check_version, path_arg, tmp
 
@@ -71,17 +72,17 @@ class BasePipeline(ABC):
 
     @classmethod
     def add_arguments(cls, parser: argparse.ArgumentParser):
-        for k, kwargs in cls.params.items():
-            flags = ["--" + k]
+        # Build a fresh kwargs dict per argument so repeated calls do not
+        # mutate the shared class-level params/positionals specs.
+        for k, spec in cls.params.items():
+            kwargs = dict(spec)
+            flags = kwargs.pop("flags", ["--" + k])
             if "default" in kwargs and "type" not in kwargs:
                 kwargs["type"] = type(kwargs["default"])
-            if "flags" in kwargs:
-                flags = kwargs["flags"]
-                del kwargs["flags"]
             parser.add_argument(*flags, **kwargs)
 
-        for k, kwargs in cls.positionals.items():
-            parser.add_argument(k, **kwargs)
+        for k, spec in cls.positionals.items():
+            parser.add_argument(k, **dict(spec))
 
     def handle_arguments(self, args: argparse.Namespace):
         """Update self using the argparse object"""
@@ -106,9 +107,10 @@ class BasePipeline(ABC):
 
     def setup_logging(self, args: argparse.Namespace) -> None:
         self.logger = get_logger(__name__)
-        if not self.logger.parent:
-            raise RuntimeError("Logger has no parent logger")
-        self.logger.parent.setLevel(args.loglevel)
+        # Scope verbosity to this package's loggers rather than the root
+        # logger, so -v/--debug does not turn on DEBUG for every
+        # third-party library.
+        set_level(args.loglevel)
         self.logger.info("Starting sentieon-cli version: %s", __version__)
 
     def __init__(self) -> None:
@@ -130,13 +132,17 @@ class BasePipeline(ABC):
         tmp_dir_str = tmp()
         self.tmp_dir = pathlib.Path(tmp_dir_str)
 
-        dag = self.build_dag()
-        executor = self.run(dag)
-
-        if not self.retain_tmpdir:
-            shutil.rmtree(tmp_dir_str)
-
-        self.check_execution(dag, executor)
+        # Always clean up the temp dir, even if build_dag()/run() raise (an
+        # infeasible DAG, a launch failure, or a KeyboardInterrupt) --
+        # otherwise it would leak. retain_tmpdir is honored on failure too,
+        # so a failed run can still be inspected.
+        try:
+            dag = self.build_dag()
+            executor = self.run(dag)
+            self.check_execution(dag, executor)
+        finally:
+            if not self.retain_tmpdir:
+                shutil.rmtree(tmp_dir_str)
 
     def check_execution(
         self,
@@ -145,10 +151,11 @@ class BasePipeline(ABC):
     ):
         """Check the DAG and executor after a run"""
         if executor.jobs_with_errors:
-            raise ValueError("Execution failed")
+            failed = ", ".join(str(job) for job in executor.jobs_with_errors)
+            raise DagExecutionError(f"Execution failed for jobs: {failed}")
 
         if len(dag.waiting_jobs) > 0 or len(dag.ready_jobs) > 0:
-            raise ValueError(
+            raise DagExecutionError(
                 "The DAG has some unexecuted jobs\n"
                 f"Waiting jobs: {dag.waiting_jobs}\n"
                 f"Ready jobs: {dag.ready_jobs}\n"
