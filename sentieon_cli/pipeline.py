@@ -250,8 +250,13 @@ class BasePipeline(ABC):
         )
 
         self.logger.debug("Creating the executor")
-        Executor = DryRunExecutor if self.dry_run else LocalExecutor
-        executor = Executor(scheduler)
+        executor: BaseExecutor
+        if self.dry_run:
+            executor = DryRunExecutor(scheduler)
+        else:
+            # Handle Ctrl-C/SIGTERM by terminating running jobs gracefully;
+            # the handlers are installed only for the duration of the run.
+            executor = LocalExecutor(scheduler, install_signal_handlers=True)
 
         self.logger.info("Starting execution")
         executor.execute()
