@@ -426,8 +426,7 @@ class TestDAGValidation:
         dag.add_job(job3, {job1, job2})
 
         # Simulate execution
-        dag_gen = dag.update_dag()
-        ready_jobs = dag_gen.send(None)
+        ready_jobs = dag.ready_jobs
 
         # Initially job1 and job2 should be ready
         assert job1 in ready_jobs
@@ -435,11 +434,11 @@ class TestDAGValidation:
         assert job3 not in ready_jobs
 
         # Complete job1
-        new_ready = dag_gen.send(job1)
+        new_ready = dag.mark_finished(job1)
         assert len(new_ready) == 0  # job3 still waiting for job2
 
         # Complete job2
-        new_ready = dag_gen.send(job2)
+        new_ready = dag.mark_finished(job2)
         assert job3 in new_ready  # Now job3 is ready
 
 

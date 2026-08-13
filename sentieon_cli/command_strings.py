@@ -18,6 +18,11 @@ from .shell_pipeline import Command, InputProcSub, Pipeline
 
 logger = get_logger(__name__)
 
+# Requested OS pipe-buffer size (bytes) for throughput-bound alignment
+# pipelines. Applied best-effort: the kernel caps unprivileged requests at
+# fs.pipe-max-size and non-Linux platforms keep their default size.
+ALN_PIPE_SIZE = 268435456
+
 
 def cmd_fai_to_bed(
     fai: pathlib.Path,
@@ -596,9 +601,6 @@ def cmd_samtools_fastq_bwa(
     if input_ref:
         ref_cmd = ["--reference", str(reference)]
 
-    pipebuf_cmd = Command(
-        "perl", "-MFcntl", "-e", "fcntl(STDOUT, 1031, 268435456)"
-    )
     if collate:
         collate_cmd = Command(
             "samtools",
@@ -667,20 +669,18 @@ def cmd_samtools_fastq_bwa(
     )
     if collate_cmd:
         return Pipeline(
-            pipebuf_cmd,
             collate_cmd,
             fastq_cmd,
             bwa_cmd,
             sort_cmd,
-            skip_pipe=(0,),
+            pipe_size=ALN_PIPE_SIZE,
         )
     else:
         return Pipeline(
-            pipebuf_cmd,
             fastq_cmd,
             bwa_cmd,
             sort_cmd,
-            skip_pipe=(0,),
+            pipe_size=ALN_PIPE_SIZE,
         )
 
 
@@ -746,21 +746,10 @@ def cmd_fastq_bwa(
     split: Optional[str] = None,
 ) -> Pipeline:
     """Align an input fastq file with bwa"""
-    pipebuf_cmd = Command(
-        "perl", "-MFcntl", "-e", "fcntl(STDOUT, 1031, 268435456)"
-    )
-    r1_unzip = Pipeline(
-        pipebuf_cmd,
-        Command(str(unzip), "-dc", str(r1)),
-        skip_pipe=(0,),
-    )
+    r1_unzip = Pipeline(Command(str(unzip), "-dc", str(r1)))
     r2_unzip = None
     if r2:
-        r2_unzip = Pipeline(
-            pipebuf_cmd,
-            Command(str(unzip), "-dc", str(r2)),
-            skip_pipe=(0,),
-        )
+        r2_unzip = Pipeline(Command(str(unzip), "-dc", str(r2)))
     bwa_cmd_args: List[Union[str, InputProcSub]] = [
         *(["taskset", "-c", numa] if numa else []),
         "sentieon",
@@ -780,7 +769,6 @@ def cmd_fastq_bwa(
     ]
     if split:
         extract_cmd = Pipeline(
-            pipebuf_cmd,
             Command(
                 "sentieon",
                 "fqidx",
@@ -792,7 +780,6 @@ def cmd_fastq_bwa(
                 InputProcSub(r1_unzip),
                 *([InputProcSub(r2_unzip)] if r2_unzip else []),
             ),
-            skip_pipe=(0,),
         )
         bwa_cmd_args.append(InputProcSub(extract_cmd))
     else:
@@ -816,10 +803,9 @@ def cmd_fastq_bwa(
         *util_sort_args.split(),
     )
     return Pipeline(
-        pipebuf_cmd,
         Command(str(bwa_cmd_args[0]), *bwa_cmd_args[1:]),
         sort_cmd,
-        skip_pipe=(0,),
+        pipe_size=ALN_PIPE_SIZE,
     )
 
 

@@ -2,19 +2,24 @@
 Job objects
 """
 
-import asyncio
-import sys
-import time
 from typing import Dict, Optional
 
-from .logging import get_logger
-from .shell_pipeline import Context, Pipeline
-
-logger = get_logger(__name__)
+from .shell_pipeline import Pipeline
 
 
 class Job:
-    """A job for execution"""
+    """A unit of work: a shell pipeline plus its execution metadata.
+
+    Fields:
+
+    * ``shell`` -- the pipeline to run.
+    * ``name`` -- a human-readable label (not part of identity).
+    * ``threads`` -- CPU threads the job needs (a local scheduling budget).
+    * ``resources`` -- named resource counts (e.g. NUMA-node tokens).
+
+    A job's identity is keyed only on ``shell``: two jobs with the same
+    pipeline are equal (and collide in a DAG) regardless of the other fields.
+    """
 
     def __init__(
         self,
@@ -22,53 +27,25 @@ class Job:
         name: str,
         threads: int = 1,
         resources: Optional[Dict[str, int]] = None,
-    ):
+    ) -> None:
         self.shell = pipeline
         self.name = name
         self.threads = threads
         self.resources = {} if resources is None else resources
 
-    def __hash__(self):
+    def __hash__(self) -> int:
         return hash(self.shell)
 
-    def __eq__(self, other: object):
+    def __eq__(self, other: object) -> bool:
         if isinstance(other, Job):
             return self.shell == other.shell
         return False
 
-    def __ne__(self, other: object):
+    def __ne__(self, other: object) -> bool:
         return not self == other
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"Job({self.name})"
 
-    def __str__(self):
+    def __str__(self) -> str:
         return f"Job({self.name})"
-
-    def run(self, dry_run: bool = False):
-        """Run a command"""
-        if dry_run:
-            print(self.shell)
-            return
-
-        logger.info("running command: %s", self.shell)
-        t0 = time.time()
-        context = Context()
-        try:
-            asyncio.run(
-                self.shell.run(context, stdout=sys.stdout, stderr=sys.stderr)
-            )
-            for subcommand in context.commands:
-                if not subcommand.proc:
-                    logger.error("subcommand has no process: %s", subcommand)
-                    continue
-                ret = asyncio.run(subcommand.proc.wait())
-                if ret != 0 and not subcommand.fail_ok:
-                    logger.error(
-                        f"subcommand failed with code {ret}: {subcommand}"
-                    )
-        except Exception as e:
-            logger.error(f"Failed to run command: {e}")
-        finally:
-            asyncio.run(context.cleanup())
-        logger.info("finished in: %s seconds", f"{time.time() - t0:.1f}")
