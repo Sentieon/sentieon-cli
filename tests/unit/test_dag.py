@@ -1,5 +1,5 @@
 """
-Unit tests for DAG traversal, duplicate detection, and the resume prune.
+Unit tests for DAG traversal and duplicate detection.
 """
 
 import os
@@ -13,7 +13,7 @@ sys.path.insert(
     os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")),
 )
 
-from sentieon_cli.dag import DAG, has_all_outputs  # noqa: E402
+from sentieon_cli.dag import DAG  # noqa: E402
 from sentieon_cli.exceptions import DagExecutionError  # noqa: E402
 from sentieon_cli.job import Job  # noqa: E402
 from sentieon_cli.shell_pipeline import Command, Pipeline  # noqa: E402
@@ -167,113 +167,3 @@ class TestDAGTraversal:
         deps.add(b)  # mutating the caller's set must not affect the DAG
 
         assert dag.waiting_jobs[c] == {a}
-
-
-class TestSkipSatisfied:
-    """Test the pre-run resume prune"""
-
-    def test_satisfied_root_is_marked_finished(self):
-        dag = DAG()
-        job = _job("a")
-        dag.add_job(job)
-        skipped = dag.skip_satisfied(lambda j: True)
-        assert skipped == [job]
-        assert job in dag.finished_jobs
-        assert len(dag.ready_jobs) == 0
-
-    def test_unsatisfied_root_stays_ready(self):
-        dag = DAG()
-        job = _job("a")
-        dag.add_job(job)
-        skipped = dag.skip_satisfied(lambda j: False)
-        assert skipped == []
-        assert job in dag.ready_jobs
-        assert dag.finished_jobs == []
-
-    def test_cascades_down_a_chain_in_topological_order(self):
-        dag = DAG()
-        a, b, c = _job("a"), _job("b"), _job("c")
-        dag.add_job(a)
-        dag.add_job(b, {a})
-        dag.add_job(c, {b})
-        skipped = dag.skip_satisfied(lambda j: True)
-        assert skipped == [a, b, c]
-        assert dag.finished_jobs == [a, b, c]
-        assert len(dag.ready_jobs) == 0
-        assert len(dag.waiting_jobs) == 0
-
-    def test_stops_at_the_first_unsatisfied_job(self):
-        dag = DAG()
-        a, b, c = _job("a"), _job("b"), _job("c")
-        dag.add_job(a)
-        dag.add_job(b, {a})
-        dag.add_job(c, {b})
-        skipped = dag.skip_satisfied(lambda j: j == a)
-        assert skipped == [a]
-        assert b in dag.ready_jobs
-        assert c in dag.waiting_jobs
-
-    def test_blocked_jobs_are_not_offered_to_the_predicate(self):
-        dag = DAG()
-        a, b, c = _job("a"), _job("b"), _job("c")
-        dag.add_job(a)
-        dag.add_job(b, {a})
-        dag.add_job(c, {b})
-        seen = []
-
-        def predicate(job):
-            seen.append(job)
-            return job == a
-
-        dag.skip_satisfied(predicate)
-        # b is offered (a was skipped, unblocking it); c never is -- the
-        # ancestor rule: a job behind an unsatisfied job cannot be skipped.
-        assert seen == [a, b]
-
-    def test_diamond_with_partial_parents(self):
-        dag = DAG()
-        top = _job("top")
-        left, right = _job("left"), _job("right")
-        bottom = _job("bottom")
-        dag.add_job(top)
-        dag.add_job(left, {top})
-        dag.add_job(right, {top})
-        dag.add_job(bottom, {left, right})
-        skipped = dag.skip_satisfied(lambda j: j in (top, left))
-        assert skipped == [top, left]
-        assert right in dag.ready_jobs
-        assert dag.waiting_jobs[bottom] == {right}
-
-    def test_empty_dag_returns_empty(self):
-        assert DAG().skip_satisfied(lambda j: True) == []
-
-
-class TestHasAllOutputs:
-    """Test the default resume predicate"""
-
-    def test_no_declared_outputs_is_never_satisfied(self):
-        assert has_all_outputs(_job("a")) is False
-
-    def test_true_when_all_outputs_exist(self, tmp_path):
-        full = tmp_path / "full.txt"
-        full.write_text("data")
-        empty = tmp_path / "empty.txt"
-        empty.touch()  # zero-byte files count as present
-        job = Job(Pipeline(Command("true")), "j", outputs=[full, empty])
-        assert has_all_outputs(job) is True
-
-    def test_false_when_any_output_is_missing(self, tmp_path):
-        present = tmp_path / "present.txt"
-        present.touch()
-        missing = tmp_path / "missing.txt"
-        job = Job(Pipeline(Command("true")), "j", outputs=[present, missing])
-        assert has_all_outputs(job) is False
-
-    def test_dangling_symlink_counts_as_missing(self, tmp_path):
-        target = tmp_path / "target.txt"
-        target.touch()
-        link = tmp_path / "link.txt"
-        link.symlink_to(target)
-        target.unlink()  # now dangling
-        job = Job(Pipeline(Command("true")), "j", outputs=[link])
-        assert has_all_outputs(job) is False

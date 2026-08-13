@@ -16,7 +16,7 @@ sys.path.insert(
     0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 )
 
-from sentieon_cli.dag import DAG, has_all_outputs  # noqa: E402
+from sentieon_cli.dag import DAG  # noqa: E402
 from sentieon_cli.exceptions import DagExecutionError  # noqa: E402
 from sentieon_cli.executor import (  # noqa: E402
     DryRunExecutor,
@@ -284,140 +284,8 @@ def test_non_oserror_on_start_propagates(monkeypatch):
         LocalExecutor(ThreadScheduler(dag, 1)).execute()
 
 
-def test_missing_input_fails_before_run(tmp_path):
-    """A declared input that is missing fails the job before it runs."""
-    missing = tmp_path / "in.txt"
-    marker = tmp_path / "ran.txt"
-    dag = DAG()
-    job = Job(
-        Pipeline(Command("touch", str(marker))),
-        "j",
-        inputs=[missing],
-    )
-    dag.add_job(job)
-    executor = LocalExecutor(ThreadScheduler(dag, 1))
-    executor.execute()
-    assert job in executor.jobs_with_errors
-    assert not marker.exists()  # the command never ran
-
-
-def test_present_inputs_and_outputs_allow_success(tmp_path):
-    """Empty (zero-byte) declared inputs/outputs still count as present."""
-    inp = tmp_path / "in.txt"
-    inp.touch()  # empty input file
-    out = tmp_path / "out.txt"
-    dag = DAG()
-    job = Job(
-        Pipeline(Command("touch", str(out))),  # produces an empty output
-        "j",
-        inputs=[inp],
-        outputs=[out],
-    )
-    dag.add_job(job)
-    executor = LocalExecutor(ThreadScheduler(dag, 1))
-    executor.execute()
-    assert executor.jobs_with_errors == []
-    assert out.exists()
-
-
-def test_missing_output_fails_after_run(tmp_path):
-    """A declared output the command does not produce fails the job."""
-    missing = tmp_path / "never.txt"
-    dag = DAG()
-    job = Job(Pipeline(Command("true")), "j", outputs=[missing])
-    dag.add_job(job)
-    executor = LocalExecutor(ThreadScheduler(dag, 1))
-    executor.execute()
-    assert job in executor.jobs_with_errors
-
-
-def test_failed_job_outputs_are_removed(tmp_path):
-    """A failed job's declared outputs are deleted from disk."""
-    out = tmp_path / "out.txt"
-    out.write_text("stale")
-    dag = DAG()
-    job = Job(Pipeline(Command("false")), "j", outputs=[out])
-    dag.add_job(job)
-    executor = LocalExecutor(ThreadScheduler(dag, 1))
-    executor.execute()
-    assert job in executor.jobs_with_errors
-    assert not out.exists()
-
-
-def test_missing_output_failure_removes_produced_siblings(tmp_path):
-    """A missing declared output deletes the outputs that were produced."""
-    produced = tmp_path / "out1.txt"
-    never = tmp_path / "out2.txt"
-    dag = DAG()
-    job = Job(
-        Pipeline(Command("touch", str(produced))),
-        "j",
-        outputs=[produced, never],
-    )
-    dag.add_job(job)
-    executor = LocalExecutor(ThreadScheduler(dag, 1))
-    executor.execute()
-    assert job in executor.jobs_with_errors
-    assert not produced.exists()
-
-
-def test_launch_failure_removes_outputs(tmp_path):
-    """A job that fails to launch has its declared outputs deleted."""
-    out = tmp_path / "out.txt"
-    out.write_text("stale")
-    dag = DAG()
-    job = Job(Pipeline(Command("no_such_cmd_zzz")), "j", outputs=[out])
-    dag.add_job(job)
-    executor = LocalExecutor(ThreadScheduler(dag, 1))
-    executor.execute()
-    assert job in executor.jobs_with_errors
-    assert not out.exists()
-
-
-def test_missing_input_failure_removes_outputs(tmp_path):
-    """Any failed attempt clears the job's declared outputs -- even a
-    missing-input failure where the command never ran."""
-    missing = tmp_path / "in.txt"
-    out = tmp_path / "out.txt"
-    out.write_text("stale")
-    dag = DAG()
-    job = Job(Pipeline(Command("true")), "j", inputs=[missing], outputs=[out])
-    dag.add_job(job)
-    executor = LocalExecutor(ThreadScheduler(dag, 1))
-    executor.execute()
-    assert job in executor.jobs_with_errors
-    assert not out.exists()
-
-
-def test_successful_job_keeps_outputs(tmp_path):
-    """A successful job's outputs are never deleted."""
-    out = tmp_path / "out.txt"
-    dag = DAG()
-    job = Job(Pipeline(Command("touch", str(out))), "j", outputs=[out])
-    dag.add_job(job)
-    executor = LocalExecutor(ThreadScheduler(dag, 1))
-    executor.execute()
-    assert executor.jobs_with_errors == []
-    assert out.exists()
-
-
-def test_failed_job_directory_output_is_left_in_place(tmp_path):
-    """Directories declared as outputs are never removed on failure."""
-    out_dir = tmp_path / "out_dir"
-    out_dir.mkdir()
-    (out_dir / "keep.txt").write_text("keep")
-    dag = DAG()
-    job = Job(Pipeline(Command("false")), "j", outputs=[out_dir])
-    dag.add_job(job)
-    executor = LocalExecutor(ThreadScheduler(dag, 1))
-    executor.execute()
-    assert job in executor.jobs_with_errors
-    assert out_dir.is_dir()
-    assert (out_dir / "keep.txt").read_text() == "keep"
-
-
 def test_local_executor_empty_dag_completes():
-    """An empty DAG (e.g. everything skipped by resume) runs cleanly."""
+    """An empty DAG runs cleanly."""
     executor = LocalExecutor(ThreadScheduler(DAG(), 1))
     executor.execute()
     assert executor.jobs_with_errors == []
@@ -429,44 +297,6 @@ def test_dry_run_empty_dag_completes(capsys):
     executor.execute()
     assert capsys.readouterr().out == ""
     assert executor.jobs_with_errors == []
-
-
-def test_resume_after_failure_reruns_only_failed_subtree(tmp_path):
-    """After a partial failure, skip_satisfied + has_all_outputs resumes
-    the run from the surviving intermediate files."""
-    a_out = tmp_path / "a.txt"
-    b_out = tmp_path / "b.txt"
-
-    def build_dag(b_cmd):
-        dag = DAG()
-        a = Job(
-            Pipeline(Command("echo", "a"), file_output=a_out),
-            "a",
-            outputs=[a_out],
-        )
-        b = Job(Pipeline(b_cmd), "b", outputs=[b_out])
-        dag.add_job(a)
-        dag.add_job(b, {a})
-        return dag, a, b
-
-    # First run: a succeeds, b fails (and b's partial output is deleted).
-    b_out.write_text("partial")
-    dag, _a, b = build_dag(Command("false"))
-    executor = LocalExecutor(ThreadScheduler(dag, 1))
-    executor.execute()
-    assert b in executor.jobs_with_errors
-    assert a_out.exists()
-    assert not b_out.exists()
-
-    # Second run: rebuild the DAG with b fixed; resume skips a.
-    dag, a, b = build_dag(Command("touch", str(b_out)))
-    skipped = dag.skip_satisfied(has_all_outputs)
-    assert skipped == [a]
-    executor = LocalExecutor(ThreadScheduler(dag, 1))
-    executor.execute()
-    assert executor.jobs_with_errors == []
-    assert b_out.exists()
-    assert a_out.read_text().strip() == "a"  # a was not rerun over
 
 
 def _execute_bounded(executor, timeout=15):

@@ -22,13 +22,7 @@ logger = get_logger(__name__)
 
 
 def _freeze(value: Any) -> Any:
-    """Return an order-independent, hashable view of ``value``.
-
-    ``exec_kwargs`` (and a nested ``env`` dict) have no stable iteration
-    order, so hashing their raw form would let two *equal* commands hash
-    differently, breaking the ``a == b implies hash(a) == hash(b)``
-    contract the DAG relies on. Canonicalise dicts/sets recursively.
-    """
+    """Return an order-independent, hashable view of ``value``."""
     if isinstance(value, dict):
         return frozenset((k, _freeze(v)) for k, v in value.items())
     if isinstance(value, (list, tuple)):
@@ -42,12 +36,7 @@ def _set_pipe_size(fd: int, size: int) -> None:
     """Best-effort enlarge the OS pipe buffer backing ``fd``.
 
     Lets a throughput-bound pipeline hold more in-flight data between
-    stages. ``F_SETPIPE_SZ`` is Linux-only and, for unprivileged
-    processes, capped by ``/proc/sys/fs/pipe-max-size`` (exceeding it
-    raises EPERM) -- both deployment concerns, so a failure is logged and
-    the pipe keeps its default size rather than aborting the run. A no-op
-    where the constant is unavailable (non-Linux), preserving POSIX
-    portability.
+    stages.
     """
     set_pipe_sz = getattr(fcntl, "F_SETPIPE_SZ", None)
     if set_pipe_sz is None:
@@ -220,8 +209,6 @@ class Command(ShellNode):
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Command):
             return NotImplemented
-        # Identity is the *definition* of the command: not self.proc, which
-        # is runtime state that would mutate identity once the job runs.
         return (
             self.executable == other.executable
             and self.args == other.args
@@ -264,8 +251,6 @@ class Pipeline(ShellNode):
         stderr: Union[IO[Any], int, None] = None,
     ) -> asyncio.subprocess.Process:
         # We cannot have handles from both files and to run().
-        # Test `is not None`, not truthiness: an int fd of 0 is a valid
-        # stream but falsy.
         if self.file_input is not None and stdin is not None:
             raise ValueError(
                 f"Pipeline {self} was given both a file_input and a stdin "
@@ -389,7 +374,6 @@ class ProcSub(ABC):
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, ProcSub):
             return NotImplemented
-        # An input and an output proc sub are not the same: <(x) != >(x).
         return type(self) is type(other) and self.node == other.node
 
     def __hash__(self) -> int:

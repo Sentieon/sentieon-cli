@@ -7,13 +7,12 @@ import sys
 import threading
 import time
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Tuple
 
 from .job import Job
 from .logging import get_logger
 from .scheduler import BaseScheduler
 from .shell_pipeline import Context
-from .storage import LocalStorageProvider, StorageProvider
 
 logger = get_logger(__name__)
 
@@ -203,16 +202,12 @@ class LocalExecutor(AsyncExecutor):
         *,
         install_signal_handlers: bool = False,
         shutdown_grace_period: float = 10.0,
-        storage: Optional[StorageProvider] = None,
     ) -> None:
         super().__init__(
             scheduler,
             install_signal_handlers=install_signal_handlers,
         )
         self.shutdown_grace_period = shutdown_grace_period
-        self.storage: StorageProvider = (
-            storage if storage is not None else LocalStorageProvider()
-        )
         self.running: List[
             Tuple[
                 Job,
@@ -229,8 +224,6 @@ class LocalExecutor(AsyncExecutor):
         context = Context()
         start_time = time.monotonic_ns()
         try:
-            for path in job.inputs:
-                await self.storage.stage_in(path)
             proc = await cmd.run(
                 context,
                 stderr=sys.stderr,
@@ -258,7 +251,6 @@ class LocalExecutor(AsyncExecutor):
             # race): the job is already recorded, so swallow it.
             await self._terminate_context(context)
             await _cleanup_quietly(context)
-            self._remove_outputs(job)
 
     async def _terminate_context(self, context: Context) -> None:
         """Tear down processes already spawned in an aborted context.
@@ -281,30 +273,6 @@ class LocalExecutor(AsyncExecutor):
         await asyncio.wait(waits, timeout=self.shutdown_grace_period)
         _kill_survivors(context)
         await asyncio.wait(waits)
-
-    def _remove_outputs(self, job: Job) -> None:
-        """Delete a failed job's declared outputs.
-
-        A partial or unverified output must not survive a failure: resume
-        (:meth:`~sentieon_cli.dag.DAG.skip_satisfied`) treats an existing
-        declared output as proof that its producer succeeded. Directories are
-        deliberately not removed (never recurse into user paths); a warning
-        is logged instead.
-        """
-        for path in job.outputs:
-            try:
-                path.unlink()
-            except FileNotFoundError:
-                continue
-            except OSError as exc:
-                logger.warning(
-                    "could not remove output %s of failed job %s: %s",
-                    path,
-                    job,
-                    exc,
-                )
-            else:
-                logger.info("Removed output of failed job %s: %s", job, path)
 
     async def _drive(self, stop_event: asyncio.Event) -> None:
         """Schedule and run jobs until the DAG drains or we are stopped."""
@@ -375,19 +343,6 @@ class LocalExecutor(AsyncExecutor):
                                     "Possible out-of-memory?"
                                 )
 
-                    if not cmd_failed:
-                        for path in job.outputs:
-                            try:
-                                await self.storage.stage_out(path)
-                            except OSError as exc:
-                                logger.error(
-                                    "missing output %s for %s: %s",
-                                    path,
-                                    job.shell,
-                                    exc,
-                                )
-                                cmd_failed = True
-
                     # Release resources before recording the verdict. A
                     # proc-sub inner command that failed to launch surfaces
                     # its OSError from the background task here; treat it as
@@ -404,7 +359,6 @@ class LocalExecutor(AsyncExecutor):
                         logger.error("Command failure: %s", job.shell)
                         self.jobs_with_errors.append(job)
                         self.start_new_jobs = False
-                        self._remove_outputs(job)
                     else:
                         logger.info(
                             f"Finished command in "
@@ -457,10 +411,3 @@ class LocalExecutor(AsyncExecutor):
             # tear down after an interrupt; log it rather than let it escape,
             # and keep releasing the remaining contexts.
             await _cleanup_quietly(context)
-
-        # Interrupted jobs never had their outputs verified; a partial file
-        # must not survive to fool a later resume. Jobs that completed in the
-        # same wake-up as the stop signal are conservatively included -- they
-        # were never verified either.
-        for job, _context, _task, _start in running:
-            self._remove_outputs(job)

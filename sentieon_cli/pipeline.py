@@ -107,9 +107,6 @@ class BasePipeline(ABC):
 
     def setup_logging(self, args: argparse.Namespace) -> None:
         self.logger = get_logger(__name__)
-        # Scope verbosity to this package's loggers rather than the root
-        # logger, so -v/--debug does not turn on DEBUG for every
-        # third-party library.
         set_level(args.loglevel)
         self.logger.info("Starting sentieon-cli version: %s", __version__)
 
@@ -132,10 +129,6 @@ class BasePipeline(ABC):
         tmp_dir_str = tmp()
         self.tmp_dir = pathlib.Path(tmp_dir_str)
 
-        # Always clean up the temp dir, even if build_dag()/run() raise (an
-        # infeasible DAG, a launch failure, or a KeyboardInterrupt) --
-        # otherwise it would leak. retain_tmpdir is honored on failure too,
-        # so a failed run can still be inspected.
         try:
             dag = self.build_dag()
             executor = self.run(dag)

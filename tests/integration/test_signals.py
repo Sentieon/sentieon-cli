@@ -126,30 +126,6 @@ def test_sigint_triggers_graceful_shutdown(monkeypatch):
         assert not os.path.exists(temp_dir)  # no leaked temp dir
 
 
-def test_interrupted_job_outputs_are_removed(tmp_path):
-    """A job killed by an interrupt has its declared outputs deleted."""
-    out = tmp_path / "out.txt"
-    out.write_text("partial")
-    dag = DAG()
-    job = Job(Pipeline(Command("sleep", "30")), "sleeper", outputs=[out])
-    dag.add_job(job)
-    executor = LocalExecutor(
-        ThreadScheduler(dag, 1),
-        install_signal_handlers=True,
-        shutdown_grace_period=1.0,
-    )
-
-    timer = threading.Timer(0.5, lambda: os.kill(os.getpid(), signal.SIGINT))
-    timer.start()
-    try:
-        executor.execute()
-    finally:
-        timer.cancel()
-
-    assert executor.running == []
-    assert not out.exists()
-
-
 def test_grace_period_escalates_to_sigkill():
     """A job that ignores SIGTERM is still killed after the grace period."""
     script = (
