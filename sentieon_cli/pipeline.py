@@ -9,6 +9,7 @@ import os
 import pathlib
 import shutil
 import sys
+import time
 from typing import Any, Dict, List, Optional
 
 import packaging.version
@@ -18,7 +19,8 @@ from .dag import DAG
 from .exceptions import DagExecutionError
 from .executor import BaseExecutor, DryRunExecutor, LocalExecutor
 from .job import Job
-from .logging import get_logger, set_level
+from .logging import get_logger, set_console_level
+from .run_logs import RunLogs
 from .scheduler import ThreadScheduler
 from .util import __version__, check_version, path_arg, tmp
 
@@ -52,6 +54,13 @@ class BasePipeline(ABC):
         "dry_run": {
             "help": "Print the commands without running them.",
             "action": "store_true",
+        },
+        "log_dir": {
+            "help": (
+                "Directory for the run's log files. Defaults to the output "
+                "VCF with the '.vcf.gz' suffix replaced by '_logs'."
+            ),
+            "type": path_arg(),
         },
         # Hidden arguments
         "retain_tmpdir": {
@@ -105,11 +114,6 @@ class BasePipeline(ABC):
             if k in args.__dict__:
                 setattr(self, k, getattr(args, k))
 
-    def setup_logging(self, args: argparse.Namespace) -> None:
-        self.logger = get_logger(__name__)
-        set_level(args.loglevel)
-        self.logger.info("Starting sentieon-cli version: %s", __version__)
-
     def __init__(self) -> None:
         self.reference: Optional[pathlib.Path] = None
         self.cores = mp.cpu_count()
@@ -117,25 +121,71 @@ class BasePipeline(ABC):
         self.dry_run = False
         self.retain_tmpdir = False
         self.skip_version_check = False
+        self.log_dir: Optional[pathlib.Path] = None
         self.output_vcf: Optional[pathlib.Path] = None
+        self.run_logs: Optional[RunLogs] = None
+
+    def setup_logging(self, args: argparse.Namespace) -> None:
+        """Configure the console handler and the run's log directory"""
+        self.logger = get_logger(__name__)
+        set_console_level(args.loglevel)
+
+        # File logging is skipped for dry-runs and when there is nothing to
+        # derive a log directory from (a bare pipeline, as used by tests).
+        if not self.dry_run and (
+            self.log_dir is not None or self.output_vcf is not None
+        ):
+            log_dir = self.log_dir
+            if log_dir is None:
+                # Check the suffix before deriving the directory name so an
+                # invalid output path cannot create a garbage-named log dir.
+                self.validate_output_suffix()
+                log_dir = pathlib.Path(
+                    str(self.output_vcf).removesuffix(".vcf.gz") + "_logs"
+                )
+            self.run_logs = RunLogs(log_dir)
+            self.run_logs.setup()
+
+        # After the file handler is attached, so the banner reaches run.log
+        self.logger.info("Starting sentieon-cli version: %s", __version__)
+        if self.run_logs:
+            self.logger.info("Writing logs to: %s", self.run_logs.log_dir)
+
+    def log_completion(self, success: bool, start_time: float) -> None:
+        """Report the outcome and duration of the run"""
+        self.logger.info(
+            "Finished sentieon-cli (status: %s, elapsed: %.1fs)",
+            "succeeded" if success else "failed",
+            time.monotonic() - start_time,
+        )
+        if not success and self.run_logs:
+            self.logger.info(
+                "Logs from this run are in: %s", self.run_logs.log_dir
+            )
 
     def main(self, args: argparse.Namespace) -> None:
         """Run the DNAscope pipeline"""
         self.handle_arguments(args)
         self.setup_logging(args)
-        self.validate()
-        self.configure()
-
-        tmp_dir_str = tmp()
-        self.tmp_dir = pathlib.Path(tmp_dir_str)
-
+        start_time = time.monotonic()
+        success = False
         try:
-            dag = self.build_dag()
-            executor = self.run(dag)
-            self.check_execution(dag, executor)
+            self.validate()
+            self.configure()
+
+            tmp_dir_str = tmp()
+            self.tmp_dir = pathlib.Path(tmp_dir_str)
+
+            try:
+                dag = self.build_dag()
+                executor = self.run(dag)
+                self.check_execution(dag, executor)
+            finally:
+                if not self.retain_tmpdir:
+                    shutil.rmtree(tmp_dir_str)
+            success = True
         finally:
-            if not self.retain_tmpdir:
-                shutil.rmtree(tmp_dir_str)
+            self.log_completion(success, start_time)
 
     def check_execution(
         self,
@@ -158,10 +208,14 @@ class BasePipeline(ABC):
     def validate(self) -> None:
         pass
 
-    def validate_output_vcf(self) -> None:
+    def validate_output_suffix(self) -> None:
+        """Confirm the output VCF file name ends in '.vcf.gz'"""
         if not str(self.output_vcf).endswith(".vcf.gz"):
             self.logger.error("The output file should end with '.vcf.gz'")
             sys.exit(2)
+
+    def validate_output_vcf(self) -> None:
+        self.validate_output_suffix()
         assert self.output_vcf is not None
         parent = self.output_vcf.resolve().parent
         if not parent.is_dir():

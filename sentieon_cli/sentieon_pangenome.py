@@ -8,6 +8,7 @@ import json
 import pathlib
 import shutil
 import sys
+import time
 from typing import Dict, List, Optional, Set, Tuple, Union
 
 import packaging.version
@@ -269,34 +270,42 @@ class SentieonPangenome(BasePangenome):
         """Run the pipeline"""
         self.handle_arguments(args)
         self.setup_logging(args)
-        self.validate_ref()
+        start_time = time.monotonic()
+        success = False
+        try:
+            self.validate_ref()
 
-        self.fai_data = parse_fai(pathlib.Path(str(self.reference) + ".fai"))
-        self.pop_vcf_contigs: Dict[str, Optional[int]] = {}
-        if self.pop_vcf:
-            self.pop_vcf_contigs = vcf_contigs(self.pop_vcf, self.dry_run)
-            self.logger.debug("VCF contigs are: %s", self.pop_vcf_contigs)
+            self.fai_data = parse_fai(
+                pathlib.Path(str(self.reference) + ".fai")
+            )
+            self.pop_vcf_contigs: Dict[str, Optional[int]] = {}
+            if self.pop_vcf:
+                self.pop_vcf_contigs = vcf_contigs(self.pop_vcf, self.dry_run)
+                self.logger.debug("VCF contigs are: %s", self.pop_vcf_contigs)
 
-        self.validate()
-        self.shards = determine_shards_from_fai(
-            self.fai_data, 10 * 1000 * 1000
-        )
+            self.validate()
+            self.shards = determine_shards_from_fai(
+                self.fai_data, 10 * 1000 * 1000
+            )
 
-        tmp_dir_str = tmp()
-        self.tmp_dir = pathlib.Path(tmp_dir_str)
+            tmp_dir_str = tmp()
+            self.tmp_dir = pathlib.Path(tmp_dir_str)
 
-        dag = self.build_first_dag()
-        executor = self.run(dag)
-        self.check_execution(dag, executor)
-
-        if self.expansion_catalog or self.segdup_caller is not None:
-            self.get_sex(self.ploidy_json)
-            dag = self.build_second_dag()
+            dag = self.build_first_dag()
             executor = self.run(dag)
             self.check_execution(dag, executor)
 
-        if not self.retain_tmpdir:
-            shutil.rmtree(tmp_dir_str)
+            if self.expansion_catalog or self.segdup_caller is not None:
+                self.get_sex(self.ploidy_json)
+                dag = self.build_second_dag()
+                executor = self.run(dag)
+                self.check_execution(dag, executor)
+
+            if not self.retain_tmpdir:
+                shutil.rmtree(tmp_dir_str)
+            success = True
+        finally:
+            self.log_completion(success, start_time)
 
     def validate(self) -> None:
         """Validate pipeline inputs"""
