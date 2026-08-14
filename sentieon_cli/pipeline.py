@@ -195,7 +195,10 @@ class BasePipeline(ABC):
         """Check the DAG and executor after a run"""
         if executor.jobs_with_errors:
             failed = ", ".join(str(job) for job in executor.jobs_with_errors)
-            raise DagExecutionError(f"Execution failed for jobs: {failed}")
+            message = f"Execution failed for jobs: {failed}"
+            if self.run_logs:
+                message += f"\nTask logs are in: {self.run_logs.task_logs}"
+            raise DagExecutionError(message)
 
         if len(dag.waiting_jobs) > 0 or len(dag.ready_jobs) > 0:
             raise DagExecutionError(
@@ -311,7 +314,11 @@ class BasePipeline(ABC):
         else:
             # Handle Ctrl-C/SIGTERM by terminating running jobs gracefully;
             # the handlers are installed only for the duration of the run.
-            executor = LocalExecutor(scheduler, install_signal_handlers=True)
+            executor = LocalExecutor(
+                scheduler,
+                install_signal_handlers=True,
+                run_logs=self.run_logs,
+            )
 
         self.logger.info("Starting execution")
         executor.execute()

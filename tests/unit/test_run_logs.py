@@ -19,8 +19,11 @@ sys.path.insert(
 
 from sentieon_cli import logging as cli_logging  # noqa: E402
 from sentieon_cli.dag import DAG  # noqa: E402
+from sentieon_cli.exceptions import DagExecutionError  # noqa: E402
+from sentieon_cli.job import Job  # noqa: E402
 from sentieon_cli.pipeline import BasePipeline  # noqa: E402
 from sentieon_cli.run_logs import RunLogs  # noqa: E402
+from sentieon_cli.shell_pipeline import Command, Pipeline  # noqa: E402
 from sentieon_cli.util import __version__  # noqa: E402
 
 PACKAGE_LOGGER = "sentieon_cli"
@@ -44,6 +47,13 @@ class _FailingPipeline(_DummyPipeline):
 
     def build_dag(self) -> DAG:
         raise RuntimeError("boom")
+
+
+class _ErroredExecutor:
+    """A stand-in executor that finished with failed jobs."""
+
+    def __init__(self, jobs: List[Job]) -> None:
+        self.jobs_with_errors = jobs
 
 
 class _RecordingHandler(logging.Handler):
@@ -208,6 +218,21 @@ def test_bare_pipeline_setup_logging_creates_nothing(tmp_path, monkeypatch):
 
     assert pipeline.run_logs is None
     assert list(tmp_path.iterdir()) == []
+
+
+def test_check_execution_names_the_task_log_dir(tmp_path):
+    pipeline = _DummyPipeline()
+    pipeline.log_dir = tmp_path / "logs"
+    pipeline.setup_logging(_args())
+    job = Job(Pipeline(Command("false")), "boom", task_name="failing")
+
+    with pytest.raises(DagExecutionError) as excinfo:
+        pipeline.check_execution(DAG(), _ErroredExecutor([job]))
+    pipeline.run_logs.close()
+
+    message = str(excinfo.value)
+    assert "Job(boom-1)" in message
+    assert str(tmp_path / "logs" / "task_logs") in message
 
 
 def test_end_of_run_message_on_success(tmp_path, monkeypatch, messages):

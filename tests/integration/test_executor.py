@@ -518,6 +518,7 @@ class _FakeContext:
     def __init__(self, cleanup_error=None):
         self.commands = []
         self.cleaned = False
+        self.log_sink = None
         self._error = cleanup_error
 
     async def cleanup(self):

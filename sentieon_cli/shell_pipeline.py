@@ -8,15 +8,17 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import fcntl
-import io
 import os
 import pathlib
 import tempfile
 import shlex
 from abc import ABC, abstractmethod
-from typing import Any, Dict, IO, List, Optional, Union
+from typing import Any, Dict, IO, List, Optional, TYPE_CHECKING, Union
 
 from .logging import get_logger
+
+if TYPE_CHECKING:
+    from .run_logs import JobLogSink
 
 logger = get_logger(__name__)
 
@@ -64,7 +66,7 @@ class _ProcSubWait:
 class Context:
     """Holds shared resources."""
 
-    def __init__(self) -> None:
+    def __init__(self, log_sink: Optional[JobLogSink] = None) -> None:
         # This directory is already unique per pipeline run
         self.temp_dir = tempfile.TemporaryDirectory()
         # Background tasks to wait for (e.g., proc sub processes)
@@ -72,7 +74,9 @@ class Context:
         # Hold the commands run in this context
         self.commands: List[Command] = []
         self._counter = 0  # Monotonic counter
-        self.file_handles: List[io.IOBase] = []
+        self.file_handles: List[IO[Any]] = []
+        # Per-process log files; without a sink, stdout/stderr are inherited
+        self.log_sink = log_sink
         # Set by cleanup(); a proc sub whose FIFO open was unblocked by
         # cleanup must not spawn its inner command.
         self.closing: bool = False
@@ -169,7 +173,20 @@ class Command(ShellNode):
             else:
                 final_args.append(str(arg))
 
-        # 2. Run the process
+        # 2. Capture the streams the caller left unset
+        # An explicit stream (a pipe between stages, a file_output, a proc-sub
+        # FIFO) always wins; only an inherited stream goes to the sink.
+        if context.log_sink is not None:
+            if stderr is None:
+                stderr_log = context.log_sink.open_stderr(self)
+                context.file_handles.append(stderr_log)
+                stderr = stderr_log
+            if stdout is None:
+                stdout_log = context.log_sink.open_stdout(self)
+                context.file_handles.append(stdout_log)
+                stdout = stdout_log
+
+        # 3. Run the process
         # We allow the caller to wait for this process
         self.proc = await asyncio.create_subprocess_exec(
             *final_args,
