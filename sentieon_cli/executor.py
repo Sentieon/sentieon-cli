@@ -5,6 +5,7 @@ import concurrent.futures
 import contextlib
 import os
 import pathlib
+import resource
 import signal
 import sys
 import threading
@@ -42,6 +43,22 @@ def _log_tail(path: pathlib.Path, lines: int = TAIL_LINES) -> List[str]:
         logger.debug("could not read %s: %s", path, exc)
         return []
     return data.decode("utf-8", errors="replace").splitlines()[-lines:]
+
+
+def _maxrss_bytes(ru: resource.struct_rusage) -> int:
+    """Return a child's peak resident set size in bytes.
+
+    ``ru_maxrss`` is already bytes on macOS; every other platform we run on
+    reports kibibytes.
+    """
+    if sys.platform == "darwin":
+        return int(ru.ru_maxrss)
+    return int(ru.ru_maxrss) * 1024
+
+
+def _mib(nbytes: int) -> str:
+    """Render a byte count as MiB for the human-readable log lines."""
+    return f"{nbytes / (1024 * 1024):.1f} MiB"
 
 
 def _signal_procs(context: Context, sig: int) -> None:
@@ -398,6 +415,14 @@ class LocalExecutor(AsyncExecutor):
                     # Check if the command failed
                     cmd_failed = False
                     failures: List[Tuple[Command, int]] = []
+                    # Kernel resource usage, aggregated over the job's
+                    # processes. RSS is the per-process peak rather than a
+                    # sum: concurrent pipeline stages peak at different
+                    # times, so a sum would overstate the job.
+                    have_rusage = False
+                    job_utime = 0.0
+                    job_stime = 0.0
+                    job_maxrss = 0
                     for subcommand in context.commands:
                         if not subcommand.proc:
                             logger.error(
@@ -409,6 +434,34 @@ class LocalExecutor(AsyncExecutor):
                         ret = (
                             await subcommand.proc.async_wait()
                         )  # Wait on all sub-commands
+                        # Reported for every reaped process, whatever the
+                        # job's outcome; signal-killed children have rusage
+                        # too.
+                        rusage = subcommand.proc.rusage
+                        if rusage is not None:
+                            rss = _maxrss_bytes(rusage)
+                            have_rusage = True
+                            job_utime += rusage.ru_utime
+                            job_stime += rusage.ru_stime
+                            job_maxrss = max(job_maxrss, rss)
+                            logger.debug(
+                                "rusage for %s [pid %d, %s]: utime=%.2fs "
+                                "stime=%.2fs maxrss=%.1fMiB minflt=%d "
+                                "majflt=%d inblock=%d oublock=%d "
+                                "nvcsw=%d nivcsw=%d",
+                                job,
+                                subcommand.proc.pid,
+                                subcommand,
+                                rusage.ru_utime,
+                                rusage.ru_stime,
+                                rss / (1024 * 1024),
+                                rusage.ru_minflt,
+                                rusage.ru_majflt,
+                                rusage.ru_inblock,
+                                rusage.ru_oublock,
+                                rusage.ru_nvcsw,
+                                rusage.ru_nivcsw,
+                            )
                         # A subcommand killed by SIGPIPE is not a failure:
                         # it was writing to a pipe whose reader exited early
                         # (e.g. `... | head`), which is normal in default
@@ -458,6 +511,16 @@ class LocalExecutor(AsyncExecutor):
                             )
                         self.jobs_with_errors.append(job)
                         self.start_new_jobs = False
+                    elif have_rusage:
+                        logger.info(
+                            "Finished command in %.2fs (user %.1fs, "
+                            "sys %.1fs, max proc RSS %s): %s",
+                            total_seconds,
+                            job_utime,
+                            job_stime,
+                            _mib(job_maxrss),
+                            job.shell,
+                        )
                     else:
                         logger.info(
                             f"Finished command in "
