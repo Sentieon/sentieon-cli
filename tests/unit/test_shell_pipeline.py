@@ -6,6 +6,7 @@ import asyncio
 import fcntl
 import os
 import pathlib
+import signal
 import sys
 import tempfile
 
@@ -44,6 +45,29 @@ async def test_simple_command():
 
     assert output == "hello world"
     assert proc.returncode == 0
+    # wait4 captured the child's resource usage as it was reaped
+    assert proc.rusage is not None
+    assert proc.rusage.ru_maxrss > 0
+
+
+@pytest.mark.asyncio
+async def test_a_signalled_command_reports_its_signal_and_its_rusage():
+    """A child killed by a signal is still reaped through ``wait4``.
+
+    This pins ``RusagePopen._try_wait``: if a future CPython changes that
+    private method's shape, the override stops being called and ``rusage``
+    silently stays None while the negative return code still works.
+    """
+    cmd = Command("sleep", "5")
+    context = Context()
+
+    proc = await cmd.run(context)
+    proc.send_signal(signal.SIGTERM)
+
+    assert await proc.async_wait() == -signal.SIGTERM
+    assert proc.rusage is not None
+
+    await context.cleanup()
 
 
 @pytest.mark.asyncio
