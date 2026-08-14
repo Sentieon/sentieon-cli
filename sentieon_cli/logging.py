@@ -4,7 +4,8 @@ Logging configuration
 Handlers live only on the package logger; the loggers returned by
 ``get_logger`` are plain children that propagate to it. The package logger is
 always at DEBUG so verbosity can be enforced per handler: the console handler
-follows ``-v``/``-d`` while the ``run.log`` file handler always records DEBUG.
+follows ``-v``/``-q``/``-d`` while the ``run.log`` file handler always records
+DEBUG.
 """
 
 import logging

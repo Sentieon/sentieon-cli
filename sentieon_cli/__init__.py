@@ -1,3 +1,5 @@
+import argparse
+
 from . import argh_parser
 from .dnascope import DNAscopePipeline
 from .dnascope_hybrid import DNAscopeHybridPipeline
@@ -7,26 +9,41 @@ from .sentieon_pangenome import SentieonPangenome
 from .util import __version__
 
 
-def main():
-    """main entry point for this project"""
-    parser = argh_parser.CustomArgparseParser()
+def add_logging_args(parser: argparse.ArgumentParser) -> None:
+    """Add the console verbosity flags"""
     parser.add_argument(
         "-v",
         "--verbose",
-        help="Verbose logging",
-        action="store_const",
-        dest="loglevel",
-        const="INFO",
-        default="INFO",
+        help="Verbose logging (the default)",
+        action="store_true",
+    )
+    parser.add_argument(
+        "-q",
+        "--quiet",
+        help="Only log warnings and errors",
+        action="store_true",
     )
     parser.add_argument(
         "-d",
         "--debug",
         help="Print debugging info",
-        action="store_const",
-        dest="loglevel",
-        const="DEBUG",
+        action="store_true",
     )
+
+
+def resolve_loglevel(args: argparse.Namespace) -> str:
+    """The console log level implied by the verbosity flags"""
+    if args.debug:
+        return "DEBUG"
+    if args.quiet and not args.verbose:
+        return "WARNING"
+    return "INFO"
+
+
+def main():
+    """main entry point for this project"""
+    parser = argh_parser.CustomArgparseParser()
+    add_logging_args(parser)
     parser.add_argument(
         "--version",
         action="version",
@@ -60,6 +77,7 @@ def main():
     dnascope_pangenome_subparser.set_defaults(pipeline=pipeline.main)
 
     args = parser.parse_args()
+    args.loglevel = resolve_loglevel(args)
     # Job ids must be unique for the whole run, which may execute more than
     # one DAG, so numbering restarts here rather than per DAG.
     Job.reset_ids()

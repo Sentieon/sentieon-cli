@@ -49,6 +49,13 @@ class _FailingPipeline(_DummyPipeline):
         raise RuntimeError("boom")
 
 
+class _ValidatingPipeline(_DummyPipeline):
+    """A pipeline that checks its output path, as the real ones do."""
+
+    def validate(self) -> None:
+        self.validate_output_vcf()
+
+
 class _ErroredExecutor:
     """A stand-in executor that finished with failed jobs."""
 
@@ -81,6 +88,12 @@ def _args(loglevel: str = "INFO") -> argparse.Namespace:
     return argparse.Namespace(loglevel=loglevel)
 
 
+def _start(pipeline: BasePipeline, loglevel: str = "INFO") -> None:
+    """Set up logging the way `main` does, minus the run itself."""
+    pipeline.setup_logging(_args(loglevel))
+    pipeline.start_run_logs()
+
+
 def test_module_loggers_delegate_to_the_package_logger():
     module_logger = cli_logging.get_logger("sentieon_cli.example")
 
@@ -92,7 +105,7 @@ def test_module_loggers_delegate_to_the_package_logger():
 def test_default_log_dir_is_derived_from_the_output_vcf(tmp_path):
     pipeline = _DummyPipeline()
     pipeline.output_vcf = tmp_path / "sample.vcf.gz"
-    pipeline.setup_logging(_args())
+    _start(pipeline)
 
     assert pipeline.run_logs is not None
     assert pipeline.run_logs.log_dir == tmp_path / "sample_logs"
@@ -102,7 +115,7 @@ def test_default_log_dir_only_strips_the_trailing_suffix(tmp_path):
     # `str.replace` would mangle a name with '.vcf.gz' in the middle.
     pipeline = _DummyPipeline()
     pipeline.output_vcf = tmp_path / "a.vcf.gz.rerun.vcf.gz"
-    pipeline.setup_logging(_args())
+    _start(pipeline)
 
     assert pipeline.run_logs.log_dir == tmp_path / "a.vcf.gz.rerun_logs"
 
@@ -111,7 +124,7 @@ def test_explicit_log_dir_skips_the_output_suffix_check(tmp_path):
     pipeline = _DummyPipeline()
     pipeline.output_vcf = tmp_path / "sample.bcf"
     pipeline.log_dir = tmp_path / "elsewhere"
-    pipeline.setup_logging(_args())
+    _start(pipeline)
 
     assert pipeline.run_logs.log_dir == tmp_path / "elsewhere"
     assert (tmp_path / "elsewhere" / "run.log").is_file()
@@ -122,10 +135,64 @@ def test_invalid_output_suffix_exits_before_creating_a_log_dir(tmp_path):
     pipeline.output_vcf = tmp_path / "sample.bcf"
 
     with pytest.raises(SystemExit) as excinfo:
-        pipeline.setup_logging(_args())
+        _start(pipeline)
 
     assert excinfo.value.code == 2
     assert list(tmp_path.iterdir()) == []
+
+
+def test_an_invalid_output_path_creates_no_log_dir(tmp_path, messages):
+    # `validate` runs first, so a typo in the output path is rejected before
+    # anything is written -- including the log directory next to it.
+    pipeline = _ValidatingPipeline()
+    pipeline.output_vcf = tmp_path / "typo" / "sample.vcf.gz"
+
+    with pytest.raises(SystemExit) as excinfo:
+        pipeline.main(_args())
+
+    assert excinfo.value.code == 2
+    assert pipeline.run_logs is None
+    assert list(tmp_path.iterdir()) == []
+    assert any("status: failed" in msg for msg in messages)
+
+
+def test_a_rejected_rerun_keeps_the_previous_runs_logs(tmp_path):
+    log_dir = tmp_path / "logs"
+    first = _ValidatingPipeline()
+    first.output_vcf = tmp_path / "sample.vcf.gz"
+    first.log_dir = log_dir
+    _start(first)
+    stale = first.run_logs.task_logs / "alignment"
+    stale.mkdir(parents=True)
+    (stale / "bwa-1.0.log").write_text("from the previous run")
+    first.run_logs.close()
+    run_log = (log_dir / "run.log").read_text()
+
+    second = _ValidatingPipeline()
+    second.output_vcf = tmp_path / "typo" / "sample.vcf.gz"
+    second.log_dir = log_dir
+    with pytest.raises(SystemExit):
+        second.main(_args())
+
+    assert (stale / "bwa-1.0.log").read_text() == "from the previous run"
+    assert (log_dir / "run.log").read_text() == run_log
+
+
+def test_a_log_dir_colliding_with_a_file_exits_cleanly(tmp_path, messages):
+    collision = tmp_path / "logs"
+    collision.write_text("not a directory")
+    pipeline = _DummyPipeline()
+    pipeline.log_dir = collision
+
+    with pytest.raises(SystemExit) as excinfo:
+        _start(pipeline)
+
+    assert excinfo.value.code == 2
+    assert pipeline.run_logs is None
+    assert collision.read_text() == "not a directory"
+    assert any(
+        "Could not prepare the log directory" in msg for msg in messages
+    )
 
 
 def test_setup_wipes_stale_task_logs_but_keeps_the_log_dir(tmp_path):
@@ -160,7 +227,7 @@ def test_command_txt_records_the_invocation(tmp_path, monkeypatch):
 def test_run_log_captures_debug_while_the_console_stays_at_info(tmp_path):
     pipeline = _DummyPipeline()
     pipeline.output_vcf = tmp_path / "sample.vcf.gz"
-    pipeline.setup_logging(_args("INFO"))
+    _start(pipeline)
     logging.getLogger("sentieon_cli.example").debug("a debug record")
     run_log = pipeline.run_logs.run_log
     pipeline.run_logs.close()
@@ -180,7 +247,7 @@ def test_repeated_setup_does_not_accumulate_handlers(tmp_path):
     for i in range(3):
         pipeline = _DummyPipeline()
         pipeline.output_vcf = tmp_path / f"sample{i}.vcf.gz"
-        pipeline.setup_logging(_args())
+        _start(pipeline)
         assert len(package_logger.handlers) == before + 1
 
     pipeline.run_logs.close()
@@ -193,7 +260,7 @@ def test_rerun_truncates_the_previous_run_log(tmp_path):
     for _ in range(2):
         pipeline = _DummyPipeline()
         pipeline.log_dir = log_dir
-        pipeline.setup_logging(_args())
+        _start(pipeline)
     run_log = pipeline.run_logs.run_log
     pipeline.run_logs.close()
 
@@ -205,7 +272,7 @@ def test_dry_run_skips_file_logging(tmp_path):
     pipeline = _DummyPipeline()
     pipeline.dry_run = True
     pipeline.output_vcf = tmp_path / "sample.vcf.gz"
-    pipeline.setup_logging(_args())
+    _start(pipeline)
 
     assert pipeline.run_logs is None
     assert list(tmp_path.iterdir()) == []
@@ -214,7 +281,7 @@ def test_dry_run_skips_file_logging(tmp_path):
 def test_bare_pipeline_setup_logging_creates_nothing(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     pipeline = _DummyPipeline()
-    pipeline.setup_logging(_args())
+    _start(pipeline)
 
     assert pipeline.run_logs is None
     assert list(tmp_path.iterdir()) == []
@@ -223,7 +290,7 @@ def test_bare_pipeline_setup_logging_creates_nothing(tmp_path, monkeypatch):
 def test_check_execution_names_the_task_log_dir(tmp_path):
     pipeline = _DummyPipeline()
     pipeline.log_dir = tmp_path / "logs"
-    pipeline.setup_logging(_args())
+    _start(pipeline)
     job = Job(Pipeline(Command("false")), "boom", task_name="failing")
 
     with pytest.raises(DagExecutionError) as excinfo:

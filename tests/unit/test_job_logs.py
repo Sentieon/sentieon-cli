@@ -13,12 +13,13 @@ sys.path.insert(
 
 from sentieon_cli.executor import TAIL_LINES, _log_tail  # noqa: E402
 from sentieon_cli.job import Job  # noqa: E402
-from sentieon_cli.run_logs import RunLogs, sanitize  # noqa: E402
+from sentieon_cli.run_logs import RunLogs  # noqa: E402
 from sentieon_cli.shell_pipeline import (  # noqa: E402
     Command,
     Context,
     Pipeline,
 )
+from sentieon_cli.util import sanitize  # noqa: E402
 
 
 def _sink(tmp_path, name: str = "bwa", task_name: str = "alignment"):

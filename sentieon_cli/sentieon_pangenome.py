@@ -284,6 +284,7 @@ class SentieonPangenome(BasePangenome):
                 self.logger.debug("VCF contigs are: %s", self.pop_vcf_contigs)
 
             self.validate()
+            self.start_run_logs()
             self.shards = determine_shards_from_fai(
                 self.fai_data, 10 * 1000 * 1000
             )

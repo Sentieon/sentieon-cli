@@ -31,6 +31,13 @@ PRELOAD_SEP_PAT = re.compile(PRELOAD_SEP)
 NUMA_NODE_PAT = re.compile(r"^NUMA node. CPU\(s\):\s+(?P<cpus>.*)$")
 READ_LENGTH_PAT = re.compile(r"SN\taverage length:\t(?P<length>\d*)$")
 
+_UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def sanitize(component: str) -> str:
+    """Restrict a path component to filesystem-safe characters"""
+    return _UNSAFE.sub("-", component)
+
 
 def tmp():
     """Create a temporary directory for the current process."""

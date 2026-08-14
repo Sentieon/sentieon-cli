@@ -55,8 +55,12 @@ sentieon-cli ...
 
 ## Global arguments
 The `sentieon-cli` supports the following global arguments:
-- `--verbose`: verbose logging.
-- `--debug`: debugging mode for more verbose logging.
+- `--verbose` (`-v`): verbose logging. This is the default.
+- `--quiet` (`-q`): only log warnings and errors.
+- `--debug` (`-d`): debugging mode for more verbose logging. Takes precedence over `--verbose` and `--quiet`.
+
+## Logging
+Each run writes its log files to a directory next to the output VCF, named after the output file with the `.vcf.gz` suffix replaced by `_logs`, so `sample.vcf.gz` produces `sample_logs/`. The directory records the invocation in `command.txt`, the pipeline's own messages in `run.log`, and the output of each tool under `task_logs/`. Every pipeline accepts a `--log_dir` argument to write these files elsewhere. Rerunning a pipeline with the same output overwrites the logs of the previous run.
 
 ## Supported pipelines
 - [**DNAscope**](https://support.sentieon.com/docs/sentieon_cli/#dnascope) - DNAscope pipeline implementation for germline SNV and indel calling from short read data.

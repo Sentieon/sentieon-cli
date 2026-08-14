@@ -16,6 +16,7 @@ sys.path.insert(
 from sentieon_cli.dag import DAG  # noqa: E402
 from sentieon_cli.job import Job  # noqa: E402
 from sentieon_cli.shell_pipeline import Command, Pipeline  # noqa: E402
+from sentieon_cli.util import sanitize  # noqa: E402
 
 
 def _job(name, arg, task_name="test"):
@@ -43,6 +44,17 @@ def test_each_name_has_its_own_counter():
     assert first.job_id == "dedup-1"
     assert other.job_id == "metrics-1"
     assert second.job_id == "dedup-2"
+
+
+def test_names_differing_only_in_unsafe_characters_share_a_counter():
+    # Log file names are sanitized, so ids that only differ in unsafe
+    # characters would name the same file and truncate each other.
+    first = _job("a b", "x")
+    second = _job("a-b", "y")
+
+    assert (first.job_id, second.job_id) == ("a b-1", "a-b-2")
+    assert sanitize(first.job_id) == "a-b-1"
+    assert sanitize(second.job_id) == "a-b-2"
 
 
 def test_reset_ids_restarts_the_sequence():
