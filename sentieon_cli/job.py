@@ -5,6 +5,7 @@ Job objects
 from typing import Dict, Optional
 
 from .shell_pipeline import Pipeline
+from .util import sanitize
 
 
 class Job:
@@ -44,8 +45,11 @@ class Job:
         self.threads = threads
         self.resources = {} if resources is None else resources
         self.task_name = task_name
-        count = Job._id_counters.get(name, 0) + 1
-        Job._id_counters[name] = count
+        # Log file names are sanitized, so ids must stay unique after
+        # sanitization; the id itself keeps the readable name.
+        key = sanitize(name)
+        count = Job._id_counters.get(key, 0) + 1
+        Job._id_counters[key] = count
         self.job_id = f"{name}-{count}"
 
     @classmethod

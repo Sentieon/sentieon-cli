@@ -10,10 +10,21 @@ import dataclasses
 import fcntl
 import os
 import pathlib
+import resource
+import subprocess
 import tempfile
 import shlex
 from abc import ABC, abstractmethod
-from typing import Any, Dict, IO, List, Optional, TYPE_CHECKING, Union
+from typing import (
+    Any,
+    Dict,
+    IO,
+    List,
+    Optional,
+    Tuple,
+    TYPE_CHECKING,
+    Union,
+)
 
 from .logging import get_logger
 
@@ -124,6 +135,14 @@ class Context:
         finally:
             for fd in unblock_fds:
                 os.close(fd)
+        # asyncio's child watcher reaped children nobody awaited; Popen does
+        # not, so sweep up already-exited processes here to avoid zombies for
+        # callers that only await the final pipeline stage. poll() is
+        # non-blocking: a process still running is left to its owner.
+        for command in self.commands:
+            proc = command.proc
+            if proc is not None and proc.returncode is None:
+                proc.poll()
         for fh in self.file_handles:
             fh.close()
         self.temp_dir.cleanup()
@@ -133,6 +152,40 @@ class Context:
             exc = task.exception()
             if exc is not None and not isinstance(exc, asyncio.CancelledError):
                 raise exc
+
+
+class RusagePopen(subprocess.Popen[bytes]):
+    """A Popen that records the child's rusage when it is reaped.
+
+    Only the ``wait``/``async_wait`` path reaps through ``_try_wait`` and
+    sets ``rusage``; a reap via ``poll`` -- or ``send_signal``/``kill``,
+    which poll internally -- goes through the base class's machinery and
+    leaves ``rusage`` None. The executor waits every process it reports
+    metrics for, so those paths only collect processes whose rusage is
+    never read.
+    """
+
+    rusage: Optional[resource.struct_rusage] = None
+
+    def _try_wait(self, wait_flags: int) -> Tuple[int, int]:
+        # Mirrors the base class, substituting wait4 for waitpid so the
+        # child's rusage is captured at reap time. Callers hold
+        # self._waitpid_lock (base-class contract).
+        try:
+            pid, sts, res = os.wait4(self.pid, wait_flags)
+        except ChildProcessError:
+            pid, sts = self.pid, 0
+        else:
+            if pid == self.pid:
+                self.rusage = res
+        return (pid, sts)
+
+    async def async_wait(self) -> int:
+        """Await the child's exit without blocking the event loop."""
+        if self.returncode is not None:
+            # Already reaped; no need for a pool thread.
+            return self.returncode
+        return await asyncio.to_thread(self.wait)
 
 
 class ShellNode(ABC):
@@ -152,7 +205,7 @@ class Command(ShellNode):
         self.executable = executable
         self.args = list(args)
         self.fail_ok = fail_ok
-        self.proc: Union[asyncio.subprocess.Process, None] = None
+        self.proc: Optional[RusagePopen] = None
         self.exec_kwargs: Dict[str, Any] = exec_kwargs if exec_kwargs else {}
 
     async def run(
@@ -161,7 +214,7 @@ class Command(ShellNode):
         stdin: Union[IO[Any], int, None] = None,
         stdout: Union[IO[Any], int, None] = None,
         stderr: Union[IO[Any], int, None] = None,
-    ) -> asyncio.subprocess.Process:
+    ) -> RusagePopen:
         # 1. Resolve Arguments (Handle Process Substitutions)
         final_args = [self.executable]
 
@@ -188,8 +241,8 @@ class Command(ShellNode):
 
         # 3. Run the process
         # We allow the caller to wait for this process
-        self.proc = await asyncio.create_subprocess_exec(
-            *final_args,
+        self.proc = RusagePopen(
+            final_args,
             stdin=stdin,
             stdout=stdout,
             stderr=stderr,
@@ -266,7 +319,7 @@ class Pipeline(ShellNode):
         stdin: Union[IO[Any], int, None] = None,
         stdout: Union[IO[Any], int, None] = None,
         stderr: Union[IO[Any], int, None] = None,
-    ) -> asyncio.subprocess.Process:
+    ) -> RusagePopen:
         # We cannot have handles from both files and to run().
         if self.file_input is not None and stdin is not None:
             raise ValueError(
@@ -429,7 +482,7 @@ class InputProcSub(ProcSub):
                     context,
                     stdout=write_handle,
                 )
-                await proc.wait()
+                await proc.async_wait()
             finally:
                 write_handle.close()
 
@@ -467,7 +520,7 @@ class OutputProcSub(ProcSub):
                 if context.closing:
                     return  # cleanup unblocked us; do not spawn
                 proc = await self.node.run(context, stdin=read_handle)
-                await proc.wait()
+                await proc.async_wait()
             finally:
                 read_handle.close()
 

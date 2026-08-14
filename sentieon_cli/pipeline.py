@@ -126,30 +126,43 @@ class BasePipeline(ABC):
         self.run_logs: Optional[RunLogs] = None
 
     def setup_logging(self, args: argparse.Namespace) -> None:
-        """Configure the console handler and the run's log directory"""
+        """Configure console logging"""
         self.logger = get_logger(__name__)
         set_console_level(args.loglevel)
 
+    def start_run_logs(self) -> None:
+        """Create the run's log directory and start writing `run.log`.
+
+        Called after `validate`, so a run rejected for an invalid output path
+        neither creates directories nor clobbers a previous run's logs.
+        """
         # File logging is skipped for dry-runs and when there is nothing to
         # derive a log directory from (a bare pipeline, as used by tests).
-        if not self.dry_run and (
-            self.log_dir is not None or self.output_vcf is not None
-        ):
-            log_dir = self.log_dir
-            if log_dir is None:
-                # Check the suffix before deriving the directory name so an
-                # invalid output path cannot create a garbage-named log dir.
-                self.validate_output_suffix()
-                log_dir = pathlib.Path(
-                    str(self.output_vcf).removesuffix(".vcf.gz") + "_logs"
-                )
-            self.run_logs = RunLogs(log_dir)
-            self.run_logs.setup()
+        if self.dry_run or (self.log_dir is None and self.output_vcf is None):
+            self.logger.info("Starting sentieon-cli version: %s", __version__)
+            return
+
+        log_dir = self.log_dir
+        if log_dir is None:
+            # Defensive: `validate` has already checked the output path, but
+            # not every pipeline's validation covers the suffix.
+            self.validate_output_suffix()
+            log_dir = pathlib.Path(
+                str(self.output_vcf).removesuffix(".vcf.gz") + "_logs"
+            )
+        run_logs = RunLogs(log_dir)
+        try:
+            run_logs.setup()
+        except OSError as exc:
+            self.logger.error(
+                "Could not prepare the log directory %s: %s", log_dir, exc
+            )
+            sys.exit(2)
+        self.run_logs = run_logs
 
         # After the file handler is attached, so the banner reaches run.log
         self.logger.info("Starting sentieon-cli version: %s", __version__)
-        if self.run_logs:
-            self.logger.info("Writing logs to: %s", self.run_logs.log_dir)
+        self.logger.info("Writing logs to: %s", self.run_logs.log_dir)
 
     def log_completion(self, success: bool, start_time: float) -> None:
         """Report the outcome and duration of the run"""
@@ -171,6 +184,7 @@ class BasePipeline(ABC):
         success = False
         try:
             self.validate()
+            self.start_run_logs()
             self.configure()
 
             tmp_dir_str = tmp()

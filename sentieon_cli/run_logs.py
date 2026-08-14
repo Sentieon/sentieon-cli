@@ -8,28 +8,20 @@ import dataclasses
 import datetime
 import logging
 import pathlib
-import re
 import shlex
 import shutil
 import sys
 from typing import IO, List, Optional, TYPE_CHECKING
 
 from .logging import add_file_handler, remove_file_handler
-from .util import __version__
+from .util import __version__, sanitize
 
 if TYPE_CHECKING:
     from .job import Job
     from .shell_pipeline import Command
 
-_UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
-
 _STDERR = "stderr"
 _STDOUT = "stdout"
-
-
-def sanitize(component: str) -> str:
-    """Restrict a path component to filesystem-safe characters"""
-    return _UNSAFE.sub("-", component)
 
 
 @dataclasses.dataclass

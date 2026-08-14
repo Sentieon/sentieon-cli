@@ -8,6 +8,7 @@ import pathlib
 import sys
 import tempfile
 import threading
+import time
 
 import pytest
 
@@ -473,6 +474,58 @@ def test_mid_pipeline_spawn_failure_terminates_running_stages(monkeypatch):
     assert spawned, "expected the first stage to have spawned"
     for proc in spawned:
         assert proc.returncode is not None
+
+
+def test_error_in_the_run_loop_terminates_running_jobs(monkeypatch):
+    """An exception escaping the run loop must tear the children down first.
+
+    Otherwise it unwinds into asyncio.run's shutdown, which joins the wait
+    threads -- and those are blocked in wait4 on children nobody signalled,
+    so the run hangs until they exit on their own (regression: a `sleep 30`
+    held the CLI for 30s and was never terminated)."""
+    import sentieon_cli.executor as executor_mod
+
+    contexts = []
+    real_context = executor_mod.Context
+
+    class RecordingContext(real_context):  # type: ignore[valid-type,misc]
+        def __init__(self, **kwargs) -> None:
+            super().__init__(**kwargs)
+            contexts.append(self)
+
+    monkeypatch.setattr(executor_mod, "Context", RecordingContext)
+
+    dag = DAG()
+    dag.add_job(Job(Pipeline(Command("sleep", "30")), "slow", task_name="t"))
+    dag.add_job(Job(Pipeline(Command("true")), "quick", task_name="t"))
+
+    scheduler = ThreadScheduler(dag, 2)
+
+    def boom(job):
+        # Fires when the quick job finishes, with the slow one still running
+        raise RuntimeError("scheduler exploded")
+
+    monkeypatch.setattr(scheduler, "job_finished", boom)
+
+    executor = LocalExecutor(scheduler, shutdown_grace_period=0.5)
+    start = time.monotonic()
+    with pytest.raises(RuntimeError):
+        executor.execute()
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 15, "the run waited for the sleep instead of killing it"
+    spawned = [sub.proc for c in contexts for sub in c.commands if sub.proc]
+    assert spawned, "expected both jobs to have spawned"
+    for proc in spawned:
+        assert proc.returncode is not None
+
+
+def test_thread_pool_size_is_configurable():
+    """The wait/FIFO-open pool cap is a parameter, not a hidden constant."""
+    scheduler = ThreadScheduler(DAG(), 1)
+
+    assert LocalExecutor(scheduler).thread_pool_size == 512
+    assert LocalExecutor(scheduler, thread_pool_size=8).thread_pool_size == 8
 
 
 def test_sigpipe_producer_does_not_fail_job(tmp_path):

@@ -1,9 +1,11 @@
 """Execute jobs"""
 
 import asyncio
+import concurrent.futures
 import contextlib
 import os
 import pathlib
+import resource
 import signal
 import sys
 import threading
@@ -41,6 +43,22 @@ def _log_tail(path: pathlib.Path, lines: int = TAIL_LINES) -> List[str]:
         logger.debug("could not read %s: %s", path, exc)
         return []
     return data.decode("utf-8", errors="replace").splitlines()[-lines:]
+
+
+def _maxrss_bytes(ru: resource.struct_rusage) -> int:
+    """Return a child's peak resident set size in bytes.
+
+    ``ru_maxrss`` is already bytes on macOS; every other platform we run on
+    reports kibibytes.
+    """
+    if sys.platform == "darwin":
+        return int(ru.ru_maxrss)
+    return int(ru.ru_maxrss) * 1024
+
+
+def _mib(nbytes: int) -> str:
+    """Render a byte count as MiB for the human-readable log lines."""
+    return f"{nbytes / (1024 * 1024):.1f} MiB"
 
 
 def _signal_procs(context: Context, sig: int) -> None:
@@ -126,6 +144,10 @@ class AsyncExecutor(BaseExecutor, ABC):
     Set ``install_signal_handlers=True`` to install handlers (on the main
     thread only) for the duration of a run; the previous handlers are
     restored afterwards, so a caller's signal state is left untouched.
+
+    ``thread_pool_size`` sizes the loop's default thread pool for the run;
+    ``None`` leaves the loop's own default alone, which is what an executor
+    that spawns no processes wants.
     """
 
     def __init__(
@@ -133,9 +155,11 @@ class AsyncExecutor(BaseExecutor, ABC):
         scheduler: BaseScheduler,
         *,
         install_signal_handlers: bool = False,
+        thread_pool_size: Optional[int] = None,
     ) -> None:
         super().__init__(scheduler)
         self.install_signal_handlers = install_signal_handlers
+        self.thread_pool_size = thread_pool_size
         self.start_new_jobs = True
 
     def _install_signal_handlers(
@@ -201,10 +225,34 @@ class AsyncExecutor(BaseExecutor, ABC):
         """Execute jobs from the DAG"""
         self.jobs_with_errors = []
         loop = asyncio.get_running_loop()
+        if self.thread_pool_size is not None:
+            # Threads are created lazily, so a generous cap costs nothing
+            # unless it is used, and asyncio.run() shuts the executor down on
+            # exit.
+            loop.set_default_executor(
+                concurrent.futures.ThreadPoolExecutor(
+                    max_workers=self.thread_pool_size,
+                    thread_name_prefix="sentieon-wait",
+                )
+            )
         stop_event = asyncio.Event()
         restore = self._install_signal_handlers(loop, stop_event)
         try:
-            await self._drive(stop_event)
+            try:
+                await self._drive(stop_event)
+            except BaseException:
+                # Tear the children down before the exception unwinds into
+                # asyncio.run's Runner.close, which joins the wait threads --
+                # and those threads are blocked in wait4 on live children.
+                # BaseException so cancellation and KeyboardInterrupt are
+                # covered too.
+                self.start_new_jobs = False
+                try:
+                    await self._shutdown()
+                except Exception as exc:
+                    # A failed teardown must not mask the original error.
+                    logger.error("teardown after failure also failed: %s", exc)
+                raise
             if stop_event.is_set():
                 await self._shutdown()
         finally:
@@ -220,7 +268,14 @@ class AsyncExecutor(BaseExecutor, ABC):
 
 
 class LocalExecutor(AsyncExecutor):
-    """Run jobs locally as async subprocesses."""
+    """Run jobs locally as sub-processes, driven by an asyncio loop.
+
+    ``thread_pool_size`` defaults high because the loop's default pool serves
+    two kinds of blocking work at once: one thread per in-flight ``wait()``
+    and the proc-sub FIFO opens. A FIFO open queued behind saturated wait
+    threads would deadlock the run, so the pool must comfortably exceed the
+    number of processes a run keeps in flight.
+    """
 
     def __init__(
         self,
@@ -229,10 +284,12 @@ class LocalExecutor(AsyncExecutor):
         install_signal_handlers: bool = False,
         shutdown_grace_period: float = 10.0,
         run_logs: Optional[RunLogs] = None,
+        thread_pool_size: int = 512,
     ) -> None:
         super().__init__(
             scheduler,
             install_signal_handlers=install_signal_handlers,
+            thread_pool_size=thread_pool_size,
         )
         self.shutdown_grace_period = shutdown_grace_period
         self.run_logs = run_logs
@@ -266,7 +323,7 @@ class LocalExecutor(AsyncExecutor):
                 (
                     job,
                     context,
-                    asyncio.create_task(proc.wait()),
+                    asyncio.create_task(proc.async_wait()),
                     start_time,
                 )
             )
@@ -346,7 +403,7 @@ class LocalExecutor(AsyncExecutor):
         if not live:
             return
         _signal_procs(context, signal.SIGTERM)
-        waits = [asyncio.create_task(proc.wait()) for proc in live]
+        waits = [asyncio.create_task(proc.async_wait()) for proc in live]
         await asyncio.wait(waits, timeout=self.shutdown_grace_period)
         _kill_survivors(context)
         await asyncio.wait(waits)
@@ -388,6 +445,14 @@ class LocalExecutor(AsyncExecutor):
                     # Check if the command failed
                     cmd_failed = False
                     failures: List[Tuple[Command, int]] = []
+                    # Kernel resource usage, aggregated over the job's
+                    # processes. RSS is the per-process peak rather than a
+                    # sum: concurrent pipeline stages peak at different
+                    # times, so a sum would overstate the job.
+                    have_rusage = False
+                    job_utime = 0.0
+                    job_stime = 0.0
+                    job_maxrss = 0
                     for subcommand in context.commands:
                         if not subcommand.proc:
                             logger.error(
@@ -397,8 +462,36 @@ class LocalExecutor(AsyncExecutor):
                             cmd_failed = True
                             continue
                         ret = (
-                            await subcommand.proc.wait()
+                            await subcommand.proc.async_wait()
                         )  # Wait on all sub-commands
+                        # Reported for every reaped process, whatever the
+                        # job's outcome; signal-killed children have rusage
+                        # too.
+                        rusage = subcommand.proc.rusage
+                        if rusage is not None:
+                            rss = _maxrss_bytes(rusage)
+                            have_rusage = True
+                            job_utime += rusage.ru_utime
+                            job_stime += rusage.ru_stime
+                            job_maxrss = max(job_maxrss, rss)
+                            logger.debug(
+                                "rusage for %s [pid %d, %s]: utime=%.2fs "
+                                "stime=%.2fs maxrss=%.1fMiB minflt=%d "
+                                "majflt=%d inblock=%d oublock=%d "
+                                "nvcsw=%d nivcsw=%d",
+                                job,
+                                subcommand.proc.pid,
+                                subcommand,
+                                rusage.ru_utime,
+                                rusage.ru_stime,
+                                rss / (1024 * 1024),
+                                rusage.ru_minflt,
+                                rusage.ru_majflt,
+                                rusage.ru_inblock,
+                                rusage.ru_oublock,
+                                rusage.ru_nvcsw,
+                                rusage.ru_nivcsw,
+                            )
                         # A subcommand killed by SIGPIPE is not a failure:
                         # it was writing to a pipe whose reader exited early
                         # (e.g. `... | head`), which is normal in default
@@ -448,6 +541,16 @@ class LocalExecutor(AsyncExecutor):
                             )
                         self.jobs_with_errors.append(job)
                         self.start_new_jobs = False
+                    elif have_rusage:
+                        logger.info(
+                            "Finished command in %.2fs (user %.1fs, "
+                            "sys %.1fs, max proc RSS %s): %s",
+                            total_seconds,
+                            job_utime,
+                            job_stime,
+                            _mib(job_maxrss),
+                            job.shell,
+                        )
                     else:
                         logger.info(
                             f"Finished command in "
