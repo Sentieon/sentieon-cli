@@ -31,7 +31,9 @@ SCHEDULERS = [
 
 
 def _job(name, threads=1, resources=None):
-    return Job(Pipeline(Command(name)), name, threads, resources)
+    return Job(
+        Pipeline(Command(name)), name, threads, resources, task_name="test"
+    )
 
 
 def drive(scheduler):

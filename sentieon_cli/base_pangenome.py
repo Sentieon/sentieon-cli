@@ -129,6 +129,7 @@ class BasePangenome(BasePipeline):
             ),
             "kmc",
             job_threads,
+            task_name="kmer-counting",
         )
 
         return kmc_job
@@ -150,6 +151,7 @@ class BasePangenome(BasePipeline):
             ),
             "estimate-ploidy",
             0,
+            task_name="ploidy",
         )
         return ploidy_job
 

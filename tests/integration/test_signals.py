@@ -35,7 +35,11 @@ from sentieon_cli.shell_pipeline import (  # noqa: E402
 
 def _echo_dag(out):
     dag = DAG()
-    job = Job(Pipeline(Command("echo", "hi"), file_output=out), "echo")
+    job = Job(
+        Pipeline(Command("echo", "hi"), file_output=out),
+        "echo",
+        task_name="test",
+    )
     dag.add_job(job)
     return dag
 
@@ -103,7 +107,9 @@ def test_sigint_triggers_graceful_shutdown(monkeypatch):
     monkeypatch.setattr(executor_mod, "Context", SpyContext)
 
     dag = DAG()
-    dag.add_job(Job(Pipeline(Command("sleep", "30")), "sleeper"))
+    dag.add_job(
+        Job(Pipeline(Command("sleep", "30")), "sleeper", task_name="test")
+    )
     executor = LocalExecutor(
         ThreadScheduler(dag, 1),
         install_signal_handlers=True,
@@ -134,7 +140,11 @@ def test_grace_period_escalates_to_sigkill():
         "time.sleep(30)"
     )
     dag = DAG()
-    job = Job(Pipeline(Command(sys.executable, "-c", script)), "stubborn")
+    job = Job(
+        Pipeline(Command(sys.executable, "-c", script)),
+        "stubborn",
+        task_name="test",
+    )
     dag.add_job(job)
     executor = LocalExecutor(
         ThreadScheduler(dag, 1),
@@ -172,6 +182,7 @@ def test_sigint_with_blocked_procsub_cleans_up():
             )
         ),
         "blocked-procsub",
+        task_name="test",
     )
     dag.add_job(job)
     executor = LocalExecutor(
