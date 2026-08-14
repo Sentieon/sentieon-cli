@@ -672,6 +672,7 @@ class DNAscopeLRPipeline(BasePipeline):
                     ),
                     f"bam-realign-{i}",
                     self.cores,
+                    task_name="alignment",
                 )
             )
             res.append(out_aln)
@@ -725,8 +726,9 @@ class DNAscopeLRPipeline(BasePipeline):
                         self.minimap2_args,
                         self.util_sort_args,
                     ),
-                    "align-{i}",
+                    f"align-{i}",
                     self.cores,
+                    task_name="alignment",
                 )
             )
             res.append(out_aln)
@@ -764,6 +766,7 @@ class DNAscopeLRPipeline(BasePipeline):
                     ),
                     f"mosdepth-{i}",
                     0,  # Run in background
+                    task_name="metrics",
                 )
             )
         return mosdepth_jobs
@@ -791,6 +794,7 @@ class DNAscopeLRPipeline(BasePipeline):
             Pipeline(Command(*driver.build_cmd())),
             "merge-bam",
             0,
+            task_name="alignment",
         )
         return (merged_bam, merge_job)
 
@@ -823,6 +827,7 @@ class DNAscopeLRPipeline(BasePipeline):
             ),
             "pbsv-discover",
             0,
+            task_name="sv-calling",
         )
 
         # pbsv call
@@ -840,6 +845,7 @@ class DNAscopeLRPipeline(BasePipeline):
             Pipeline(Command(*call_cmd)),
             "pbsv-call",
             self.cores,
+            task_name="sv-calling",
         )
         return (pbsv_discover, pbsv_call)
 
@@ -875,7 +881,10 @@ class DNAscopeLRPipeline(BasePipeline):
         if self.cnv_excluded_regions:
             hificnv_cmd.extend(["--exclude", str(self.cnv_excluded_regions)])
         hificnv_job = Job(
-            Pipeline(Command(*hificnv_cmd)), "hificnv", self.cores
+            Pipeline(Command(*hificnv_cmd)),
+            "hificnv",
+            self.cores,
+            task_name="cnv",
         )
         return hificnv_job
 
@@ -935,7 +944,10 @@ class DNAscopeLRPipeline(BasePipeline):
             )
         )
         first_calling_job = Job(
-            Pipeline(Command(*driver.build_cmd())), "first-pass", self.cores
+            Pipeline(Command(*driver.build_cmd())),
+            "first-pass",
+            self.cores,
+            task_name="variant-calling",
         )
 
         # Transfer annotations to the tmp vcf
@@ -970,6 +982,7 @@ class DNAscopeLRPipeline(BasePipeline):
             Pipeline(Command(*driver.build_cmd())),
             "first-modelapply",
             self.cores,
+            task_name="model-apply",
         )
 
         # Phasing and RepeatModel
@@ -998,7 +1011,10 @@ class DNAscopeLRPipeline(BasePipeline):
             )
         )
         phaser_job = Job(
-            Pipeline(Command(*driver.build_cmd())), "variantphaser", self.cores
+            Pipeline(Command(*driver.build_cmd())),
+            "variantphaser",
+            self.cores,
+            task_name="phasing",
         )
 
         bcftools_subset_phased_job = None
@@ -1022,6 +1038,7 @@ class DNAscopeLRPipeline(BasePipeline):
                 ),
                 "bcftools-subset-phased",
                 0,
+                task_name="phasing",
             )
 
         fai_to_bed_job = None
@@ -1036,12 +1053,14 @@ class DNAscopeLRPipeline(BasePipeline):
                 ),
                 "fai-to-bed",
                 0,
+                task_name="phasing",
             )
 
         bcftools_subtract_job = Job(
             cmds.cmd_bedtools_subtract(bed, phased_bed, unphased_bed),
             "bedtools-subtract",
             0,
+            task_name="phasing",
         )
 
         repeatmodel_job = None
@@ -1068,6 +1087,7 @@ class DNAscopeLRPipeline(BasePipeline):
                 Pipeline(Command(*driver.build_cmd())),
                 "repeatmodel",
                 self.cores,
+                task_name="repeat-model",
             )
 
         bcftools_subset_unphased_job = Job(
@@ -1085,6 +1105,7 @@ class DNAscopeLRPipeline(BasePipeline):
             ),
             "bcftools-subset-unphased",
             0,
+            task_name="phasing",
         )
 
         # Second pass - phased variants
@@ -1127,6 +1148,7 @@ class DNAscopeLRPipeline(BasePipeline):
                     Pipeline(Command(*driver.build_cmd())),
                     "second-pass",
                     self.cores,
+                    task_name="variant-calling",
                 )
             )
 
@@ -1153,6 +1175,7 @@ class DNAscopeLRPipeline(BasePipeline):
             ),
             "patch",
             self.cores,
+            task_name="variant-patch",
         )
 
         # Transfer annotations to the patched VCFs
@@ -1198,6 +1221,7 @@ class DNAscopeLRPipeline(BasePipeline):
                     Pipeline(Command(*driver.build_cmd())),
                     "second-modelapply",
                     self.cores,
+                    task_name="model-apply",
                 )
             )
 
@@ -1223,6 +1247,7 @@ class DNAscopeLRPipeline(BasePipeline):
             Pipeline(Command(*driver.build_cmd())),
             "calling-unphased",
             self.cores,
+            task_name="variant-calling",
         )
 
         # Patch DNA and DNAHP variants
@@ -1236,7 +1261,9 @@ class DNAscopeLRPipeline(BasePipeline):
             self.cores,
             kwargs,
         )
-        diploid_patch_job = Job(cmd, "diploid-patch", self.cores)
+        diploid_patch_job = Job(
+            cmd, "diploid-patch", self.cores, task_name="variant-patch"
+        )
 
         # Transfer annotations to the diploid VCF
         unphased_transfer_jobs: List[Job] = []
@@ -1270,6 +1297,7 @@ class DNAscopeLRPipeline(BasePipeline):
             Pipeline(Command(*driver.build_cmd())),
             "modelapply-unphased",
             self.cores,
+            task_name="model-apply",
         )
 
         # merge calls to create the output
@@ -1290,6 +1318,7 @@ class DNAscopeLRPipeline(BasePipeline):
             ),
             "merge",
             self.cores,
+            task_name="vcf-merge",
         )
 
         gvcf_combine_job = None
@@ -1304,6 +1333,7 @@ class DNAscopeLRPipeline(BasePipeline):
                 ),
                 "gvcf-combine",
                 0,
+                task_name="gvcf",
             )
 
         haploid_calling_job = None
@@ -1352,6 +1382,7 @@ class DNAscopeLRPipeline(BasePipeline):
                 Pipeline(Command(*driver.build_cmd())),
                 "haploid-calling",
                 self.cores,
+                task_name="variant-calling",
             )
 
             haploid_patch2_job = Job(
@@ -1364,6 +1395,7 @@ class DNAscopeLRPipeline(BasePipeline):
                 ),
                 "haploid-patch2",
                 self.cores,
+                task_name="variant-patch",
             )
             haploid_concat_job = Job(
                 cmds.bcftools_concat(
@@ -1372,6 +1404,7 @@ class DNAscopeLRPipeline(BasePipeline):
                 ),
                 "haploid-diploid-concat",
                 0,
+                task_name="vcf-merge",
             )
 
             if self.gvcf:
@@ -1394,6 +1427,7 @@ class DNAscopeLRPipeline(BasePipeline):
                     ),
                     "haploid-gvcf-combine",
                     0,
+                    task_name="gvcf",
                 )
                 haploid_gvcf_concat_job = Job(
                     cmds.bcftools_concat(
@@ -1402,6 +1436,7 @@ class DNAscopeLRPipeline(BasePipeline):
                     ),
                     "haploid-gvcf-concat",
                     0,
+                    task_name="gvcf",
                 )
         return LRCallVariantsResult(
             first_calling_job,
@@ -1466,6 +1501,9 @@ class DNAscopeLRPipeline(BasePipeline):
             )
         )
         longreadsv_job = Job(
-            Pipeline(Command(*driver.build_cmd())), "LongReadSV", self.cores
+            Pipeline(Command(*driver.build_cmd())),
+            "LongReadSV",
+            self.cores,
+            task_name="sv-calling",
         )
         return longreadsv_job

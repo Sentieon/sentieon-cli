@@ -517,6 +517,7 @@ class DNAscopePipeline(BasePipeline):
                 ),
                 f"bam-align-{i}",
                 self.cores,
+                task_name="alignment",
             )
             res.append(out_aln)
             jobs.add(job)
@@ -532,6 +533,7 @@ class DNAscopePipeline(BasePipeline):
             ),
             "rm-bam-aln",
             0,
+            task_name="cleanup",
         )
 
         return (res, jobs, rm_job)
@@ -613,6 +615,7 @@ class DNAscopePipeline(BasePipeline):
                     f"bam-align-{i}-{j}",
                     split_cores,
                     resources={f"node{j}": 1},
+                    task_name="alignment",
                 )
                 res.append(out_aln)
                 jobs.add(job)
@@ -628,6 +631,7 @@ class DNAscopePipeline(BasePipeline):
             ),
             "rm-fq-aln",
             0,
+            task_name="cleanup",
         )
 
         return (res, jobs, rm_job)
@@ -716,6 +720,7 @@ class DNAscopePipeline(BasePipeline):
                 Pipeline(Command(*driver.build_cmd())),
                 "locuscollector",
                 self.cores,
+                task_name="dedup",
             )
 
         if self.sr_duplicate_marking == "none":
@@ -743,7 +748,10 @@ class DNAscopePipeline(BasePipeline):
             )
         )
         dedup_job = Job(
-            Pipeline(Command(*driver.build_cmd())), "dedup", self.cores
+            Pipeline(Command(*driver.build_cmd())),
+            "dedup",
+            self.cores,
+            task_name="dedup",
         )
 
         if self.skip_metrics:
@@ -767,7 +775,10 @@ class DNAscopePipeline(BasePipeline):
             driver.add_algo(HsMetricAlgo(hs_metrics, self.bed, self.bed))
             driver.add_algo(InsertSizeMetricAlgo(is_metrics))
             metrics_job = Job(
-                Pipeline(Command(*driver.build_cmd())), "metrics", 0
+                Pipeline(Command(*driver.build_cmd())),
+                "metrics",
+                0,
+                task_name="metrics",
             )  # Run metrics in the background
 
         # Run WgsMetricsAlgo after duplicate marking to account for
@@ -779,7 +790,10 @@ class DNAscopePipeline(BasePipeline):
             )
             driver.add_algo(CoverageMetrics(coverage_metrics))
             metrics_job = Job(
-                Pipeline(Command(*driver.build_cmd())), "metrics", 0
+                Pipeline(Command(*driver.build_cmd())),
+                "metrics",
+                0,
+                task_name="metrics",
             )  # Run metrics in the background
 
             # Rehead WGS metrics so they are recognized by MultiQC
@@ -801,6 +815,7 @@ class DNAscopePipeline(BasePipeline):
                 ),
                 "Rehead metrics",
                 0,
+                task_name="metrics",
             )
         return ([deduped], lc_job, dedup_job, metrics_job, rehead_job)
 
@@ -874,6 +889,7 @@ class DNAscopePipeline(BasePipeline):
             Pipeline(Command(*driver.build_cmd())),
             "variant-calling",
             self.cores,
+            task_name="variant-calling",
         )
 
         # Genotyping and filtering with DNAModelApply
@@ -889,12 +905,20 @@ class DNAscopePipeline(BasePipeline):
             )
         )
         apply_job = Job(
-            Pipeline(Command(*driver.build_cmd())), "model-apply", self.cores
+            Pipeline(Command(*driver.build_cmd())),
+            "model-apply",
+            self.cores,
+            task_name="model-apply",
         )
 
         # Remove the tmp_vcf
         rm_cmd = ["rm", str(tmp_vcf), str(tmp_vcf) + ".tbi"]
-        rm_job = Job(Pipeline(Command(*rm_cmd, fail_ok=True)), "rm-tmp-vcf", 0)
+        rm_job = Job(
+            Pipeline(Command(*rm_cmd, fail_ok=True)),
+            "rm-tmp-vcf",
+            0,
+            task_name="cleanup",
+        )
 
         # Genotype gVCFs
         gvcftyper_job = None
@@ -911,7 +935,10 @@ class DNAscopePipeline(BasePipeline):
                 )
             )
             gvcftyper_job = Job(
-                Pipeline(Command(*driver.build_cmd())), "gvcftyper", self.cores
+                Pipeline(Command(*driver.build_cmd())),
+                "gvcftyper",
+                self.cores,
+                task_name="gvcftyper",
             )
 
         # Call SVs
@@ -930,7 +957,9 @@ class DNAscopePipeline(BasePipeline):
                 )
             )
             svsolver_job = Job(
-                Pipeline(Command(*driver.build_cmd())), "svsolver"
+                Pipeline(Command(*driver.build_cmd())),
+                "svsolver",
+                task_name="sv-calling",
             )
             sv_rm_job = Job(
                 Pipeline(
@@ -943,6 +972,7 @@ class DNAscopePipeline(BasePipeline):
                 ),
                 "rm-tmp-sv",
                 0,
+                task_name="cleanup",
             )
 
         return (
@@ -991,7 +1021,10 @@ def call_cnvs(
         )
     )
     cnvscope_job = Job(
-        Pipeline(Command(*driver.build_cmd())), "CNVscope", cores
+        Pipeline(Command(*driver.build_cmd())),
+        "CNVscope",
+        cores,
+        task_name="cnv",
     )
 
     driver = Driver(
@@ -1009,6 +1042,7 @@ def call_cnvs(
         Pipeline(Command(*driver.build_cmd())),
         "CNVModelApply",
         cores,
+        task_name="cnv",
     )
 
     return (cnvscope_job, cnvmodelapply_job)

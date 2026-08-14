@@ -288,6 +288,7 @@ class BasePipeline(ABC):
             ),
             "multiqc",
             0,
+            task_name="multiqc",
         )
         return multiqc_job
 

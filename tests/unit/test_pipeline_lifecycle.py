@@ -131,9 +131,10 @@ class _StubExecutor:
 def test_check_execution_names_the_failed_jobs():
     pipeline = _DummyPipeline()
     pipeline.setup_logging(argparse.Namespace(loglevel="WARNING"))
-    job = Job(Pipeline(Command("false")), "broken-step")
+    job = Job(Pipeline(Command("false")), "broken-step", task_name="test")
 
-    with pytest.raises(DagExecutionError, match="broken-step"):
+    # Jobs report themselves by job_id, not by name.
+    with pytest.raises(DagExecutionError, match=r"Job\(broken-step-1\)"):
         pipeline.check_execution(DAG(), _StubExecutor([job]))
 
 
@@ -141,7 +142,9 @@ def test_check_execution_flags_unexecuted_jobs():
     pipeline = _DummyPipeline()
     pipeline.setup_logging(argparse.Namespace(loglevel="WARNING"))
     dag = DAG()
-    dag.add_job(Job(Pipeline(Command("echo", "x")), "unexecuted"))
+    dag.add_job(
+        Job(Pipeline(Command("echo", "x")), "unexecuted", task_name="test")
+    )
 
-    with pytest.raises(DagExecutionError, match="unexecuted"):
+    with pytest.raises(DagExecutionError, match=r"Job\(unexecuted-1\)"):
         pipeline.check_execution(dag, _StubExecutor())

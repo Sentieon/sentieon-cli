@@ -89,6 +89,7 @@ def build_transfer_jobs(
                 ),
                 "merge-trim-extra",
                 1,
+                task_name="annotation-transfer",
             )
             sharded_merge_jobs.append(view_job)
             sharded_vcfs.append(subset_vcf)
@@ -123,6 +124,7 @@ def build_transfer_jobs(
                 ),
                 f"merge-trim-{i}",
                 1,
+                task_name="annotation-transfer",
             )
             sharded_merge_jobs.append(merge_job)
             sharded_vcfs.append(shard_vcf)
@@ -136,5 +138,6 @@ def build_transfer_jobs(
         ),
         "merge-trim-concat",
         cores,
+        task_name="annotation-transfer",
     )
     return (sharded_merge_jobs, concat_job)

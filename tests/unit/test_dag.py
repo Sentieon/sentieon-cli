@@ -21,15 +21,17 @@ from sentieon_cli.shell_pipeline import Command, Pipeline  # noqa: E402
 
 def _job(name, threads=1, resources=None):
     """A trivial job whose identity is its (unique) command name."""
-    return Job(Pipeline(Command(name)), name, threads, resources)
+    return Job(
+        Pipeline(Command(name)), name, threads, resources, task_name="test"
+    )
 
 
 def test_job_identity_is_the_pipeline():
     # Two jobs with the same pipeline are equal even if named
     # differently; a DAG deduplicates on this identity.
-    j1 = Job(Pipeline(Command("echo", "x")), "name-a")
-    j2 = Job(Pipeline(Command("echo", "x")), "name-b")
-    j3 = Job(Pipeline(Command("echo", "y")), "name-c")
+    j1 = Job(Pipeline(Command("echo", "x")), "name-a", task_name="test")
+    j2 = Job(Pipeline(Command("echo", "x")), "name-b", task_name="test")
+    j3 = Job(Pipeline(Command("echo", "y")), "name-c", task_name="test")
     assert j1 == j2
     assert hash(j1) == hash(j2)
     assert j1 != j3
@@ -101,17 +103,29 @@ class TestDAGTraversal:
 
     def test_add_duplicate_pipeline_raises(self):
         dag = DAG()
-        dag.add_job(Job(Pipeline(Command("echo", "x")), "step-1"))
+        dag.add_job(
+            Job(Pipeline(Command("echo", "x")), "step-1", task_name="test")
+        )
         # A second job with an identical pipeline collides on identity.
         with pytest.raises(ValueError):
-            dag.add_job(Job(Pipeline(Command("echo", "x")), "step-2"))
+            dag.add_job(
+                Job(Pipeline(Command("echo", "x")), "step-2", task_name="test")
+            )
 
     def test_jobs_differing_only_in_exec_kwargs_are_not_duplicates(self):
         # A command's env/cwd is part of its identity, so two jobs that
         # differ only there are distinct, not rejected as duplicates.
         dag = DAG()
-        j1 = Job(Pipeline(Command("run", exec_kwargs={"cwd": "/a"})), "a")
-        j2 = Job(Pipeline(Command("run", exec_kwargs={"cwd": "/b"})), "b")
+        j1 = Job(
+            Pipeline(Command("run", exec_kwargs={"cwd": "/a"})),
+            "a",
+            task_name="test",
+        )
+        j2 = Job(
+            Pipeline(Command("run", exec_kwargs={"cwd": "/b"})),
+            "b",
+            task_name="test",
+        )
         dag.add_job(j1)
         dag.add_job(j2)  # must not raise "already in the DAG"
         assert j1 in dag.ready_jobs

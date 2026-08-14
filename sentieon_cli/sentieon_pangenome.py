@@ -705,6 +705,7 @@ class SentieonPangenome(BasePangenome):
                 Pipeline(Command("ln", "-sf", "/dev/stdout", str(rw_bam))),
                 "extract-kmc-symlink",
                 1,
+                task_name="read-extraction",
             )
             dag.add_job(ln_job)
 
@@ -721,6 +722,7 @@ class SentieonPangenome(BasePangenome):
                 ),
                 "extract-kmc",
                 self.cores,
+                task_name="read-extraction",
             )
             dag.add_job(extract_kmc_job, {ln_job})
             haplotype_dependencies.add(extract_kmc_job)
@@ -969,6 +971,7 @@ class SentieonPangenome(BasePangenome):
             ),
             "bwa-extract",
             self.cores,
+            task_name="alignment",
         )
         return bwa_job
 
@@ -999,6 +1002,7 @@ class SentieonPangenome(BasePangenome):
             ),
             "vg-haplotypes",
             self.cores,
+            task_name="pangenome",
         )
         return haplotypes_job
 
@@ -1015,6 +1019,7 @@ class SentieonPangenome(BasePangenome):
             ),
             "vg-convert-gfa",
             0,
+            task_name="pangenome",
         )
         return gfa_job
 
@@ -1029,6 +1034,7 @@ class SentieonPangenome(BasePangenome):
             ),
             "vg-paths-fasta",
             0,
+            task_name="pangenome",
         )
         return fasta_job
 
@@ -1073,6 +1079,7 @@ class SentieonPangenome(BasePangenome):
             ),
             "mm2-lift",
             self.cores,
+            task_name="pangenome-alignment",
         )
         return mm2_job
 
@@ -1107,6 +1114,7 @@ class SentieonPangenome(BasePangenome):
             Pipeline(Command(*driver.build_cmd())),
             f"locuscollector-{tag}",
             self.cores,
+            task_name="dedup",
         )
 
         driver2 = Driver(
@@ -1121,6 +1129,7 @@ class SentieonPangenome(BasePangenome):
             Pipeline(Command(*driver2.build_cmd())),
             f"dedup-{tag}",
             self.cores,
+            task_name="dedup",
         )
 
         return lc_job, dedup_job
@@ -1176,7 +1185,12 @@ class SentieonPangenome(BasePangenome):
         driver.add_algo(WgsMetricsAlgo(wgs_metrics, include_unpaired="true"))
         driver.add_algo(CoverageMetrics(coverage_metrics))
 
-        metrics_job = Job(Pipeline(Command(*driver.build_cmd())), "metrics", 0)
+        metrics_job = Job(
+            Pipeline(Command(*driver.build_cmd())),
+            "metrics",
+            0,
+            task_name="metrics",
+        )
 
         rehead_script = pathlib.Path(
             str(
@@ -1194,6 +1208,7 @@ class SentieonPangenome(BasePangenome):
             ),
             "Rehead metrics",
             0,
+            task_name="metrics",
         )
         return (metrics_job, rehead_job)
 
@@ -1242,6 +1257,7 @@ class SentieonPangenome(BasePangenome):
             Pipeline(Command(*driver.build_cmd())),
             "dnascope-raw",
             self.cores,
+            task_name="variant-calling",
         )
 
     def build_dnamodelapply_job(
@@ -1268,6 +1284,7 @@ class SentieonPangenome(BasePangenome):
             Pipeline(Command(*driver.build_cmd())),
             "model-apply",
             self.cores,
+            task_name="model-apply",
         )
 
     def build_gvcftyper_job(
@@ -1295,6 +1312,7 @@ class SentieonPangenome(BasePangenome):
             Pipeline(Command(*driver.build_cmd())),
             "gvcftyper",
             self.cores,
+            task_name="gvcftyper",
         )
 
     def build_segdup_job(
@@ -1333,6 +1351,7 @@ class SentieonPangenome(BasePangenome):
             ),
             "segdup-caller",
             self.cores,
+            task_name="segdup",
         )
 
     def build_second_dag(self) -> DAG:
@@ -1397,6 +1416,7 @@ class SentieonPangenome(BasePangenome):
             Pipeline(Command(*driver.build_cmd())),
             f"t1k-{tag}-extract",
             self.cores,
+            task_name="t1k",
         )
 
         t1k_job = Job(
@@ -1410,6 +1430,7 @@ class SentieonPangenome(BasePangenome):
             ),
             f"t1k-{tag}",
             self.cores,
+            task_name="t1k",
         )
         return (extract_job, t1k_job)
 
@@ -1435,6 +1456,7 @@ class SentieonPangenome(BasePangenome):
             ),
             "expansion-hunter",
             self.cores,
+            task_name="expansion-hunter",
         )
 
     def _add_cnv_jobs(
@@ -1506,6 +1528,7 @@ class SentieonPangenome(BasePangenome):
             Pipeline(Command(*driver.build_cmd())),
             "cnvscope",
             self.cores,
+            task_name="cnv",
         )
 
     def _build_cnv_model_apply_job(
@@ -1530,6 +1553,7 @@ class SentieonPangenome(BasePangenome):
             Pipeline(Command(*driver.build_cmd())),
             "cnv-model-apply",
             self.cores,
+            task_name="cnv",
         )
 
     def _build_indel2cnv_job(
@@ -1556,6 +1580,7 @@ class SentieonPangenome(BasePangenome):
             ),
             "indel2cnv",
             0,
+            task_name="cnv",
         )
 
     def _build_combine_cnv_job(
@@ -1583,4 +1608,5 @@ class SentieonPangenome(BasePangenome):
             ),
             "combine-cnv",
             0,
+            task_name="cnv",
         )

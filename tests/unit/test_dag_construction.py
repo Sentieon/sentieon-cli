@@ -5,6 +5,7 @@ Unit tests for DAG construction logic
 import json
 import pathlib
 import pytest
+import re
 import tempfile
 import shlex
 import sys
@@ -19,6 +20,17 @@ from sentieon_cli.dnascope_longread import DNAscopeLRPipeline
 from sentieon_cli.dag import DAG
 from sentieon_cli.job import Job
 from sentieon_cli.shell_pipeline import Pipeline, Command
+
+# task_name becomes a log directory name, so it must be kebab-case.
+TASK_NAME_RE = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
+
+
+def assert_task_names(dag):
+    """Every job in a built DAG carries a kebab-case task_name"""
+    all_jobs = list(dag.waiting_jobs.keys()) + list(dag.ready_jobs.keys())
+    assert all_jobs
+    for job in all_jobs:
+        assert TASK_NAME_RE.fullmatch(job.task_name), job.name
 
 
 class TestDAGConstruction:
@@ -187,6 +199,18 @@ class TestDAGConstruction:
         assert not any("gvcftyper" in name for name in job_names1)
         assert any("gvcftyper" in name for name in job_names2)
 
+    @patch('sentieon_cli.util.library_preloaded')
+    def test_jobs_have_task_names(self, mock_lib_preloaded):
+        """Every job built by the pipeline groups under a task_name"""
+        mock_lib_preloaded.return_value = True
+
+        pipeline = self.create_basic_dnascope_pipeline()
+        pipeline.gvcf = True
+        pipeline.validate()
+        pipeline.configure()
+
+        assert_task_names(pipeline.build_dag())
+
 
 class TestDAGJobProperties:
     """Test properties of individual jobs in the DAG"""
@@ -198,6 +222,7 @@ class TestDAGJobProperties:
             Pipeline(Command(*shlex.split("sentieon driver --algo DNAscope"))),
             "variant-calling",
             8,
+            task_name="variant-calling",
         )
         assert job.threads == 8
 
@@ -206,6 +231,7 @@ class TestDAGJobProperties:
             Pipeline(Command("rm", "temp_file.vcf")),
             "cleanup",
             0,
+            task_name="cleanup",
         )
         assert job.threads == 0
 
@@ -217,6 +243,7 @@ class TestDAGJobProperties:
             "alignment",
             4,
             resources={"node0": 1},
+            task_name="alignment",
         )
         assert job.resources == {"node0": 1}
 
@@ -225,6 +252,7 @@ class TestDAGJobProperties:
             Pipeline(Command("simple-command")),
             "simple",
             2,
+            task_name="test",
         )
         assert job.resources == {}
 
@@ -235,6 +263,7 @@ class TestDAGJobProperties:
             Pipeline(Command("rm", "temp_files", fail_ok=True)),
             "cleanup",
             0,
+            task_name="cleanup",
         )
         assert job.shell.nodes[0].fail_ok is True
 
@@ -243,6 +272,7 @@ class TestDAGJobProperties:
             Pipeline(Command("sentieon", "driver")),
             "variant-calling",
             4,
+            task_name="variant-calling",
         )
         assert job.shell.nodes[0].fail_ok is False
 
@@ -328,6 +358,9 @@ class TestLongReadDAGConstruction:
             # Should have multiple phases of variant calling
             assert total_jobs > 10  # Rough estimate for complex phased calling
 
+            # Every job groups under a task_name, phasing jobs included
+            assert_task_names(dag)
+
     @patch('sentieon_cli.util.library_preloaded')
     def test_ont_vs_hifi_dag_differences(self, mock_lib_preloaded):
         """Test DAG differences between ONT and HiFi technologies"""
@@ -393,9 +426,9 @@ class TestDAGValidation:
         dag = DAG()
 
         # Create test jobs
-        job1 = Job(Pipeline(Command("command1")), "job1")
-        job2 = Job(Pipeline(Command("command2")), "job2")
-        job3 = Job(Pipeline(Command("command3")), "job3")
+        job1 = Job(Pipeline(Command("command1")), "job1", task_name="test")
+        job2 = Job(Pipeline(Command("command2")), "job2", task_name="test")
+        job3 = Job(Pipeline(Command("command3")), "job3", task_name="test")
 
         # Add jobs with dependencies: job1 -> job2 -> job3
         dag.add_job(job1)
@@ -416,9 +449,9 @@ class TestDAGValidation:
         dag = DAG()
 
         # Create test jobs
-        job1 = Job(Pipeline(Command("command1")), "job1")
-        job2 = Job(Pipeline(Command("command2")), "job2")
-        job3 = Job(Pipeline(Command("command3")), "job3")
+        job1 = Job(Pipeline(Command("command1")), "job1", task_name="test")
+        job2 = Job(Pipeline(Command("command2")), "job2", task_name="test")
+        job3 = Job(Pipeline(Command("command3")), "job3", task_name="test")
 
         # Add jobs: job1 and job2 can run in parallel, then job3
         dag.add_job(job1)

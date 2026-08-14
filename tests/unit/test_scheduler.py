@@ -21,7 +21,9 @@ from sentieon_cli.shell_pipeline import Command, Pipeline  # noqa: E402
 
 
 def _job(name, threads=1, resources=None):
-    return Job(Pipeline(Command(name)), name, threads, resources)
+    return Job(
+        Pipeline(Command(name)), name, threads, resources, task_name="test"
+    )
 
 
 def test_schedules_independent_jobs_together():
@@ -91,14 +93,22 @@ def test_resource_requirements_ignored_when_unmanaged():
 
 def test_oversized_thread_request_is_rejected():
     dag = DAG()
-    dag.add_job(Job(Pipeline(Command("echo", "hi")), "big", 100))
+    dag.add_job(
+        Job(Pipeline(Command("echo", "hi")), "big", 100, task_name="test")
+    )
     with pytest.raises(DagExecutionError):
         ThreadScheduler(dag, threads=2).start()
 
 
 def test_oversized_resource_request_is_rejected():
     dag = DAG()
-    job = Job(Pipeline(Command("echo", "hi")), "greedy", 1, {"node0": 3})
+    job = Job(
+        Pipeline(Command("echo", "hi")),
+        "greedy",
+        1,
+        {"node0": 3},
+        task_name="test",
+    )
     dag.add_job(job)
     with pytest.raises(DagExecutionError):
         ThreadScheduler(dag, threads=8, resources={"node0": 1}).start()
