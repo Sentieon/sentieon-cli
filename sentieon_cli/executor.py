@@ -144,6 +144,10 @@ class AsyncExecutor(BaseExecutor, ABC):
     Set ``install_signal_handlers=True`` to install handlers (on the main
     thread only) for the duration of a run; the previous handlers are
     restored afterwards, so a caller's signal state is left untouched.
+
+    ``thread_pool_size`` sizes the loop's default thread pool for the run;
+    ``None`` leaves the loop's own default alone, which is what an executor
+    that spawns no processes wants.
     """
 
     def __init__(
@@ -151,9 +155,11 @@ class AsyncExecutor(BaseExecutor, ABC):
         scheduler: BaseScheduler,
         *,
         install_signal_handlers: bool = False,
+        thread_pool_size: Optional[int] = None,
     ) -> None:
         super().__init__(scheduler)
         self.install_signal_handlers = install_signal_handlers
+        self.thread_pool_size = thread_pool_size
         self.start_new_jobs = True
 
     def _install_signal_handlers(
@@ -219,19 +225,34 @@ class AsyncExecutor(BaseExecutor, ABC):
         """Execute jobs from the DAG"""
         self.jobs_with_errors = []
         loop = asyncio.get_running_loop()
-        # Blocked wait() threads and the proc-sub FIFO-open threads share the
-        # default pool, so it must be large enough that neither starves the
-        # other. Threads are created lazily, so the cap costs nothing unless
-        # it is used, and asyncio.run() shuts the executor down on exit.
-        loop.set_default_executor(
-            concurrent.futures.ThreadPoolExecutor(
-                max_workers=512, thread_name_prefix="sentieon-wait"
+        if self.thread_pool_size is not None:
+            # Threads are created lazily, so a generous cap costs nothing
+            # unless it is used, and asyncio.run() shuts the executor down on
+            # exit.
+            loop.set_default_executor(
+                concurrent.futures.ThreadPoolExecutor(
+                    max_workers=self.thread_pool_size,
+                    thread_name_prefix="sentieon-wait",
+                )
             )
-        )
         stop_event = asyncio.Event()
         restore = self._install_signal_handlers(loop, stop_event)
         try:
-            await self._drive(stop_event)
+            try:
+                await self._drive(stop_event)
+            except BaseException:
+                # Tear the children down before the exception unwinds into
+                # asyncio.run's Runner.close, which joins the wait threads --
+                # and those threads are blocked in wait4 on live children.
+                # BaseException so cancellation and KeyboardInterrupt are
+                # covered too.
+                self.start_new_jobs = False
+                try:
+                    await self._shutdown()
+                except Exception as exc:
+                    # A failed teardown must not mask the original error.
+                    logger.error("teardown after failure also failed: %s", exc)
+                raise
             if stop_event.is_set():
                 await self._shutdown()
         finally:
@@ -247,7 +268,14 @@ class AsyncExecutor(BaseExecutor, ABC):
 
 
 class LocalExecutor(AsyncExecutor):
-    """Run jobs locally as async subprocesses."""
+    """Run jobs locally as sub-processes, driven by an asyncio loop.
+
+    ``thread_pool_size`` defaults high because the loop's default pool serves
+    two kinds of blocking work at once: one thread per in-flight ``wait()``
+    and the proc-sub FIFO opens. A FIFO open queued behind saturated wait
+    threads would deadlock the run, so the pool must comfortably exceed the
+    number of processes a run keeps in flight.
+    """
 
     def __init__(
         self,
@@ -256,10 +284,12 @@ class LocalExecutor(AsyncExecutor):
         install_signal_handlers: bool = False,
         shutdown_grace_period: float = 10.0,
         run_logs: Optional[RunLogs] = None,
+        thread_pool_size: int = 512,
     ) -> None:
         super().__init__(
             scheduler,
             install_signal_handlers=install_signal_handlers,
+            thread_pool_size=thread_pool_size,
         )
         self.shutdown_grace_period = shutdown_grace_period
         self.run_logs = run_logs

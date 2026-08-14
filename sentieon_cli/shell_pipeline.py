@@ -155,7 +155,15 @@ class Context:
 
 
 class RusagePopen(subprocess.Popen[bytes]):
-    """A Popen that records the child's rusage when it is reaped."""
+    """A Popen that records the child's rusage when it is reaped.
+
+    Only the ``wait``/``async_wait`` path reaps through ``_try_wait`` and
+    sets ``rusage``; a reap via ``poll`` -- or ``send_signal``/``kill``,
+    which poll internally -- goes through the base class's machinery and
+    leaves ``rusage`` None. The executor waits every process it reports
+    metrics for, so those paths only collect processes whose rusage is
+    never read.
+    """
 
     rusage: Optional[resource.struct_rusage] = None
 
@@ -174,6 +182,9 @@ class RusagePopen(subprocess.Popen[bytes]):
 
     async def async_wait(self) -> int:
         """Await the child's exit without blocking the event loop."""
+        if self.returncode is not None:
+            # Already reaped; no need for a pool thread.
+            return self.returncode
         return await asyncio.to_thread(self.wait)
 
 
