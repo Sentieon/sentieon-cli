@@ -1,6 +1,7 @@
 """Execute jobs"""
 
 import asyncio
+import concurrent.futures
 import contextlib
 import os
 import pathlib
@@ -201,6 +202,15 @@ class AsyncExecutor(BaseExecutor, ABC):
         """Execute jobs from the DAG"""
         self.jobs_with_errors = []
         loop = asyncio.get_running_loop()
+        # Blocked wait() threads and the proc-sub FIFO-open threads share the
+        # default pool, so it must be large enough that neither starves the
+        # other. Threads are created lazily, so the cap costs nothing unless
+        # it is used, and asyncio.run() shuts the executor down on exit.
+        loop.set_default_executor(
+            concurrent.futures.ThreadPoolExecutor(
+                max_workers=512, thread_name_prefix="sentieon-wait"
+            )
+        )
         stop_event = asyncio.Event()
         restore = self._install_signal_handlers(loop, stop_event)
         try:
@@ -266,7 +276,7 @@ class LocalExecutor(AsyncExecutor):
                 (
                     job,
                     context,
-                    asyncio.create_task(proc.wait()),
+                    asyncio.create_task(proc.async_wait()),
                     start_time,
                 )
             )
@@ -346,7 +356,7 @@ class LocalExecutor(AsyncExecutor):
         if not live:
             return
         _signal_procs(context, signal.SIGTERM)
-        waits = [asyncio.create_task(proc.wait()) for proc in live]
+        waits = [asyncio.create_task(proc.async_wait()) for proc in live]
         await asyncio.wait(waits, timeout=self.shutdown_grace_period)
         _kill_survivors(context)
         await asyncio.wait(waits)
@@ -397,7 +407,7 @@ class LocalExecutor(AsyncExecutor):
                             cmd_failed = True
                             continue
                         ret = (
-                            await subcommand.proc.wait()
+                            await subcommand.proc.async_wait()
                         )  # Wait on all sub-commands
                         # A subcommand killed by SIGPIPE is not a failure:
                         # it was writing to a pipe whose reader exited early

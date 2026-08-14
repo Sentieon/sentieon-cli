@@ -34,7 +34,7 @@ async def test_simple_command():
 
     with tempfile.NamedTemporaryFile(mode="w+", delete=False) as stdout_file:
         proc = await cmd.run(context, stdout=stdout_file)
-        await proc.wait()
+        await proc.async_wait()
 
         stdout_file.seek(0)
         output = stdout_file.read().strip()
@@ -56,7 +56,7 @@ async def test_simple_pipeline():
 
     with tempfile.NamedTemporaryFile(mode="w+", delete=False) as stdout_file:
         proc = await pipeline.run(context, stdout=stdout_file)
-        await proc.wait()
+        await proc.async_wait()
 
         stdout_file.seek(0)
         output = stdout_file.read().strip()
@@ -89,7 +89,7 @@ async def test_pipeline_with_file_io():
     )
 
     proc = await pipeline.run(context)
-    await proc.wait()
+    await proc.async_wait()
 
     with open(outfile_path, "r") as f:
         output = f.read().strip()
@@ -114,7 +114,7 @@ async def test_input_process_substitution():
 
     with tempfile.NamedTemporaryFile(mode="w+", delete=False) as stdout_file:
         proc = await cmd.run(context, stdout=stdout_file)
-        await proc.wait()
+        await proc.async_wait()
 
         stdout_file.seek(0)
         output = stdout_file.read().strip()
@@ -149,7 +149,7 @@ async def test_output_process_substitution():
 
     with tempfile.NamedTemporaryFile(mode="w+", delete=False) as stdout_file:
         proc = await main_pipeline.run(context, stdout=stdout_file)
-        await proc.wait()
+        await proc.async_wait()
 
         # Wait for background tasks from process substitution to finish
         await asyncio.gather(*context.tasks)
@@ -198,10 +198,10 @@ async def test_pipe_size_enlarges_internal_pipes(tmp_path):
         pipe_size=target,
     )
     proc = await pipeline.run(context)
-    await proc.wait()
+    await proc.async_wait()
     for sub in context.commands:
         if sub.proc:
-            await sub.proc.wait()
+            await sub.proc.async_wait()
     await context.cleanup()
 
     assert int(report.read_text()) == target
@@ -347,7 +347,7 @@ async def test_cleanup_after_outer_exits_without_opening():
     context = Context()
     cmd = Command("false", InputProcSub(Pipeline(Command("echo", "x"))))
     proc = await cmd.run(context)
-    await proc.wait()
+    await proc.async_wait()
 
     await asyncio.wait_for(context.cleanup(), timeout=10)
 
@@ -364,7 +364,7 @@ async def test_cleanup_unblocks_multiple_procsubs():
         OutputProcSub(Pipeline(Command("cat"))),
     )
     proc = await cmd.run(context)
-    await proc.wait()
+    await proc.async_wait()
 
     await asyncio.wait_for(context.cleanup(), timeout=10)
 
@@ -380,7 +380,7 @@ async def test_cleanup_still_raises_inner_launch_failure():
         "cat", InputProcSub(Pipeline(Command("no_such_cmd_zzz")))
     )
     proc = await cmd.run(context)
-    await proc.wait()
+    await proc.async_wait()
 
     with pytest.raises(FileNotFoundError):
         await asyncio.wait_for(context.cleanup(), timeout=10)
@@ -408,7 +408,7 @@ async def test_cleanup_does_not_stall_running_inner_writer():
             await asyncio.sleep(0.01)
 
     await asyncio.wait_for(context.cleanup(), timeout=10)
-    assert await proc.wait() == 0
+    assert await proc.async_wait() == 0
 
 
 @pytest.mark.asyncio
@@ -417,7 +417,7 @@ async def test_cleanup_twice_is_safe():
     context = Context()
     cmd = Command("cat", InputProcSub(Pipeline(Command("echo", "hello"))))
     proc = await cmd.run(context, stdout=asyncio.subprocess.DEVNULL)
-    await proc.wait()
+    await proc.async_wait()
 
     await asyncio.wait_for(context.cleanup(), timeout=10)
     await asyncio.wait_for(context.cleanup(), timeout=10)
