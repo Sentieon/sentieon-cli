@@ -1415,6 +1415,122 @@ def cmd_minimap2_lift(
     return Pipeline(mm2_cmd, lift_cmd, sort_cmd)
 
 
+def cmd_hybrid_kmc(
+    output_prefix: pathlib.Path,
+    fastq: List[pathlib.Path],
+    aln: List[pathlib.Path],
+    reference: pathlib.Path,
+    tmp_dir: pathlib.Path,
+    k: int = 29,
+    memory: int = 30,
+    threads: int = 1,
+    unzip: str = "gzip",
+) -> Pipeline:
+    """Count k-mers across fastq and aligned reads.
+
+    KMC accepts a single input format per run, so the fastq files are
+    converted to FASTA and the aligned reads are extracted with
+    `samtools fasta`, and one FASTA stream is fed to the patched KMC
+    through stdin.
+    """
+    cat_args: List[Union[str, InputProcSub]] = []
+    if fastq:
+        fq_fasta = Pipeline(
+            Command(
+                unzip,
+                "-dc",
+                *[str(x) for x in fastq],
+            ),
+            Command("awk", 'NR%4==1{print ">"substr($0,2)} NR%4==2{print}'),
+        )
+        cat_args.append(InputProcSub(fq_fasta))
+    for aln_file in aln:
+        cat_args.append(
+            InputProcSub(
+                Pipeline(
+                    Command(
+                        "samtools",
+                        "fasta",
+                        "--reference",
+                        str(reference),
+                        "-@",
+                        str(threads),
+                        str(aln_file),
+                    )
+                )
+            )
+        )
+    cat_cmd = Command("cat", *cat_args)
+    kmc_cmd = Command(
+        "kmc",
+        f"-k{k}",
+        f"-m{memory}",
+        "-okff",
+        f"-t{threads}",
+        "-fa",
+        "/dev/stdin",
+        str(output_prefix),
+        str(tmp_dir),
+    )
+    return Pipeline(cat_cmd, kmc_cmd)
+
+
+# Extract graph update regions from the phase sets of LongReadSV calls.
+LONGREAD_SV_BED_AWK = """!/^#/ {
+    n=split($10,a,":");
+    ps=a[n];
+    if (ps != "." && ps ~ /^chr[^_]+_[0-9]+_[0-9]+$/) {
+        split(ps,b,"_");
+        print b[1], b[2], b[3];
+    }
+}"""
+
+
+def cmd_longread_sv_bed(
+    out_bed: pathlib.Path,
+    sv_vcf: pathlib.Path,
+) -> Pipeline:
+    """Generate a BED file of graph update regions from LongReadSV calls"""
+    zcat_cmd = Command("zcat", str(sv_vcf))
+    awk_cmd = Command("awk", "-F\t", LONGREAD_SV_BED_AWK, "OFS=\t")
+    sort_cmd = Command("sort", "-k1,1", "-k2,2n")
+    merge_cmd = Command("bedtools", "merge")
+    return Pipeline(
+        zcat_cmd,
+        awk_cmd,
+        sort_cmd,
+        merge_cmd,
+        file_output=out_bed,
+    )
+
+
+def cmd_pgutil_gfa2fa(
+    out_fasta: pathlib.Path,
+    ref_fai: pathlib.Path,
+    gfa_file: pathlib.Path,
+) -> Pipeline:
+    """Generate FASTA sequences from a pangenome graph"""
+    cmd = Command(
+        "sentieon",
+        "pgutil",
+        "gfa2fa",
+        "-F",
+        str(ref_fai),
+        "-g",
+        str(gfa_file),
+        "-o",
+        str(out_fasta),
+    )
+    return Pipeline(cmd)
+
+
+def cmd_samtools_faidx(
+    fasta: pathlib.Path,
+) -> Pipeline:
+    """Index a FASTA file"""
+    return Pipeline(Command("samtools", "faidx", str(fasta)))
+
+
 def cmd_bcftools_merge_trim(
     shard_vcf: pathlib.Path,
     raw_vcf: pathlib.Path,

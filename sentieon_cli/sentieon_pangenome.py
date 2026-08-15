@@ -20,24 +20,14 @@ from .archive import ar_load
 from .base_pangenome import BasePangenome, SampleSex
 from .dag import DAG
 from .driver import (
-    AlignmentStat,
-    BaseDistributionByCycle,
     CNVModelApply,
     CNVscope,
-    CoverageMetrics,
-    Dedup,
     DNAModelApply,
     DNAscope,
     Driver,
-    GCBias,
     GVCFtyper,
-    InsertSizeMetricAlgo,
-    LocusCollector,
-    MeanQualityByCycle,
     PangenomeSV,
-    QualDistribution,
     ReadWriter,
-    WgsMetricsAlgo,
 )
 from .job import Job
 from .logging import get_logger
@@ -774,7 +764,10 @@ class SentieonPangenome(BasePangenome):
                 out_bwa_aln, [bwa_bam], "bwa", metrics=dedup_metrics
             )
             mm2_lc_job, mm2_dedup_job = self.build_dedup_job(
-                out_mm2_aln, [mm2_bam], "mm2", left_align=True
+                out_mm2_aln,
+                [mm2_bam],
+                "mm2",
+                left_align_rgid=f"{self.fastq_readgroup['ID']}-mm2",
             )
             dag.add_job(bwa_lc_job, bwa_lc_dependencies)
             dag.add_job(bwa_dedup_job, {bwa_lc_job})
@@ -1083,135 +1076,6 @@ class SentieonPangenome(BasePangenome):
             task_name="pangenome-alignment",
         )
         return mm2_job
-
-    def build_dedup_job(
-        self,
-        output_bam,
-        input_bam: List[pathlib.Path],
-        tag: str,
-        left_align=False,
-        metrics: Optional[pathlib.Path] = None,
-    ) -> Tuple[Job, Job]:
-        """Build deduplication job"""
-        score_file = self.tmp_dir.joinpath(f"sample-{tag}-score.txt.gz")
-
-        read_filters = []
-        if left_align:
-            read_filters.append(
-                "IndelLeftAlignReadTransform,"
-                f"rgid={self.fastq_readgroup['ID']}-mm2"
-            )
-
-        # LocusCollector + Dedup
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-            input=input_bam,
-            read_filter=read_filters,
-        )
-        driver.add_algo(LocusCollector(score_file))
-
-        lc_job = Job(
-            Pipeline(Command(*driver.build_cmd())),
-            f"locuscollector-{tag}",
-            self.cores,
-            task_name="dedup",
-        )
-
-        driver2 = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-            input=input_bam,
-            read_filter=read_filters,
-        )
-        driver2.add_algo(Dedup(output_bam, score_file, metrics=metrics))
-
-        dedup_job = Job(
-            Pipeline(Command(*driver2.build_cmd())),
-            f"dedup-{tag}",
-            self.cores,
-            task_name="dedup",
-        )
-
-        return lc_job, dedup_job
-
-    def build_metrics_job(
-        self,
-        sample_input: List[pathlib.Path],
-    ) -> Tuple[Job, Job]:
-        """Build a metrics job"""
-        if not self.output_vcf:
-            self.logger.error("output_vcf is required")
-            sys.exit(2)
-
-        # Create the metrics directory
-        sample_name = self.output_vcf.name.replace(".vcf.gz", "")
-        metric_base = sample_name + ".txt"
-        metrics_dir = pathlib.Path(
-            str(self.output_vcf).replace(".vcf.gz", "_metrics")
-        )
-        if not self.dry_run:
-            metrics_dir.mkdir(exist_ok=True)
-
-        is_metrics = metrics_dir.joinpath(metric_base + ".insert_size.txt")
-        mqbc_metrics = metrics_dir.joinpath(
-            metric_base + ".mean_qual_by_cycle.txt"
-        )
-        bdbc_metrics = metrics_dir.joinpath(
-            metric_base + ".base_distribution_by_cycle.txt"
-        )
-        qualdist_metrics = metrics_dir.joinpath(
-            metric_base + ".qual_distribution.txt"
-        )
-        as_metrics = metrics_dir.joinpath(metric_base + ".alignment_stat.txt")
-        coverage_metrics = metrics_dir.joinpath("coverage")
-
-        # WGS metrics
-        wgs_metrics = metrics_dir.joinpath(metric_base + ".wgs.txt")
-        gc_metrics = metrics_dir.joinpath(metric_base + ".gc_bias.txt")
-        gc_summary = metrics_dir.joinpath(metric_base + ".gc_bias_summary.txt")
-
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-            input=sample_input,
-        )
-
-        driver.add_algo(InsertSizeMetricAlgo(is_metrics))
-        driver.add_algo(MeanQualityByCycle(mqbc_metrics))
-        driver.add_algo(BaseDistributionByCycle(bdbc_metrics))
-        driver.add_algo(QualDistribution(qualdist_metrics))
-        driver.add_algo(AlignmentStat(as_metrics))
-        driver.add_algo(GCBias(gc_metrics, summary=gc_summary))
-        driver.add_algo(WgsMetricsAlgo(wgs_metrics, include_unpaired="true"))
-        driver.add_algo(CoverageMetrics(coverage_metrics))
-
-        metrics_job = Job(
-            Pipeline(Command(*driver.build_cmd())),
-            "metrics",
-            0,
-            task_name="metrics",
-        )
-
-        rehead_script = pathlib.Path(
-            str(
-                files("sentieon_cli.scripts").joinpath("rehead_wgs_metrics.py")
-            )
-        )
-        rehead_job = Job(
-            Pipeline(
-                Command(
-                    sys.executable,
-                    str(rehead_script),
-                    "--metrics_file",
-                    str(wgs_metrics),
-                )
-            ),
-            "Rehead metrics",
-            0,
-            task_name="metrics",
-        )
-        return (metrics_job, rehead_job)
 
     def build_dnascope_job(
         self,

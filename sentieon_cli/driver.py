@@ -542,6 +542,26 @@ class PangenomeSV(BaseAlgo):
         self.prefix = prefix
 
 
+class PGHapUpdateAlgo(BaseAlgo):
+    """algo PGHapUpdateAlgo"""
+
+    name = "PGHapUpdateAlgo"
+
+    def __init__(
+        self,
+        output: pathlib.Path,
+        gfa_file: pathlib.Path,
+        target_bed: Optional[pathlib.Path] = None,
+        min_map_qual: Optional[int] = None,
+        prefix: Optional[str] = None,
+    ):
+        self.output = output
+        self.gfa_file = gfa_file
+        self.target_bed = target_bed
+        self.min_map_qual = min_map_qual
+        self.prefix = prefix
+
+
 class BaseDriver:
     """A base class for the Sentieon driver"""
 
