@@ -15,6 +15,7 @@ sys.path.insert(
     0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 )
 
+from sentieon_cli import command_strings as cmds
 from sentieon_cli.hybrid_pangenome import HybridPangenome
 from sentieon_cli.command_strings import LONGREAD_SV_BED_AWK
 from sentieon_cli.dag import DAG
@@ -817,3 +818,122 @@ class TestHybridPangenome:
         extract_cmd = str(self._get_job(all_jobs, "extract-kmc").shell)
         assert str(self.mock_lr_bam) in extract_cmd
         assert f"--reference {self.mock_lr_ref}" in extract_cmd
+
+    # Readgroup validation
+    #
+    # The readgroups are read from real input headers, so these tests set
+    # the parsed readgroups directly (or patch `get_rg_lines`) rather than
+    # relying on the synthetic readgroup of a dry run.
+
+    def create_rg_pipeline(self):
+        """A pipeline with aligned inputs and readgroup checks enabled"""
+        pipeline = self.create_aligned_pipeline()
+        pipeline.dry_run = False
+        pipeline.sr_readgroups = [[{"ID": "sr-rg1", "SM": "sample1"}]]
+        pipeline.lr_readgroups = [[{"ID": "lr-rg1", "SM": "sample1"}]]
+        return pipeline
+
+    def test_validate_readgroups_ok(self):
+        """Unique readgroups with a shared SM tag are accepted"""
+        pipeline = self.create_rg_pipeline()
+        pipeline.validate_readgroups()
+        assert pipeline.sample_sm == "sample1"
+
+    def test_validate_readgroups_sr_without_rg_lines(self):
+        """An aligned short-read input without @RG lines is rejected"""
+        pipeline = self.create_rg_pipeline()
+        pipeline.sr_readgroups = [[]]
+        with pytest.raises(SystemExit):
+            pipeline.validate_readgroups()
+
+    def test_validate_readgroups_lr_without_rg_lines(self):
+        """A long-read input without @RG lines is rejected"""
+        pipeline = self.create_rg_pipeline()
+        pipeline.lr_readgroups = [[]]
+        with pytest.raises(SystemExit):
+            pipeline.validate_readgroups()
+
+    def test_validate_readgroups_no_rg_lines_with_rgsm(self):
+        """`--rgsm` does not bypass the missing readgroup check"""
+        pipeline = self.create_rg_pipeline()
+        pipeline.rgsm = "override_sm"
+        pipeline.sr_readgroups = [[]]
+        with pytest.raises(SystemExit):
+            pipeline.validate_readgroups()
+
+    def test_validate_readgroups_duplicate_ids_across_inputs(self):
+        """A readgroup ID shared by the short and long reads is rejected"""
+        pipeline = self.create_rg_pipeline()
+        pipeline.sr_readgroups = [[{"ID": "rg1", "SM": "sample1"}]]
+        pipeline.lr_readgroups = [[{"ID": "rg1", "SM": "sample1"}]]
+        with pytest.raises(SystemExit):
+            pipeline.validate_readgroups()
+
+    def test_validate_readgroups_duplicate_ids_within_input(self):
+        """A readgroup ID repeated inside one input is rejected"""
+        pipeline = self.create_rg_pipeline()
+        pipeline.sr_readgroups = [
+            [{"ID": "rg1", "SM": "sample1"}, {"ID": "rg1", "SM": "sample1"}]
+        ]
+        with pytest.raises(SystemExit):
+            pipeline.validate_readgroups()
+
+    def test_validate_readgroups_duplicate_with_fastq_readgroup(self):
+        """A long-read ID matching the `--readgroup` ID is rejected"""
+        pipeline = self.create_pipeline()
+        pipeline.dry_run = False
+        pipeline.fastq_readgroup = {"ID": "rg1", "SM": "sample1"}
+        pipeline.lr_readgroups = [[{"ID": "rg1", "SM": "sample1"}]]
+        with pytest.raises(SystemExit):
+            pipeline.validate_readgroups()
+
+    def test_validate_readgroups_lift_id_collision(self):
+        """An input ID reserved for the lifted alignment is rejected"""
+        pipeline = self.create_pipeline()
+        pipeline.dry_run = False
+        pipeline.fastq_readgroup = {"ID": "rg1", "SM": "sample1"}
+        pipeline.lr_readgroups = [[{"ID": "rg1-pg", "SM": "sample1"}]]
+        with pytest.raises(SystemExit):
+            pipeline.validate_readgroups()
+
+    def test_validate_readgroups_without_sample_name(self):
+        """A sample name is required for the output readgroups"""
+        pipeline = self.create_rg_pipeline()
+        pipeline.fastq_readgroup = None
+        pipeline.sr_aln = []
+        pipeline.lr_aln = []
+        pipeline.sr_readgroups = []
+        pipeline.lr_readgroups = []
+        with pytest.raises(SystemExit):
+            pipeline.validate_readgroups()
+
+    def test_collect_readgroups_malformed_rg_line(self, monkeypatch):
+        """A malformed @RG line in an input header is rejected"""
+        pipeline = self.create_aligned_pipeline()
+        pipeline.dry_run = False
+        monkeypatch.setattr(
+            cmds,
+            "get_rg_lines",
+            lambda aln, dry_run: ["@RG\tID:sr-rg1\t"],
+        )
+        with pytest.raises(SystemExit):
+            pipeline.collect_readgroups()
+
+    def test_collect_readgroups_parses_input_headers(self, monkeypatch):
+        """The @RG lines of every input are parsed"""
+        pipeline = self.create_aligned_pipeline()
+        pipeline.dry_run = False
+        headers = {
+            str(self.mock_sr_bam): ["@RG\tID:sr-rg1\tSM:sample1"],
+            str(self.mock_lr_bam): ["@RG\tID:lr-rg1\tSM:sample1"],
+        }
+        monkeypatch.setattr(
+            cmds,
+            "get_rg_lines",
+            lambda aln, dry_run: headers[str(aln)],
+        )
+        pipeline.collect_readgroups()
+        assert pipeline.sr_readgroups == [[{"ID": "sr-rg1", "SM": "sample1"}]]
+        assert pipeline.lr_readgroups == [[{"ID": "lr-rg1", "SM": "sample1"}]]
+        pipeline.validate_readgroups()
+        assert pipeline.sample_sm == "sample1"

@@ -450,28 +450,51 @@ class HybridPangenome(BasePangenome):
 
         # Read the readgroups from the ORIGINAL long-read input; minimap2
         # realignment preserves the readgroup IDs with `addreplacerg`
-        self.sr_readgroups = []
-        for aln in self.sr_aln:
-            self.sr_readgroups.append([])
-            for rg_line in cmds.get_rg_lines(aln, self.dry_run):
-                self.sr_readgroups[-1].append(parse_rg_line(rg_line))
+        self.sr_readgroups = [
+            self.parse_aln_readgroups(aln) for aln in self.sr_aln
+        ]
+        self.lr_readgroups = [
+            self.parse_aln_readgroups(aln) for aln in self.lr_aln
+        ]
 
-        self.lr_readgroups = []
-        for aln in self.lr_aln:
-            self.lr_readgroups.append([])
-            for rg_line in cmds.get_rg_lines(aln, self.dry_run):
-                self.lr_readgroups[-1].append(parse_rg_line(rg_line))
+    def parse_aln_readgroups(self, aln: pathlib.Path) -> List[Dict[str, str]]:
+        """Parse the @RG lines from the header of an input alignment"""
+        parsed: List[Dict[str, str]] = []
+        for rg_line in cmds.get_rg_lines(aln, self.dry_run):
+            try:
+                parsed.append(parse_rg_line(rg_line))
+            except ValueError as e:
+                self.logger.error(
+                    "Invalid readgroup line in '%s': '%s': %s",
+                    aln,
+                    rg_line,
+                    e,
+                )
+                sys.exit(2)
+        return parsed
 
     def validate_readgroups(self) -> None:
         """Confirm that all readgroups have a consistent SM tag"""
+        aln_inputs = list(self.sr_aln) + list(self.lr_aln)
+        aln_readgroups = self.sr_readgroups + self.lr_readgroups
+
+        # Every input needs readgroups; the variant calling stages set the
+        # LR attribute of the input readgroups with `--replace_rg`
+        for aln, aln_rgs in zip(aln_inputs, aln_readgroups):
+            if not aln_rgs:
+                self.logger.error(
+                    "No @RG lines found in the header of '%s'. Please add "
+                    "readgroups to the input file",
+                    aln,
+                )
+                sys.exit(2)
+
         rg_sm: Optional[str] = None
         if self.fastq_readgroup:
             rg_sm = self.fastq_readgroup.get("SM")
         elif self.sr_readgroups and self.sr_readgroups[0]:
             rg_sm = self.sr_readgroups[0][0].get("SM")
 
-        aln_inputs = list(self.sr_aln) + list(self.lr_aln)
-        aln_readgroups = self.sr_readgroups + self.lr_readgroups
         for aln, aln_rgs in zip(aln_inputs, aln_readgroups):
             for aln_rg in aln_rgs:
                 if not aln_rg.get("ID"):
@@ -502,7 +525,65 @@ class HybridPangenome(BasePangenome):
                         rg_sm,
                     )
                     sys.exit(2)
+
+        # The dry-run readgroups are synthetic and identical for every
+        # input, so they would always collide
+        if not self.dry_run:
+            self.validate_rg_ids(aln_inputs, aln_readgroups)
+
+        if not self.rgsm and not rg_sm:
+            self.logger.error(
+                "Could not determine the sample name from the inputs. "
+                "Please set the `--rgsm` argument"
+            )
+            sys.exit(2)
         self.sample_sm = self.rgsm if self.rgsm else str(rg_sm)
+
+    def validate_rg_ids(
+        self,
+        aln_inputs: List[pathlib.Path],
+        aln_readgroups: List[List[Dict[str, str]]],
+    ) -> None:
+        """Confirm that every input readgroup ID is unique.
+
+        The inputs are merged by readgroup ID during variant calling, so a
+        collision would give one readgroup two conflicting `--replace_rg`
+        rewrites of the LR attribute.
+        """
+        rg_sources: Dict[str, str] = {}
+        if self.fastq_readgroup:
+            rg_sources[self.fastq_readgroup["ID"]] = (
+                "the `--readgroup` argument"
+            )
+        for aln, aln_rgs in zip(aln_inputs, aln_readgroups):
+            for aln_rg in aln_rgs:
+                rg_id = aln_rg["ID"]
+                if rg_id in rg_sources:
+                    self.logger.error(
+                        "Duplicate readgroup ID '%s' found in %s and '%s'. "
+                        "Readgroup IDs need to be unique across all inputs",
+                        rg_id,
+                        rg_sources[rg_id],
+                        aln,
+                    )
+                    sys.exit(2)
+                rg_sources[rg_id] = f"'{aln}'"
+
+        # The lifted alignment reuses the first short-read readgroup ID
+        # with a '-pg' suffix
+        lift_rg = self.fastq_readgroup
+        if not lift_rg and self.sr_readgroups and self.sr_readgroups[0]:
+            lift_rg = self.sr_readgroups[0][0]
+        if lift_rg:
+            lift_id = lift_rg["ID"] + "-pg"
+            if lift_id in rg_sources:
+                self.logger.error(
+                    "The readgroup ID '%s' in %s is reserved for the lifted "
+                    "alignment. Please rename the input readgroup",
+                    lift_id,
+                    rg_sources[lift_id],
+                )
+                sys.exit(2)
 
     def configure(self) -> None:
         """Configure pipeline parameters"""
