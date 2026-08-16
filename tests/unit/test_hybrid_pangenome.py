@@ -327,7 +327,8 @@ class TestHybridPangenome:
 
         bed_cmd = str(self._get_job(all_jobs, "longread-sv-bed").shell)
         assert 'n=split($10,a,":")' in bed_cmd
-        assert "sort -k1,1 -k2,2n" in bed_cmd
+        # Sort in reference contig order for bedtools merge
+        assert f"bedtools sort -faidx {self.mock_ref}.fai -i -" in bed_cmd
         assert "bedtools merge" in bed_cmd
         assert "sample-sv.bed" in bed_cmd
         # The awk script matches the validated implementation

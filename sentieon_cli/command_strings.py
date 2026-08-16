@@ -1581,11 +1581,12 @@ LONGREAD_SV_BED_AWK = """!/^#/ {
 def cmd_longread_sv_bed(
     out_bed: pathlib.Path,
     sv_vcf: pathlib.Path,
+    ref_fai: pathlib.Path,
 ) -> Pipeline:
     """Generate a BED file of graph update regions from LongReadSV calls"""
     zcat_cmd = Command("zcat", str(sv_vcf))
     awk_cmd = Command("awk", "-F\t", LONGREAD_SV_BED_AWK, "OFS=\t")
-    sort_cmd = Command("sort", "-k1,1", "-k2,2n")
+    sort_cmd = Command("bedtools", "sort", "-faidx", str(ref_fai), "-i", "-")
     merge_cmd = Command("bedtools", "merge")
     return Pipeline(
         zcat_cmd,

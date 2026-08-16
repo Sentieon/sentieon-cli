@@ -625,7 +625,7 @@ class HybridPangenome(BasePangenome):
         longreadsv_job = self.build_longreadsv_job(longread_sv_vcf, calling_lr)
         dag.add_job(longreadsv_job, realign_jobs)
         sv_bed_job = Job(
-            cmds.cmd_longread_sv_bed(sv_bed, longread_sv_vcf),
+            cmds.cmd_longread_sv_bed(sv_bed, longread_sv_vcf, ref_fai),
             "longread-sv-bed",
             0,
             task_name="pangenome-update",
