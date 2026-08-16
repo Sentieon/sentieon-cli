@@ -120,6 +120,12 @@ class HybridPangenome(BasePangenome):
                 ),
                 "type": path_arg(exists=True, is_file=True),
             },
+            "pangenome_contig_prefix": {
+                "default": "GRCh38#0#",
+                "help": (
+                    "Prefix to strip from pangenome contig names (GRCh38#0#)"
+                ),
+            },
             "pangenome_ref_name": {
                 "default": "GRCh38",
                 "help": "Reference name in the pangenome (GRCh38).",
@@ -185,6 +191,7 @@ class HybridPangenome(BasePangenome):
         self.bed: Optional[pathlib.Path] = None
         self.lr_align_input = False
         self.lr_input_ref: Optional[pathlib.Path] = None
+        self.pangenome_contig_prefix = "GRCh38#0#"
         self.pangenome_ref_name = "GRCh38"
         self.rgsm: Optional[str] = None
         self.extract_model_name = "extract.model"
@@ -971,7 +978,12 @@ class HybridPangenome(BasePangenome):
             input=list(lr_aln),
         )
         driver.add_algo(
-            PGHapUpdateAlgo(out_gfa, gfa_file=in_gfa, target_bed=bed)
+            PGHapUpdateAlgo(
+                out_gfa,
+                gfa_file=in_gfa,
+                target_bed=bed,
+                prefix=self.pangenome_contig_prefix,
+            )
         )
         return Job(
             Pipeline(Command(*driver.build_cmd())),
@@ -1040,6 +1052,7 @@ class HybridPangenome(BasePangenome):
                 self.model_bundle.joinpath("minimap2.model"),
                 threads=self.cores,
                 mm2_xargs=["--secondary=yes"],
+                lift_prefix=self.pangenome_contig_prefix,
             ),
             "mm2-lift",
             self.cores,
@@ -1100,6 +1113,7 @@ class HybridPangenome(BasePangenome):
                 out_vcf,
                 gfa_file=pangenome_gfa,
                 min_af=PANGENOME_SV_MIN_AF,
+                prefix=self.pangenome_contig_prefix,
             )
         )
         return Job(

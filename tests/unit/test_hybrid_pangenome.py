@@ -304,6 +304,8 @@ class TestHybridPangenome:
         assert "sample-pangenome-raw.gfa" in raw_cmd
         assert "--target_bed" not in raw_cmd
         assert str(self.mock_lr_bam) in raw_cmd
+        assert "--prefix" in raw_cmd
+        assert "GRCh38#0#" in raw_cmd
 
         update_cmd = str(self._get_job(all_jobs, "graph-update").shell)
         assert "--algo PGHapUpdateAlgo" in update_cmd
@@ -311,6 +313,8 @@ class TestHybridPangenome:
         assert "sample-pangenome-raw.gfa" in update_cmd
         assert "--target_bed " in update_cmd
         assert "sample-sv.bed" in update_cmd
+        assert "--prefix" in update_cmd
+        assert "GRCh38#0#" in update_cmd
 
     def test_longreadsv_and_bed(self):
         """LongReadSV runs on the long reads and the awk BED script is
@@ -385,10 +389,30 @@ class TestHybridPangenome:
         assert "--gfa_file" in cmd_str
         assert "sample-pangenome.gfa" in cmd_str
         assert "--min_af 0.1" in cmd_str
+        assert "--prefix" in cmd_str
+        assert "GRCh38#0#" in cmd_str
         sv_vcf = str(self.mock_vcf).replace(".vcf.gz", "_sv.vcf.gz")
         assert sv_vcf in cmd_str
         # SV calling is not restricted to the small-variant BED
         assert f"--interval {self.mock_bed}" not in cmd_str
+
+    def test_pangenome_contig_prefix(self):
+        """`--pangenome_contig_prefix` reaches every graph consumer"""
+        pipeline = self.create_pipeline()
+        pipeline.pangenome_contig_prefix = "CHM13#0#"
+        dag = pipeline.build_dag()
+        _, all_jobs = self._get_all_job_names(dag)
+
+        for job_name in (
+            "mm2-lift",
+            "graph-update-raw",
+            "graph-update",
+            "pangenome-sv",
+        ):
+            cmd_str = str(self._get_job(all_jobs, job_name).shell)
+            assert "--prefix" in cmd_str, job_name
+            assert "CHM13#0#" in cmd_str, job_name
+            assert "GRCh38#0#" not in cmd_str, job_name
 
     def test_dnascope_command(self):
         """DNAscope runs with the model, interval, and pcr_indel_model"""
