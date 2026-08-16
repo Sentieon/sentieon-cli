@@ -10,7 +10,7 @@ import shlex
 import subprocess as sp
 import sys
 import typing
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from .driver import BaseDriver, Driver, ReadWriter
 from .logging import get_logger
@@ -512,12 +512,15 @@ def cmd_samtools_fastq_minimap2(
     fastq_taglist: str = "*",
     minimap2_args: str = "-YL",
     util_sort_args: str = "--cram_write_options version=3.0,compressor=rans",
+    minimap2_model: Optional[Union[pathlib.Path, str]] = None,
 ) -> Pipeline:
     """Re-align an input BAM/CRAM/uBAM/uCRAM file with minimap2"""
 
+    # `input_ref` decodes the input file, which may use a different
+    # reference from the alignment target
     ref_cmd: List[str] = []
     if input_ref:
-        ref_cmd = ["--reference", str(reference)]
+        ref_cmd = ["--reference", str(input_ref)]
     cmd_list = [
         Command(
             "samtools",
@@ -530,6 +533,9 @@ def cmd_samtools_fastq_minimap2(
             str(input_aln),
         )
     ]
+    mm2_model = (
+        minimap2_model if minimap2_model else f"{model_bundle}/minimap2.model"
+    )
     cmd_list.append(
         Command(
             "sentieon",
@@ -540,7 +546,7 @@ def cmd_samtools_fastq_minimap2(
             "-a",
             minimap2_args,
             "-x",
-            f"{model_bundle}/minimap2.model",
+            str(mm2_model),
             str(reference),
             "/dev/stdin",
         )
@@ -597,9 +603,11 @@ def cmd_samtools_fastq_bwa(
     util_sort_args: str = "--cram_write_options version=3.0,compressor=rans",
 ) -> Pipeline:
     """Re-align an input BAM/CRAM/uBAM/uCRAM file with bwa"""
+    # `input_ref` decodes the input file, which may use a different
+    # reference from the alignment target
     ref_cmd: List[str] = []
     if input_ref:
-        ref_cmd = ["--reference", str(reference)]
+        ref_cmd = ["--reference", str(input_ref)]
 
     if collate:
         collate_cmd = Command(
@@ -879,19 +887,22 @@ def cmd_kmc(
     return Pipeline(Command(*cmd))
 
 
-def cmd_extract_kmc(
-    output_prefix: pathlib.Path,
-    out_fastq: pathlib.Path,
+def _readwriter_extract_cmds(
     input_aln: List[pathlib.Path],
     reference: pathlib.Path,
     extract_model: pathlib.Path,
-    tmp_dir: pathlib.Path,
     rw_bam: pathlib.Path,
+    out_fastq: pathlib.Path,
     threads: int = 1,
-) -> Pipeline:
-    # `rw_bam` must already be a symlink to /dev/stdout;
-    # ReadWriter writes to it, which resolves to the driver's stdout (= the
-    # pipe to pgutil extract).
+) -> Tuple[Command, Command]:
+    """Read an aligned input once, writing the extracted reads to a fastq
+    file and the full read stream to stdout.
+
+    `rw_bam` must already be a symlink to /dev/stdout; ReadWriter writes to
+    it, which resolves to the driver's stdout (= the pipe to pgutil
+    extract). Duplicate, secondary, and supplementary reads are excluded
+    with `--output_flag_filter 0xf00:0`.
+    """
     driver = Driver(
         reference=reference,
         thread_count=threads,
@@ -924,6 +935,27 @@ def cmd_extract_kmc(
         str(out_fastq),
         "-a",
         "-",
+    )
+    return driver_cmd, extract_cmd
+
+
+def cmd_extract_kmc(
+    output_prefix: pathlib.Path,
+    out_fastq: pathlib.Path,
+    input_aln: List[pathlib.Path],
+    reference: pathlib.Path,
+    extract_model: pathlib.Path,
+    tmp_dir: pathlib.Path,
+    rw_bam: pathlib.Path,
+    threads: int = 1,
+) -> Pipeline:
+    driver_cmd, extract_cmd = _readwriter_extract_cmds(
+        input_aln,
+        reference,
+        extract_model,
+        rw_bam,
+        out_fastq,
+        threads,
     )
     kmc_cmd = Command(
         "kmc",
@@ -1415,11 +1447,57 @@ def cmd_minimap2_lift(
     return Pipeline(mm2_cmd, lift_cmd, sort_cmd)
 
 
+def _aln_fasta_procsubs(
+    aln: List[Tuple[pathlib.Path, pathlib.Path]],
+    threads: int = 1,
+) -> List[InputProcSub]:
+    """FASTA process substitutions for `(alignment, decode reference)`
+    pairs"""
+    procsubs: List[InputProcSub] = []
+    for aln_file, decode_ref in aln:
+        procsubs.append(
+            InputProcSub(
+                Pipeline(
+                    Command(
+                        "samtools",
+                        "fasta",
+                        "--reference",
+                        str(decode_ref),
+                        "-@",
+                        str(threads),
+                        str(aln_file),
+                    )
+                )
+            )
+        )
+    return procsubs
+
+
+def _kmc_stdin_cmd(
+    output_prefix: pathlib.Path,
+    tmp_dir: pathlib.Path,
+    k: int = 29,
+    memory: int = 30,
+    threads: int = 1,
+) -> Command:
+    """The patched KMC reading a FASTA stream from stdin"""
+    return Command(
+        "kmc",
+        f"-k{k}",
+        f"-m{memory}",
+        "-okff",
+        f"-t{threads}",
+        "-fa",
+        "/dev/stdin",
+        str(output_prefix),
+        str(tmp_dir),
+    )
+
+
 def cmd_hybrid_kmc(
     output_prefix: pathlib.Path,
     fastq: List[pathlib.Path],
-    aln: List[pathlib.Path],
-    reference: pathlib.Path,
+    aln: List[Tuple[pathlib.Path, pathlib.Path]],
     tmp_dir: pathlib.Path,
     k: int = 29,
     memory: int = 30,
@@ -1431,7 +1509,8 @@ def cmd_hybrid_kmc(
     KMC accepts a single input format per run, so the fastq files are
     converted to FASTA and the aligned reads are extracted with
     `samtools fasta`, and one FASTA stream is fed to the patched KMC
-    through stdin.
+    through stdin. Each alignment is supplied as an
+    `(alignment, decode reference)` pair.
     """
     cat_args: List[Union[str, InputProcSub]] = []
     if fastq:
@@ -1444,34 +1523,47 @@ def cmd_hybrid_kmc(
             Command("awk", 'NR%4==1{print ">"substr($0,2)} NR%4==2{print}'),
         )
         cat_args.append(InputProcSub(fq_fasta))
-    for aln_file in aln:
-        cat_args.append(
-            InputProcSub(
-                Pipeline(
-                    Command(
-                        "samtools",
-                        "fasta",
-                        "--reference",
-                        str(reference),
-                        "-@",
-                        str(threads),
-                        str(aln_file),
-                    )
-                )
-            )
-        )
+    cat_args.extend(_aln_fasta_procsubs(aln, threads))
     cat_cmd = Command("cat", *cat_args)
-    kmc_cmd = Command(
-        "kmc",
-        f"-k{k}",
-        f"-m{memory}",
-        "-okff",
-        f"-t{threads}",
-        "-fa",
-        "/dev/stdin",
-        str(output_prefix),
-        str(tmp_dir),
+    kmc_cmd = _kmc_stdin_cmd(output_prefix, tmp_dir, k, memory, threads)
+    return Pipeline(cat_cmd, kmc_cmd)
+
+
+def cmd_hybrid_extract_kmc(
+    output_prefix: pathlib.Path,
+    out_fastq: pathlib.Path,
+    sr_aln: List[pathlib.Path],
+    lr_aln: List[Tuple[pathlib.Path, pathlib.Path]],
+    reference: pathlib.Path,
+    extract_model: pathlib.Path,
+    tmp_dir: pathlib.Path,
+    rw_bam: pathlib.Path,
+    k: int = 29,
+    memory: int = 30,
+    threads: int = 1,
+) -> Pipeline:
+    """Extract reads from aligned short-read input and count k-mers across
+    the short and long reads in a single pass.
+
+    The aligned short reads are read once: `pgutil extract` writes the
+    extracted reads to `out_fastq` and passes the full read stream on to
+    KMC. Each long-read alignment is supplied as an
+    `(alignment, decode reference)` pair.
+    """
+    driver_cmd, extract_cmd = _readwriter_extract_cmds(
+        sr_aln,
+        reference,
+        extract_model,
+        rw_bam,
+        out_fastq,
+        threads,
     )
+    cat_args: List[Union[str, InputProcSub]] = [
+        InputProcSub(Pipeline(driver_cmd, extract_cmd))
+    ]
+    cat_args.extend(_aln_fasta_procsubs(lr_aln, threads))
+    cat_cmd = Command("cat", *cat_args)
+    kmc_cmd = _kmc_stdin_cmd(output_prefix, tmp_dir, k, memory, threads)
     return Pipeline(cat_cmd, kmc_cmd)
 
 

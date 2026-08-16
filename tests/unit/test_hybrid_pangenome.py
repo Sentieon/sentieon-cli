@@ -8,6 +8,8 @@ import sys
 import tempfile
 from unittest.mock import MagicMock
 
+import pytest
+
 # Add the parent directory to the path to import sentieon_cli
 sys.path.insert(
     0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -37,6 +39,8 @@ class TestHybridPangenome:
         self.mock_bed = self.mock_dir / "autosomes.bed"
         self.mock_r1 = self.mock_dir / "sample_R1.fastq.gz"
         self.mock_r2 = self.mock_dir / "sample_R2.fastq.gz"
+        self.mock_sr_bam = self.mock_dir / "shortreads.bam"
+        self.mock_lr_ref = self.mock_dir / "lr_reference.fa"
 
         for file_path in [
             self.mock_ref,
@@ -49,6 +53,8 @@ class TestHybridPangenome:
             self.mock_bed,
             self.mock_r1,
             self.mock_r2,
+            self.mock_sr_bam,
+            self.mock_lr_ref,
         ]:
             file_path.touch()
 
@@ -92,6 +98,28 @@ class TestHybridPangenome:
 
         return pipeline
 
+    def create_aligned_pipeline(self):
+        """Create a pipeline with aligned short-read input"""
+        pipeline = self.create_pipeline()
+        pipeline.r1_fastq = []
+        pipeline.r2_fastq = []
+        pipeline.readgroup = None
+        pipeline.fastq_readgroup = None
+        pipeline.sr_aln = [self.mock_sr_bam]
+        pipeline.sr_readgroups = [[{"ID": "sr-rg1", "SM": "sample1"}]]
+        return pipeline
+
+    def create_lr_realign_pipeline(self, aligned_sr=False):
+        """Create a pipeline that realigns the long-read input"""
+        pipeline = (
+            self.create_aligned_pipeline()
+            if aligned_sr
+            else self.create_pipeline()
+        )
+        pipeline.lr_align_input = True
+        pipeline.lr_input_ref = self.mock_lr_ref
+        return pipeline
+
     def _get_all_job_names(self, dag):
         """Helper to get all job names from a DAG"""
         all_jobs = list(dag.waiting_jobs.keys()) + list(dag.ready_jobs.keys())
@@ -99,6 +127,11 @@ class TestHybridPangenome:
 
     def _get_job(self, all_jobs, name):
         return next(j for j in all_jobs if j.name == name)
+
+    def _get_dep_names(self, dag, all_jobs, name):
+        """Helper to get the dependency names of a job"""
+        job = self._get_job(all_jobs, name)
+        return {dep.name for dep in dag.waiting_jobs.get(job, set())}
 
     def test_dag_jobs_present(self):
         """All expected jobs are in the DAG"""
@@ -472,3 +505,290 @@ class TestHybridPangenome:
 
         bwa_cmd = str(self._get_job(all_jobs, "bwa-extract").shell)
         assert "SM:override_sm" in bwa_cmd
+
+    # Aligned short-read input
+
+    def test_aligned_dag_jobs(self):
+        """Aligned short-read input skips alignment, dedup, and metrics"""
+        pipeline = self.create_aligned_pipeline()
+        assert not pipeline.skip_metrics
+        dag = pipeline.build_dag()
+        job_names, _ = self._get_all_job_names(dag)
+
+        for name in (
+            "extract-kmc-symlink",
+            "extract-kmc",
+            "vg-haplotypes",
+            "graph-update",
+            "mm2-lift",
+            "pangenome-sv",
+            "dnascope-raw",
+            "model-apply",
+        ):
+            assert name in job_names, f"missing job: {name}"
+
+        for name in (
+            "kmc",
+            "bwa-extract",
+            "locuscollector-bwa",
+            "dedup-bwa",
+            "locuscollector-lift",
+            "dedup-lift",
+            "metrics",
+            "Rehead metrics",
+            "multiqc",
+        ):
+            assert name not in job_names, f"unexpected job: {name}"
+
+    def test_aligned_extract_kmc_command(self):
+        """Read extraction and k-mer counting run in a single pass"""
+        pipeline = self.create_aligned_pipeline()
+        dag = pipeline.build_dag()
+        _, all_jobs = self._get_all_job_names(dag)
+
+        symlink_cmd = str(self._get_job(all_jobs, "extract-kmc-symlink").shell)
+        rw_bam = self.mock_dir / "extract-kmc-rw.bam"
+        assert f"ln -sf /dev/stdout {rw_bam}" in symlink_cmd
+
+        cmd_str = str(self._get_job(all_jobs, "extract-kmc").shell)
+        # One pass over the aligned short reads, without duplicate,
+        # secondary, or supplementary reads
+        assert "--algo ReadWriter" in cmd_str
+        assert "--output_flag_filter 0xf00:0" in cmd_str
+        assert str(self.mock_sr_bam) in cmd_str
+        assert str(rw_bam) in cmd_str
+        # writing the extracted reads to the fastq and the reads to kmc
+        assert "pgutil extract" in cmd_str
+        ext_fastq = self.mock_dir / "sample-extract.fq.gz"
+        assert f"-o {ext_fastq}" in cmd_str
+        assert "-a -" in cmd_str
+        # concatenated with the long reads
+        assert "cat " in cmd_str
+        assert "samtools fasta" in cmd_str
+        assert str(self.mock_lr_bam) in cmd_str
+        assert "-fa /dev/stdin" in cmd_str
+        assert "-k29" in cmd_str
+        assert "-m30" in cmd_str
+
+    def test_aligned_extract_kmc_memory(self):
+        """`--kmer_memory` is passed to the single-pass KMC"""
+        pipeline = self.create_aligned_pipeline()
+        pipeline.kmer_memory = 64
+        dag = pipeline.build_dag()
+        _, all_jobs = self._get_all_job_names(dag)
+
+        cmd_str = str(self._get_job(all_jobs, "extract-kmc").shell)
+        assert "-m64" in cmd_str
+
+    def test_aligned_dag_dependencies(self):
+        """The pangenome is built from the extracted k-mers"""
+        pipeline = self.create_aligned_pipeline()
+        dag = pipeline.build_dag()
+        _, all_jobs = self._get_all_job_names(dag)
+
+        assert self._get_dep_names(dag, all_jobs, "extract-kmc") == {
+            "extract-kmc-symlink"
+        }
+        assert self._get_dep_names(dag, all_jobs, "vg-haplotypes") == {
+            "extract-kmc"
+        }
+        assert "extract-kmc" in self._get_dep_names(dag, all_jobs, "mm2-lift")
+        assert self._get_dep_names(dag, all_jobs, "dnascope-raw") == {
+            "mm2-lift"
+        }
+
+    def test_aligned_lift_output(self):
+        """The lifted alignment is the final short-read output"""
+        pipeline = self.create_aligned_pipeline()
+        dag = pipeline.build_dag()
+        _, all_jobs = self._get_all_job_names(dag)
+
+        lift_cram = str(self.mock_vcf).replace(".vcf.gz", "_lift_deduped.cram")
+        cmd_str = str(self._get_job(all_jobs, "mm2-lift").shell)
+        assert f"-o {lift_cram}" in cmd_str
+        # The readgroup is seeded from the first input readgroup
+        assert "ID:sr-rg1-pg" in cmd_str
+        assert "LR:2" in cmd_str
+
+    def test_aligned_replace_rg(self):
+        """The aligned short reads are rewritten with LR:0"""
+        pipeline = self.create_aligned_pipeline()
+        dag = pipeline.build_dag()
+        _, all_jobs = self._get_all_job_names(dag)
+
+        lift_cram = str(self.mock_vcf).replace(".vcf.gz", "_lift_deduped.cram")
+        sr_arg = r"sr-rg1=ID:sr-rg1\tSM:sample1\tLR:0"
+        lr_arg = r"lr-rg1=ID:lr-rg1\tSM:sample1\tLR:1"
+
+        cmd_str = str(self._get_job(all_jobs, "dnascope-raw").shell)
+        assert cmd_str.count("--replace_rg") == 2
+        # Each row precedes the input file it applies to
+        assert cmd_str.index(sr_arg) < cmd_str.index(str(self.mock_sr_bam))
+        assert cmd_str.index(lr_arg) < cmd_str.index(str(self.mock_lr_bam))
+        # The calling inputs are ordered short reads, lifted, long reads
+        assert (
+            cmd_str.index(str(self.mock_sr_bam))
+            < cmd_str.index(lift_cram)
+            < cmd_str.index(str(self.mock_lr_bam))
+        )
+        # The lifted alignment carries its LR tag already
+        assert "LR:2" not in cmd_str
+
+    def test_aligned_bam_format(self):
+        """--bam_format switches the lifted output to BAM"""
+        pipeline = self.create_aligned_pipeline()
+        pipeline.bam_format = True
+        dag = pipeline.build_dag()
+        _, all_jobs = self._get_all_job_names(dag)
+
+        lift_bam = str(self.mock_vcf).replace(".vcf.gz", "_lift_deduped.bam")
+        assert lift_bam in str(self._get_job(all_jobs, "mm2-lift").shell)
+        assert lift_bam in str(self._get_job(all_jobs, "dnascope-raw").shell)
+
+    # Short-read input validation
+
+    def test_validate_sr_inputs_fastq(self):
+        """fastq input with a readgroup is accepted"""
+        pipeline = self.create_pipeline()
+        pipeline.readgroup = r"@RG\tID:rg1\tSM:sample1"
+        pipeline.validate_sr_inputs()
+
+    def test_validate_sr_inputs_aligned(self):
+        """Aligned input without a readgroup is accepted"""
+        pipeline = self.create_aligned_pipeline()
+        pipeline.validate_sr_inputs()
+
+    def test_validate_sr_inputs_both(self):
+        """fastq and aligned short reads cannot be combined"""
+        pipeline = self.create_pipeline()
+        pipeline.readgroup = r"@RG\tID:rg1\tSM:sample1"
+        pipeline.sr_aln = [self.mock_sr_bam]
+        with pytest.raises(SystemExit):
+            pipeline.validate_sr_inputs()
+
+    def test_validate_sr_inputs_neither(self):
+        """Short reads are required"""
+        pipeline = self.create_pipeline()
+        pipeline.r1_fastq = []
+        pipeline.r2_fastq = []
+        with pytest.raises(SystemExit):
+            pipeline.validate_sr_inputs()
+
+    def test_validate_sr_inputs_fastq_without_readgroup(self):
+        """fastq input requires a readgroup"""
+        pipeline = self.create_pipeline()
+        pipeline.readgroup = None
+        with pytest.raises(SystemExit):
+            pipeline.validate_sr_inputs()
+
+    def test_validate_sr_inputs_fastq_length_mismatch(self):
+        """The r1 and r2 fastq lists must have the same length"""
+        pipeline = self.create_pipeline()
+        pipeline.readgroup = r"@RG\tID:rg1\tSM:sample1"
+        pipeline.r2_fastq = []
+        with pytest.raises(SystemExit):
+            pipeline.validate_sr_inputs()
+
+    def test_validate_sr_inputs_aligned_with_readgroup(self):
+        """`--readgroup` cannot be used with aligned input"""
+        pipeline = self.create_aligned_pipeline()
+        pipeline.readgroup = r"@RG\tID:rg1\tSM:sample1"
+        with pytest.raises(SystemExit):
+            pipeline.validate_sr_inputs()
+
+    # Unaligned (uBAM/uCRAM) long-read input
+
+    def test_lr_realign_job(self):
+        """The long-read input is realigned with minimap2"""
+        pipeline = self.create_lr_realign_pipeline()
+        dag = pipeline.build_dag()
+        job_names, all_jobs = self._get_all_job_names(dag)
+
+        assert "bam-realign-0" in job_names
+        cmd_str = str(self._get_job(all_jobs, "bam-realign-0").shell)
+        # The input reference decodes the input file
+        assert f"samtools fastq --reference {self.mock_lr_ref}" in cmd_str
+        # The long-read minimap2 model aligns to the linear reference
+        assert "minimap2_lr.model" in cmd_str
+        assert str(self.mock_ref) in cmd_str
+        realigned = str(self.mock_vcf).replace(".vcf.gz", "_mm2_sorted_0.cram")
+        assert f"-o {realigned}" in cmd_str
+        assert self._get_dep_names(dag, all_jobs, "bam-realign-0") == set()
+
+    def test_lr_realign_downstream(self):
+        """Downstream jobs consume the realigned long reads"""
+        pipeline = self.create_lr_realign_pipeline()
+        dag = pipeline.build_dag()
+        _, all_jobs = self._get_all_job_names(dag)
+
+        realigned = str(self.mock_vcf).replace(".vcf.gz", "_mm2_sorted_0.cram")
+        for job_name in (
+            "longreadsv",
+            "graph-update-raw",
+            "graph-update",
+            "pangenome-sv",
+            "dnascope-raw",
+        ):
+            cmd_str = str(self._get_job(all_jobs, job_name).shell)
+            assert realigned in cmd_str, job_name
+            assert str(self.mock_lr_bam) not in cmd_str, job_name
+
+        for job_name in ("longreadsv", "graph-update-raw", "dnascope-raw"):
+            assert "bam-realign-0" in self._get_dep_names(
+                dag, all_jobs, job_name
+            ), job_name
+
+        # The readgroups of the realigned input are unchanged
+        cmd_str = str(self._get_job(all_jobs, "dnascope-raw").shell)
+        assert r"lr-rg1=ID:lr-rg1\tSM:sample1\tLR:1" in cmd_str
+
+    def test_lr_realign_kmc_reads_original_input(self):
+        """K-mer counting reads the original long-read input"""
+        pipeline = self.create_lr_realign_pipeline()
+        dag = pipeline.build_dag()
+        _, all_jobs = self._get_all_job_names(dag)
+
+        cmd_str = str(self._get_job(all_jobs, "kmc").shell)
+        assert f"samtools fasta --reference {self.mock_lr_ref}" in cmd_str
+        assert str(self.mock_lr_bam) in cmd_str
+        assert "_mm2_sorted_0" not in cmd_str
+        assert self._get_dep_names(dag, all_jobs, "kmc") == set()
+
+    def test_lr_realign_without_input_ref(self):
+        """The target reference decodes the input without `lr_input_ref`"""
+        pipeline = self.create_lr_realign_pipeline()
+        pipeline.lr_input_ref = None
+        dag = pipeline.build_dag()
+        _, all_jobs = self._get_all_job_names(dag)
+
+        cmd_str = str(self._get_job(all_jobs, "kmc").shell)
+        assert f"samtools fasta --reference {self.mock_ref}" in cmd_str
+
+    def test_aligned_sr_with_lr_realign(self):
+        """Aligned short reads combine with realigned long reads"""
+        pipeline = self.create_lr_realign_pipeline(aligned_sr=True)
+        dag = pipeline.build_dag()
+        job_names, all_jobs = self._get_all_job_names(dag)
+
+        assert "bam-realign-0" in job_names
+        assert "extract-kmc" in job_names
+        assert "kmc" not in job_names
+        assert "dedup-bwa" not in job_names
+
+        realigned = str(self.mock_vcf).replace(".vcf.gz", "_mm2_sorted_0.cram")
+        lift_cram = str(self.mock_vcf).replace(".vcf.gz", "_lift_deduped.cram")
+        cmd_str = str(self._get_job(all_jobs, "dnascope-raw").shell)
+        assert (
+            cmd_str.index(str(self.mock_sr_bam))
+            < cmd_str.index(lift_cram)
+            < cmd_str.index(realigned)
+        )
+        assert self._get_dep_names(dag, all_jobs, "dnascope-raw") == {
+            "mm2-lift",
+            "bam-realign-0",
+        }
+
+        # k-mer counting still reads the original long-read input
+        extract_cmd = str(self._get_job(all_jobs, "extract-kmc").shell)
+        assert str(self.mock_lr_bam) in extract_cmd
+        assert f"--reference {self.mock_lr_ref}" in extract_cmd
