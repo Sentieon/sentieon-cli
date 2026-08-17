@@ -282,18 +282,19 @@ class SentieonPangenome(BasePangenome):
             tmp_dir_str = tmp()
             self.tmp_dir = pathlib.Path(tmp_dir_str)
 
-            dag = self.build_first_dag()
-            executor = self.run(dag)
-            self.check_execution(dag, executor)
-
-            if self.expansion_catalog or self.segdup_caller is not None:
-                self.get_sex(self.ploidy_json)
-                dag = self.build_second_dag()
+            try:
+                dag = self.build_first_dag()
                 executor = self.run(dag)
                 self.check_execution(dag, executor)
 
-            if not self.retain_tmpdir:
-                shutil.rmtree(tmp_dir_str)
+                if self.expansion_catalog or self.segdup_caller is not None:
+                    self.get_sex(self.ploidy_json)
+                    dag = self.build_second_dag()
+                    executor = self.run(dag)
+                    self.check_execution(dag, executor)
+            finally:
+                if not self.retain_tmpdir:
+                    shutil.rmtree(tmp_dir_str)
             success = True
         finally:
             self.log_completion(success, start_time)
