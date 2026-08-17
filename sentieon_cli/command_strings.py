@@ -316,24 +316,46 @@ def cmd_pyexec_hybrid_anno(
     return Pipeline(Command(*cmd))
 
 
+def hybrid_stage1_hap(
+    out_hap_bam: pathlib.Path,
+    stage1_driver: BaseDriver,
+    cores: int,
+) -> Pipeline:
+    """Sort the haplotype alignments written to stdout by HybridStage1"""
+    sort_cmd = Command(
+        "sentieon",
+        "util",
+        "sort",
+        "-i",
+        "-",
+        "-t",
+        str(cores),
+        "-o",
+        str(out_hap_bam),
+        # No `--sam2bam`: the algo writes unsorted BAM, not SAM, to stdout
+    )
+    return Pipeline(Command(*stage1_driver.build_cmd()), sort_cmd)
+
+
 def hybrid_stage1(
     out_aln: pathlib.Path,
     reference: pathlib.Path,
     cores: int,
     readgroup: str,
     ins_driver: BaseDriver,
-    stage1_driver: BaseDriver,
+    hap_fastq_fifo: pathlib.Path,
     bwa_model: pathlib.Path,
 ) -> Pipeline:
     bwa_env = dict(os.environ)
     _ = bwa_env.pop("bwt_max_mem", None)
 
-    # Send the input of both fq commands to bwa with cat
-    fq1_cmd = Command(*stage1_driver.build_cmd())
+    # Send both sets of reads to bwa with cat. The HybridStage1 driver of
+    # the `hybrid_stage1_hap` job writes its fastq output to the fifo, so
+    # the fifo is read first to drain it while that job runs.
     fq2_cmd = Command(*ins_driver.build_cmd())
     cat_cmd = Command(
         "cat",
-        InputProcSub(Pipeline(fq1_cmd)),
+        str(hap_fastq_fifo),
         InputProcSub(Pipeline(fq2_cmd)),
     )
 

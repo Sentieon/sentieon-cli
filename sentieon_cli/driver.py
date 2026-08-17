@@ -410,7 +410,7 @@ class HybridStage1(BaseAlgo):
         fa_file: Optional[pathlib.Path] = None,
         bed_file: Optional[pathlib.Path] = None,
         cut_indel: Optional[int] = None,
-        hap_bam: Optional[pathlib.Path] = None,
+        hap_bam: Optional[Union[pathlib.Path, str]] = None,
         hap_bed: Optional[pathlib.Path] = None,
         cut_len: Optional[int] = None,
         split_size: Optional[int] = None,
