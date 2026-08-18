@@ -51,7 +51,8 @@ logger = get_logger(__name__)
 
 
 CALLING_MIN_VERSIONS = {
-    "sentieon driver": packaging.version.Version("202503.01"),
+    # 202503.04 writes unsorted BAM to `--hap_bam`, supporting stdout
+    "sentieon driver": packaging.version.Version("202503.04"),
     "bedtools": None,
     "bcftools": packaging.version.Version("1.22"),
     "samtools": packaging.version.Version("1.16"),
@@ -640,6 +641,8 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             mapq0_slop_job,
             cat_merge_job,
             rm_job1,
+            stage1_fifo_job,
+            stage1_hap_job,
             stage1_job,
             rm_job2,
             second_stage_job,
@@ -661,8 +664,11 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         dag.add_job(mapq0_job, realign_jobs | sr_preprocessing_jobs)
         dag.add_job(mapq0_slop_job, {mapq0_job})
         dag.add_job(cat_merge_job, {mapq0_slop_job, select_job})
-        dag.add_job(stage1_job, {cat_merge_job})
-        dag.add_job(second_stage_job, {stage1_job})
+        # The haplotype job writes the fifo read by the first-stage job
+        dag.add_job(stage1_fifo_job)
+        dag.add_job(stage1_hap_job, {stage1_fifo_job, cat_merge_job})
+        dag.add_job(stage1_job, {stage1_fifo_job, cat_merge_job})
+        dag.add_job(second_stage_job, {stage1_job, stage1_hap_job})
         dag.add_job(third_stage_job, {second_stage_job})
         dag.add_job(call2_job, {third_stage_job})
         dag.add_job(subset_job, {second_stage_job})
@@ -684,7 +690,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         # Remove intermediate files during processing
         if not self.retain_tmpdir:
             dag.add_job(rm_job1, {cat_merge_job})
-            dag.add_job(rm_job2, {stage1_job})
+            dag.add_job(rm_job2, {stage1_job, stage1_hap_job})
             dag.add_job(rm_job3, {second_stage_job})
             dag.add_job(rm_job4, {third_stage_job})
             dag.add_job(rm_job5, {concat_job})
@@ -698,27 +704,29 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         rg_info: RgInfo,
         **_kwargs: Any,
     ) -> Tuple[
-        Job,
-        Job,
-        Job,
-        Job,
-        Job,
-        Job,
-        Job,
-        Job,
-        Job,
-        Job,
-        Job,
-        Job,
-        Job,
-        Job,
-        Job,
-        Job,
-        Job,
-        Optional[List[Job]],
-        Optional[Job],
-        Optional[Job],
-        Optional[Job],
+        Job,  # call_job
+        Job,  # select_job
+        Job,  # mapq0_job
+        Job,  # mapq0_slop_job
+        Job,  # cat_merge_job
+        Job,  # rm_job1
+        Job,  # stage1_fifo_job
+        Job,  # stage1_hap_job
+        Job,  # stage1_job
+        Job,  # rm_job2
+        Job,  # second_stage_job
+        Job,  # rm_job3
+        Job,  # third_stage_job
+        Job,  # rm_job4
+        Job,  # call2_job
+        Job,  # subset_job
+        Job,  # concat_job
+        Job,  # rm_job5
+        Job,  # anno_job
+        Optional[List[Job]],  # transfer_jobs
+        Optional[Job],  # transfer_concat_job
+        Optional[Job],  # apply_job
+        Optional[Job],  # norm_job
     ]:
         """
         Call SNVs and indels using the DNAscope hybrid pipeline
@@ -862,6 +870,17 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         stage1_hap_bam = self.tmp_dir.joinpath("stage1_hap.bam")
         stage1_hap_bed = self.tmp_dir.joinpath("stage1_hap.bed")
         stage1_hap_vcf = self.tmp_dir.joinpath("stage1_hap.vcf")
+
+        # The algo writes its fastq output to a fifo read by the bwa job
+        # and its unsorted haplotype alignments to stdout
+        stage1_fifo = self.tmp_dir.joinpath("stage1_hap.fq")
+        stage1_fifo_job = Job(
+            Pipeline(Command("mkfifo", str(stage1_fifo))),
+            "stage1-fifo",
+            1,
+            task_name="hybrid-realignment",
+        )
+
         stage1_driver = Driver(
             reference=self.reference,
             thread_count=self.cores,
@@ -872,12 +891,27 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         )
         stage1_driver.add_algo(
             HybridStage1(
-                "-",
+                stage1_fifo,
                 model=self.model_bundle.joinpath("HybridStage1.model"),
-                hap_bam=stage1_hap_bam,
+                hap_bam="-",
                 hap_bed=stage1_hap_bed,
                 hap_vcf=stage1_hap_vcf,
             )
+        )
+        stage1_hap_job = Job(
+            cmds.hybrid_stage1_hap(
+                stage1_hap_bam,
+                stage1_driver,
+                self.cores,
+            ),
+            "first-stage-hap",
+            # This job writes the fifo that the `first-stage` job reads, so
+            # the two need to run concurrently. Jobs requesting 0 threads
+            # start immediately instead of waiting for the thread budget;
+            # requesting `self.cores` here could let the scheduler serialize
+            # the two jobs and deadlock on the fifo.
+            0,
+            task_name="hybrid-realignment",
         )
 
         stage1_bam = self.tmp_dir.joinpath("hybrid_stage1.bam")
@@ -888,7 +922,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
                 cores=self.cores,
                 readgroup=f"@RG\\tID:hybrid-18893\\tSM:{self.hybrid_rg_sm}",
                 ins_driver=ins_driver,
-                stage1_driver=stage1_driver,
+                hap_fastq_fifo=stage1_fifo,
                 bwa_model=self.model_bundle.joinpath("HybridStage1_bwa.model"),
             ),
             "first-stage",
@@ -1086,6 +1120,8 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
                 mapq0_slop_job,
                 cat_merge_job,
                 rm_job1,
+                stage1_fifo_job,
+                stage1_hap_job,
                 stage1_job,
                 rm_job2,
                 second_stage_job,
@@ -1143,6 +1179,8 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             mapq0_slop_job,
             cat_merge_job,
             rm_job1,
+            stage1_fifo_job,
+            stage1_hap_job,
             stage1_job,
             rm_job2,
             second_stage_job,

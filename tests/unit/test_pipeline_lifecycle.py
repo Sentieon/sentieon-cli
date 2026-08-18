@@ -16,10 +16,12 @@ sys.path.insert(
     os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")),
 )
 
+from sentieon_cli import sentieon_pangenome  # noqa: E402
 from sentieon_cli.dag import DAG  # noqa: E402
 from sentieon_cli.exceptions import DagExecutionError  # noqa: E402
 from sentieon_cli.job import Job  # noqa: E402
 from sentieon_cli.pipeline import BasePipeline  # noqa: E402
+from sentieon_cli.sentieon_pangenome import SentieonPangenome  # noqa: E402
 from sentieon_cli.shell_pipeline import Command, Pipeline  # noqa: E402
 
 
@@ -136,6 +138,108 @@ def test_check_execution_names_the_failed_jobs():
     # Jobs report themselves by job_id, not by name.
     with pytest.raises(DagExecutionError, match=r"Job\(broken-step-1\)"):
         pipeline.check_execution(DAG(), _StubExecutor([job]))
+
+
+class _StubPangenome(SentieonPangenome):
+    """A SentieonPangenome with its run stages stubbed out.
+
+    `fail_on` is the 1-based index of the `check_execution` call that
+    raises, mimicking a job failure in the first or the second DAG.
+    """
+
+    def __init__(self, fail_on=None):
+        super().__init__()
+        self.fail_on = fail_on
+        self.check_calls = 0
+        self.dags_built = []
+
+    def validate_ref(self) -> None:
+        pass
+
+    def validate(self) -> None:
+        pass
+
+    def configure(self) -> None:
+        pass
+
+    def build_first_dag(self) -> DAG:
+        self.dags_built.append("first")
+        self.ploidy_json = self.tmp_dir.joinpath("ploidy.json")
+        return DAG()
+
+    def build_second_dag(self) -> DAG:
+        self.dags_built.append("second")
+        return DAG()
+
+    def get_sex(self, ploidy_json) -> None:
+        pass
+
+    def run(self, dag):
+        return _StubExecutor()
+
+    def check_execution(self, dag, executor):
+        self.check_calls += 1
+        if self.fail_on == self.check_calls:
+            raise DagExecutionError("a job failed")
+
+
+def _stub_pangenome(monkeypatch, tmp_path, **kwargs):
+    """A stubbed pangenome pipeline writing temp dirs into `tmp_path`"""
+    monkeypatch.setenv("SENTIEON_TMPDIR", str(tmp_path))
+    monkeypatch.setattr(sentieon_pangenome, "parse_fai", lambda fai: {})
+    monkeypatch.setattr(
+        sentieon_pangenome, "determine_shards_from_fai", lambda fai, size: []
+    )
+    return _StubPangenome(**kwargs)
+
+
+def test_pangenome_main_cleans_up_tmpdir_when_the_first_dag_fails(
+    tmp_path, monkeypatch
+):
+    # SentieonPangenome overrides main() for its two-DAG flow; the temp
+    # directory has to be removed on the failure path too.
+    pipeline = _stub_pangenome(monkeypatch, tmp_path, fail_on=1)
+
+    with pytest.raises(DagExecutionError):
+        pipeline.main(argparse.Namespace(loglevel="WARNING"))
+
+    assert list(tmp_path.iterdir()) == []  # no leaked temp dir
+
+
+def test_pangenome_main_cleans_up_tmpdir_when_the_second_dag_fails(
+    tmp_path, monkeypatch
+):
+    pipeline = _stub_pangenome(monkeypatch, tmp_path, fail_on=2)
+    pipeline.segdup_caller = []  # request the second DAG
+
+    with pytest.raises(DagExecutionError):
+        pipeline.main(argparse.Namespace(loglevel="WARNING"))
+
+    assert pipeline.dags_built == ["first", "second"]
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_pangenome_main_retains_tmpdir_on_failure_when_requested(
+    tmp_path, monkeypatch
+):
+    pipeline = _stub_pangenome(monkeypatch, tmp_path, fail_on=1)
+    pipeline.retain_tmpdir = True
+
+    with pytest.raises(DagExecutionError):
+        pipeline.main(argparse.Namespace(loglevel="WARNING"))
+
+    assert len(list(tmp_path.iterdir())) == 1  # kept for inspection
+
+
+def test_pangenome_main_cleans_up_tmpdir_on_success(tmp_path, monkeypatch):
+    pipeline = _stub_pangenome(monkeypatch, tmp_path)
+    pipeline.segdup_caller = []  # request the second DAG
+
+    pipeline.main(argparse.Namespace(loglevel="WARNING"))
+
+    assert pipeline.dags_built == ["first", "second"]
+    assert pipeline.check_calls == 2
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_check_execution_flags_unexecuted_jobs():

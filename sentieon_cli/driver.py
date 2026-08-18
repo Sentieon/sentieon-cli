@@ -410,7 +410,7 @@ class HybridStage1(BaseAlgo):
         fa_file: Optional[pathlib.Path] = None,
         bed_file: Optional[pathlib.Path] = None,
         cut_indel: Optional[int] = None,
-        hap_bam: Optional[pathlib.Path] = None,
+        hap_bam: Optional[Union[pathlib.Path, str]] = None,
         hap_bed: Optional[pathlib.Path] = None,
         cut_len: Optional[int] = None,
         split_size: Optional[int] = None,
@@ -539,6 +539,26 @@ class PangenomeSV(BaseAlgo):
         self.min_sv_size = min_sv_size
         self.min_dp = min_dp
         self.min_af = min_af
+        self.prefix = prefix
+
+
+class PGHapUpdateAlgo(BaseAlgo):
+    """algo PGHapUpdateAlgo"""
+
+    name = "PGHapUpdateAlgo"
+
+    def __init__(
+        self,
+        output: pathlib.Path,
+        gfa_file: pathlib.Path,
+        target_bed: Optional[pathlib.Path] = None,
+        min_map_qual: Optional[int] = None,
+        prefix: Optional[str] = None,
+    ):
+        self.output = output
+        self.gfa_file = gfa_file
+        self.target_bed = target_bed
+        self.min_map_qual = min_map_qual
         self.prefix = prefix
 
 

@@ -4,6 +4,7 @@ from . import argh_parser
 from .dnascope import DNAscopePipeline
 from .dnascope_hybrid import DNAscopeHybridPipeline
 from .dnascope_longread import DNAscopeLRPipeline
+from .hybrid_pangenome import HybridPangenome
 from .job import Job
 from .sentieon_pangenome import SentieonPangenome
 from .util import __version__
@@ -75,6 +76,12 @@ def main():
     )
     pipeline.add_arguments(dnascope_pangenome_subparser)
     dnascope_pangenome_subparser.set_defaults(pipeline=pipeline.main)
+
+    # Hybrid pangenome
+    pipeline = HybridPangenome()
+    hybrid_pangenome_subparser = subparsers.add_parser("hybrid-pangenome")
+    pipeline.add_arguments(hybrid_pangenome_subparser)
+    hybrid_pangenome_subparser.set_defaults(pipeline=pipeline.main)
 
     args = parser.parse_args()
     args.loglevel = resolve_loglevel(args)
