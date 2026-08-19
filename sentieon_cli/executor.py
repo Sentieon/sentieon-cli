@@ -453,6 +453,8 @@ class LocalExecutor(AsyncExecutor):
                     job_utime = 0.0
                     job_stime = 0.0
                     job_maxrss = 0
+                    n_procs = 0
+                    sink = context.log_sink
                     for subcommand in context.commands:
                         if not subcommand.proc:
                             logger.error(
@@ -461,6 +463,7 @@ class LocalExecutor(AsyncExecutor):
                             )
                             cmd_failed = True
                             continue
+                        n_procs += 1
                         ret = (
                             await subcommand.proc.async_wait()
                         )  # Wait on all sub-commands
@@ -468,8 +471,12 @@ class LocalExecutor(AsyncExecutor):
                         # job's outcome; signal-killed children have rusage
                         # too.
                         rusage = subcommand.proc.rusage
-                        if rusage is not None:
-                            rss = _maxrss_bytes(rusage)
+                        rss = (
+                            _maxrss_bytes(rusage)
+                            if rusage is not None
+                            else None
+                        )
+                        if rusage is not None and rss is not None:
                             have_rusage = True
                             job_utime += rusage.ru_utime
                             job_stime += rusage.ru_stime
@@ -491,6 +498,20 @@ class LocalExecutor(AsyncExecutor):
                                 rusage.ru_oublock,
                                 rusage.ru_nvcsw,
                                 rusage.ru_nivcsw,
+                            )
+                        if self.run_logs is not None:
+                            self.run_logs.record_process_metrics(
+                                job=job,
+                                command=subcommand,
+                                pid=subcommand.proc.pid,
+                                exit_code=ret,
+                                stage=(
+                                    sink.stage_index_for(subcommand)
+                                    if sink is not None
+                                    else None
+                                ),
+                                rusage=rusage,
+                                maxrss_bytes=rss,
                             )
                         # A subcommand killed by SIGPIPE is not a failure:
                         # it was writing to a pipe whose reader exited early
@@ -527,7 +548,6 @@ class LocalExecutor(AsyncExecutor):
                         logger.error("Error: %s", str(exc))
                         cmd_failed = True
 
-                    sink = context.log_sink
                     if cmd_failed:
                         logger.error("Command failure: %s", job.shell)
                         # The sink's files are closed by cleanup(), so their
@@ -555,6 +575,18 @@ class LocalExecutor(AsyncExecutor):
                         logger.info(
                             f"Finished command in "
                             f"{total_seconds:.2f}: {job.shell}"
+                        )
+                    if self.run_logs is not None:
+                        self.run_logs.record_job_metrics(
+                            job=job,
+                            failed=cmd_failed,
+                            wall_s=total_seconds,
+                            user_s=job_utime if have_rusage else None,
+                            sys_s=job_stime if have_rusage else None,
+                            max_proc_rss_bytes=(
+                                job_maxrss if have_rusage else None
+                            ),
+                            processes=n_procs,
                         )
                     if sink is not None:
                         sink.finalize(success=not cmd_failed)

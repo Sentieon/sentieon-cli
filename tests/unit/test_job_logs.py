@@ -127,6 +127,17 @@ def test_logs_are_matched_to_commands_by_identity(tmp_path):
     assert sink.stderr_log_for(Command("elsewhere")) is None
 
 
+def test_stage_index_for_does_not_allocate(tmp_path):
+    sink = _sink(tmp_path)
+    unseen = Command("never-logged")
+
+    assert sink.stage_index_for(unseen) is None
+
+    logged = Command("logged")
+    sink.open_stderr(logged).close()
+    assert sink.stage_index_for(logged) == 0
+
+
 def test_stdout_logs_are_not_returned_as_stderr_logs(tmp_path):
     sink = _sink(tmp_path)
     command = Command("echo", "hi")

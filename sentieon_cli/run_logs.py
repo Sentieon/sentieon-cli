@@ -11,17 +11,81 @@ import pathlib
 import shlex
 import shutil
 import sys
-from typing import IO, List, Optional, TYPE_CHECKING
+from typing import IO, Iterable, List, Optional, TYPE_CHECKING
 
-from .logging import add_file_handler, remove_file_handler
+from .logging import add_file_handler, get_logger, remove_file_handler
 from .util import __version__, sanitize
 
 if TYPE_CHECKING:
+    import resource
+
     from .job import Job
     from .shell_pipeline import Command
 
+logger = get_logger(__name__)
+
 _STDERR = "stderr"
 _STDOUT = "stdout"
+
+# The rusage-derived columns of a process row, empty as a group when a
+# process was reaped without rusage.
+_RUSAGE_COLUMNS = [
+    "user_s",
+    "sys_s",
+    "maxrss_mib",
+    "minflt",
+    "majflt",
+    "inblock",
+    "oublock",
+    "nvcsw",
+    "nivcsw",
+]
+
+PROCESS_METRICS_COLUMNS = [
+    "job_id",
+    "task_name",
+    "pid",
+    "stage",
+    "exit_code",
+    *_RUSAGE_COLUMNS,
+    "command",
+]
+
+JOB_METRICS_COLUMNS = [
+    "job_id",
+    "task_name",
+    "threads",
+    "status",
+    "wall_s",
+    "user_s",
+    "sys_s",
+    "max_proc_rss_mib",
+    "processes",
+]
+
+_MIB = 1024 * 1024
+
+
+def _tsv_field(value: object) -> str:
+    """Render a value as a TSV field that cannot break the row layout"""
+    text = "" if value is None else str(value)
+    for char in ("\t", "\n", "\r"):
+        text = text.replace(char, " ")
+    return text
+
+
+def _write_row(path: pathlib.Path, fields: Iterable[object]) -> None:
+    """Append one row to a metrics file.
+
+    A metrics file is a by-product of the run: a write failure (full disk,
+    read-only log directory) is reported once and otherwise ignored.
+    """
+    row = "\t".join(_tsv_field(field) for field in fields)
+    try:
+        with open(path, "a") as handle:
+            handle.write(row + "\n")
+    except OSError as exc:
+        logger.warning("could not write %s: %s", path, exc)
 
 
 @dataclasses.dataclass
@@ -73,6 +137,17 @@ class JobLogSink:
         stage_index = self._stage_index
         self._stage_index += 1
         return stage_index
+
+    def stage_index_for(self, command: Command) -> Optional[int]:
+        """The stage index already allocated to a command, if any.
+
+        Unlike ``_stage_for`` this never allocates: a command whose streams
+        were all explicit (so no log was opened) has no stage index.
+        """
+        for log in self._logs:
+            if log.command is command:
+                return log.stage_index
+        return None
 
     def _open(self, command: Command, kind: str) -> IO[bytes]:
         self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -145,6 +220,8 @@ class RunLogs:
         self.run_log = log_dir / "run.log"
         self.command_txt = log_dir / "command.txt"
         self.task_logs = log_dir / "task_logs"
+        self.process_metrics = log_dir / "process_metrics.txt"
+        self.job_metrics = log_dir / "job_metrics.txt"
         self.file_handler: Optional[logging.FileHandler] = None
 
     def setup(self) -> None:
@@ -154,17 +231,100 @@ class RunLogs:
         self.file_handler = add_file_handler(self.run_log)
 
     def create_dirs(self) -> None:
-        """Create the log directory, clearing logs from any previous run"""
+        """Create the log directory, clearing logs from any previous run.
+
+        The metrics files are (re-)written with their header row here, so a
+        rerun into the same directory replaces the previous run's rows and a
+        run with no finished jobs still leaves a readable, empty table.
+        """
         # The log directory itself is never removed - the user may point
         # `--log_dir` at an existing directory holding unrelated files.
         self.log_dir.mkdir(parents=True, exist_ok=True)
         if self.task_logs.exists():
             shutil.rmtree(self.task_logs)
         self.task_logs.mkdir(parents=True)
+        self.process_metrics.write_text(
+            "\t".join(PROCESS_METRICS_COLUMNS) + "\n"
+        )
+        self.job_metrics.write_text("\t".join(JOB_METRICS_COLUMNS) + "\n")
 
     def job_sink(self, job: Job) -> JobLogSink:
         """Create the log sink for a job"""
         return JobLogSink(self.task_logs, job)
+
+    def record_process_metrics(
+        self,
+        *,
+        job: Job,
+        command: Command,
+        pid: int,
+        exit_code: int,
+        stage: Optional[int],
+        rusage: Optional["resource.struct_rusage"],
+        maxrss_bytes: Optional[int],
+    ) -> None:
+        """Append one process to `process_metrics.txt`.
+
+        Written for every reaped process, whatever the job's outcome; the
+        rusage columns are empty for a process reaped without one.
+        """
+        if rusage is None:
+            usage: List[object] = [None] * len(_RUSAGE_COLUMNS)
+        else:
+            rss = "" if maxrss_bytes is None else f"{maxrss_bytes / _MIB:.1f}"
+            usage = [
+                f"{rusage.ru_utime:.2f}",
+                f"{rusage.ru_stime:.2f}",
+                rss,
+                rusage.ru_minflt,
+                rusage.ru_majflt,
+                rusage.ru_inblock,
+                rusage.ru_oublock,
+                rusage.ru_nvcsw,
+                rusage.ru_nivcsw,
+            ]
+        _write_row(
+            self.process_metrics,
+            [job.job_id, job.task_name, pid, stage, exit_code]
+            + usage
+            + [command],
+        )
+
+    def record_job_metrics(
+        self,
+        *,
+        job: Job,
+        failed: bool,
+        wall_s: float,
+        user_s: Optional[float],
+        sys_s: Optional[float],
+        max_proc_rss_bytes: Optional[int],
+        processes: int,
+    ) -> None:
+        """Append one job to `job_metrics.txt`.
+
+        Only jobs that reach accounting get a row: a job that failed to
+        launch, or one cut short by an interrupt, is absent.
+        """
+        rss = (
+            ""
+            if max_proc_rss_bytes is None
+            else f"{max_proc_rss_bytes / _MIB:.1f}"
+        )
+        _write_row(
+            self.job_metrics,
+            [
+                job.job_id,
+                job.task_name,
+                job.threads,
+                "failed" if failed else "ok",
+                f"{wall_s:.2f}",
+                "" if user_s is None else f"{user_s:.2f}",
+                "" if sys_s is None else f"{sys_s:.2f}",
+                rss,
+                processes,
+            ],
+        )
 
     def write_command(self) -> None:
         """Record the invocation so the run can be reproduced"""
