@@ -782,9 +782,9 @@ class SentieonPangenome(BasePangenome):
 
             if not self.skip_metrics:
                 metrics_job, rehead_job = self.build_metrics_job(
-                    [out_bwa_aln, out_mm2_aln],
+                    [out_bwa_aln],
                 )
-                dag.add_job(metrics_job, {bwa_dedup_job, mm2_dedup_job})
+                dag.add_job(metrics_job, {bwa_dedup_job})
                 dag.add_job(rehead_job, {metrics_job})
                 if not self.skip_multiqc:
                     multiqc_job = self.multiqc()

@@ -133,6 +133,18 @@ class TestSentieonPangenome:
         mm2_dedup = next(j for j in all_jobs if j.name == "dedup-mm2")
         assert "--metrics" not in str(mm2_dedup.shell)
 
+    def test_metrics_input_bwa_only(self):
+        """The metrics job reads only the bwa alignment; including the mm2
+        alignment would double-count the extracted reads it re-aligns."""
+        pipeline = self.create_fastq_pipeline()
+        dag = pipeline.build_first_dag()
+
+        _, all_jobs = self._get_all_job_names(dag)
+        metrics_job = next(j for j in all_jobs if j.name == "metrics")
+        metrics_cmd = str(metrics_job.shell)
+        assert "output_bwa_deduped.cram" in metrics_cmd
+        assert "output_mm2_deduped.cram" not in metrics_cmd
+
     def test_dedup_metrics_skipped(self):
         """No Dedup --metrics output when metrics collection is skipped."""
         pipeline = self.create_fastq_pipeline()
