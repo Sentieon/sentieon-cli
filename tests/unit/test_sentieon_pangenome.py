@@ -135,7 +135,7 @@ class TestSentieonPangenome:
 
     def test_metrics_input_bwa_only(self):
         """The metrics job reads only the bwa alignment; including the mm2
-        alignment would double-count the extracted reads it re-aligns."""
+        alignment would count the extracted reads it re-aligns twice."""
         pipeline = self.create_fastq_pipeline()
         dag = pipeline.build_first_dag()
 
@@ -156,7 +156,8 @@ class TestSentieonPangenome:
         assert "--metrics" not in str(bwa_dedup.shell)
 
     def test_model_apply_default(self):
-        """Test that model apply job is created by default"""
+        """Model apply runs by default and writes the
+        intermediate, not the final output VCF."""
         pipeline = self.create_pipeline()
         dag = pipeline.build_first_dag()
 
@@ -166,6 +167,14 @@ class TestSentieonPangenome:
         # Check for model-apply job
         job_names = [job.name for job in dag.waiting_jobs.keys()]
         assert "model-apply" in job_names
+
+        apply_job = next(
+            j for j in dag.waiting_jobs if j.name == "model-apply"
+        )
+        cmd_str = str(apply_job.shell)
+        assert str(self.snv_apply_vcf(pipeline)) in cmd_str
+        # The final output is written by the AD-update job
+        assert str(pipeline.output_vcf) not in cmd_str
 
     def test_skip_model_apply(self):
         """Test that model apply job is skipped when requested"""
@@ -179,24 +188,37 @@ class TestSentieonPangenome:
         # Check that model-apply job is NOT present
         job_names = [job.name for job in dag.waiting_jobs]
         assert "model-apply" not in job_names
-        
-        # Verify that the concat job writes to the final output
+
+        # Verify that the concat job writes the intermediate,
+        # which the AD-update job then rewrites to the final output
         # Find the merge-trim-concat job
         concat_job = None
         for job in dag.waiting_jobs:
             if job.name == "merge-trim-concat":
                 concat_job = job
                 break
-        
+
         assert concat_job is not None
-        # Check that the first argument (output file) is set to the final output VCF
-        # Check that the output file is in the arguments
+        # Check that the first argument (output file) is set to the intermediate
         args_str = " ".join([str(arg) for arg in concat_job.shell.nodes[0].args])
-        assert str(pipeline.output_vcf) in args_str
+        assert str(self.snv_apply_vcf(pipeline)) in args_str
+        assert str(pipeline.output_vcf) not in args_str
+
+        # The AD-update job writes the final output and depends
+        # on the concat job
+        _, all_jobs = self._get_all_job_names(dag)
+        ad_update_job = next(
+            j for j in all_jobs if j.name == "sad-lad-update"
+        )
+        update_cmd = str(ad_update_job.shell)
+        assert f"--input_vcf {self.snv_apply_vcf(pipeline)}" in update_cmd
+        assert f"--output_vcf {pipeline.output_vcf}" in update_cmd
+        assert dag.waiting_jobs[ad_update_job] == {concat_job}
 
     def test_gvcf_adds_gvcftyper_and_routes_outputs(self):
-        """--gvcf produces a .g.vcf.gz from model-apply and runs
-        GVCFtyper to produce the final VCF at output_vcf."""
+        """--gvcf produces a .g.vcf.gz from model-apply,
+        updates it into the final .g.vcf.gz, then runs GVCFtyper on the
+        updated gVCF to produce the final VCF at output_vcf."""
         pipeline = self.create_pipeline()
         pipeline.gvcf = True
         dag = pipeline.build_first_dag()
@@ -204,27 +226,87 @@ class TestSentieonPangenome:
         all_jobs = list(dag.waiting_jobs.keys()) + list(dag.ready_jobs.keys())
         job_names = [job.name for job in all_jobs]
         assert "model-apply" in job_names
+        assert "sad-lad-update" in job_names
         assert "gvcftyper" in job_names
 
         expected_gvcf = str(pipeline.output_vcf).replace(
             ".vcf.gz", ".g.vcf.gz"
         )
+        apply_gvcf = str(self.snv_apply_vcf(pipeline))
+        assert apply_gvcf.endswith("sample-snv_apply.g.vcf.gz")
 
-        # DNAscope emits gVCF and model-apply writes to .g.vcf.gz
+        # DNAscope emits gVCF; model-apply writes gVCF
         for name in ("dnascope-raw", "model-apply"):
             job = next(j for j in all_jobs if j.name == name)
             cmd_str = str(job.shell)
             if name == "dnascope-raw":
                 assert "--emit_mode gvcf" in cmd_str
             else:
-                assert expected_gvcf in cmd_str
+                assert apply_gvcf in cmd_str
+                assert expected_gvcf not in cmd_str
 
-        # GVCFtyper reads the gVCF and writes the final output VCF
+        # The update job rewrites it to the final .g.vcf.gz
+        apply_job = next(j for j in all_jobs if j.name == "model-apply")
+        ad_update_job = next(
+            j for j in all_jobs if j.name == "sad-lad-update"
+        )
+        update_cmd = str(ad_update_job.shell)
+        assert f"--input_vcf {apply_gvcf}" in update_cmd
+        assert f"--output_vcf {expected_gvcf}" in update_cmd
+        assert dag.waiting_jobs[ad_update_job] == {apply_job}
+
+        # GVCFtyper reads the updated gVCF and writes the final VCF
         gvcftyper_job = next(j for j in all_jobs if j.name == "gvcftyper")
         cmd_str = str(gvcftyper_job.shell)
         assert "--algo GVCFtyper" in cmd_str
         assert expected_gvcf in cmd_str
+        assert apply_gvcf not in cmd_str
         assert str(pipeline.output_vcf) in cmd_str
+        assert dag.waiting_jobs[gvcftyper_job] == {ad_update_job}
+
+    def snv_apply_vcf(self, pipeline):
+        """The small-variant model-apply intermediate for a pipeline"""
+        name = (
+            "sample-snv_apply.g.vcf.gz"
+            if getattr(pipeline, "gvcf", False)
+            else "sample-snv_apply.vcf.gz"
+        )
+        return pipeline.tmp_dir.joinpath(name)
+
+    def test_ad_update_default(self):
+        """A single AD-update job reads the model-apply
+        intermediate and writes the final output VCF."""
+        pipeline = self.create_pipeline()
+        dag = pipeline.build_first_dag()
+
+        job_names, all_jobs = self._get_all_job_names(dag)
+        assert job_names.count("sad-lad-update") == 1
+
+        ad_update_job = next(
+            j for j in all_jobs if j.name == "sad-lad-update"
+        )
+        cmd_str = str(ad_update_job.shell)
+        assert "sad_lad_update.py" in cmd_str
+        assert f"--input_vcf {self.snv_apply_vcf(pipeline)}" in cmd_str
+        assert f"--output_vcf {pipeline.output_vcf}" in cmd_str
+        assert f"--threads {pipeline.cores}" in cmd_str
+        assert ad_update_job.task_name == "ad-update"
+
+        # Model apply writes the intermediate, not the final output
+        apply_job = next(j for j in all_jobs if j.name == "model-apply")
+        assert str(self.snv_apply_vcf(pipeline)) in str(apply_job.shell)
+
+        # The AD-update job depends on model-apply
+        assert dag.waiting_jobs[ad_update_job] == {apply_job}
+
+    def test_no_ad_update_with_skip_small_variants(self):
+        """No AD-update job when small variants are skipped"""
+        pipeline = self.create_pipeline()
+        pipeline.skip_small_variants = True
+        dag = pipeline.build_first_dag()
+
+        job_names, _ = self._get_all_job_names(dag)
+        assert "sad-lad-update" not in job_names
 
     def test_no_gvcftyper_without_gvcf(self):
         """Without --gvcf, no GVCFtyper job is added"""

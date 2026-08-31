@@ -44,6 +44,7 @@ exclude = [
     "sentieon_cli/scripts/hybrid_anno.py",
     "sentieon_cli/scripts/hybrid_select.py",
     "sentieon_cli/scripts/indel2cnv.py",
+    "sentieon_cli/scripts/sad_lad_update.py",
     "sentieon_cli/scripts/trimalt.py",
     "sentieon_cli/archive.py",
     "playground",

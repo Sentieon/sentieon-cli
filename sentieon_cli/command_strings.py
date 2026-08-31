@@ -316,6 +316,26 @@ def cmd_pyexec_hybrid_anno(
     return Pipeline(Command(*cmd))
 
 
+def cmd_pyexec_sad_lad_update(
+    out_vcf: pathlib.Path,
+    in_vcf: pathlib.Path,
+    sad_lad_update: pathlib.Path,
+    threads: int,
+) -> Pipeline:
+    """Update AD/DP by choosing between SAD and LAD"""
+    cmd = [
+        sys.executable,
+        str(sad_lad_update),
+        "--input_vcf",
+        str(in_vcf),
+        "--output_vcf",
+        str(out_vcf),
+        "--threads",
+        str(threads),
+    ]
+    return Pipeline(Command(*cmd))
+
+
 def hybrid_stage1_hap(
     out_hap_bam: pathlib.Path,
     stage1_driver: BaseDriver,

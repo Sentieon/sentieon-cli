@@ -878,6 +878,11 @@ class SentieonPangenome(BasePangenome):
         # When --gvcf is set, the model-apply / transfer outputs are
         # gVCFs; GVCFtyper produces the final VCF at self.output_vcf.
         small_variants_out = out_gvcf if self.gvcf else self.output_vcf
+        snv_apply_vcf = self.tmp_dir.joinpath(
+            "sample-snv_apply.g.vcf.gz"
+            if self.gvcf
+            else "sample-snv_apply.vcf.gz"
+        )
 
         # transfer annotations from the pop_vcf
         if self.pop_vcf:
@@ -885,7 +890,7 @@ class SentieonPangenome(BasePangenome):
                 (
                     transfer_vcf
                     if not self.skip_model_apply
-                    else (small_variants_out)
+                    else (snv_apply_vcf)
                 ),
                 self.pop_vcf,
                 raw_vcf,
@@ -905,12 +910,20 @@ class SentieonPangenome(BasePangenome):
         if not self.skip_model_apply:
             # DNAModelApply
             apply_job = self.build_dnamodelapply_job(
-                transfer_vcf, small_variants_out
+                transfer_vcf, snv_apply_vcf
             )
             dag.add_job(apply_job, apply_dependencies)
             small_variants_last_job = apply_job
         elif self.pop_vcf:
             small_variants_last_job = concat_job
+
+        # Update the overestimated AD/DP of the joint pileup
+        if small_variants_last_job is not None:
+            ad_update_job = self.build_count_ad_update_job(
+                small_variants_out, snv_apply_vcf
+            )
+            dag.add_job(ad_update_job, {small_variants_last_job})
+            small_variants_last_job = ad_update_job
 
         # Genotype the gVCF to also produce a regular VCF at output_vcf
         if self.gvcf and small_variants_last_job is not None:
@@ -1179,6 +1192,33 @@ class SentieonPangenome(BasePangenome):
             "gvcftyper",
             self.cores,
             task_name="gvcftyper",
+        )
+
+    def build_count_ad_update_job(
+        self,
+        out_vcf: pathlib.Path,
+        in_vcf: pathlib.Path,
+    ) -> Job:
+        """Update the AD/DP of the joint pileup.
+
+        Reads that are present in both the bwa and the mm2 alignment are
+        counted twice, so FORMAT/AD, FORMAT/DP and INFO/DP are inflated.
+        The script picks FORMAT/SAD or FORMAT/LAD per sample and derives
+        the updated depths from that choice.
+        """
+        sad_lad_update = pathlib.Path(
+            str(files("sentieon_cli.scripts").joinpath("sad_lad_update.py"))
+        )
+        return Job(
+            cmds.cmd_pyexec_sad_lad_update(
+                out_vcf,
+                in_vcf,
+                sad_lad_update,
+                self.cores,
+            ),
+            "sad-lad-update",
+            self.cores,
+            task_name="ad-update",
         )
 
     def build_segdup_job(
