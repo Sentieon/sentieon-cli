@@ -3,6 +3,7 @@ Utility functions
 """
 
 import argparse
+from enum import Enum
 from importlib.metadata import PackageNotFoundError, version
 import multiprocessing as mp
 import os
@@ -12,7 +13,7 @@ import shlex
 import shutil
 import subprocess as sp
 import tempfile
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 import packaging.version
 
@@ -32,6 +33,47 @@ NUMA_NODE_PAT = re.compile(r"^NUMA node. CPU\(s\):\s+(?P<cpus>.*)$")
 READ_LENGTH_PAT = re.compile(r"SN\taverage length:\t(?P<length>\d*)$")
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
+
+
+class SampleSex(Enum):
+    FEMALE = 1
+    MALE = 2
+    UNKNOWN = 3
+
+
+def sample_sex_arg(value: str) -> SampleSex:
+    """Parse the `--sample_sex` argument"""
+    sex = value.strip().lower()
+    if sex == "male":
+        return SampleSex.MALE
+    if sex == "female":
+        return SampleSex.FEMALE
+    raise argparse.ArgumentTypeError(
+        f"invalid sample sex '{value}'. Please supply 'male' or 'female'"
+    )
+
+
+def cnvscope_sex_args(
+    sample_sex: Optional[SampleSex],
+    par_bed: Optional[pathlib.Path],
+) -> Tuple[Optional[str], Optional[pathlib.Path]]:
+    """The CNVscope `--sex` and `--par` arguments for a sample.
+
+    Male samples are called with the pseudo-autosomal regions (PAR) BED
+    file. Female samples do not need a PAR BED file. When the sample sex
+    is not known, both arguments are omitted and CNVscope assumes a
+    diploid genome, matching the behavior of previous releases.
+    """
+    if sample_sex is SampleSex.MALE:
+        return ("M", par_bed)
+    if sample_sex is SampleSex.FEMALE:
+        return ("F", None)
+    logger.warning(
+        "The sample sex is not known. CNVscope will assume a diploid "
+        "genome, matching the behavior of previous releases. Supply "
+        "`--sample_sex` for sex-aware CNV calling."
+    )
+    return (None, None)
 
 
 def sanitize(component: str) -> str:

@@ -26,7 +26,7 @@ from .driver import (
     HybridStage2,
     HybridStage3,
 )
-from .dnascope import call_cnvs, DNAscopePipeline
+from .dnascope import call_cnvs, CNV_MIN_VERSIONS, DNAscopePipeline
 from .dnascope_longread import DNAscopeLRPipeline
 from .job import Job
 from .pipeline import BasePipeline
@@ -37,12 +37,14 @@ from .util import (
     library_preloaded,
     parse_rg_line,
     path_arg,
+    sample_sex_arg,
     split_alignment,
     vcf_id,
 )
 from .shard import (
     determine_shards_from_fai,
     parse_fai,
+    ploidy_contigs_for_build,
     vcf_contigs,
 )
 from .transfer import build_transfer_jobs
@@ -202,12 +204,29 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
                 ),
                 "type": path_arg(exists=True, is_file=True),
             },
+            "par_bed": {
+                "help": (
+                    "A BED file of the pseudo-autosomal regions (PAR), used "
+                    "for sex-aware CNV calling of male samples. Overrides the "
+                    "PAR BED file selected for the reference genome."
+                ),
+                "type": path_arg(exists=True, is_file=True),
+            },
             "pop_vcf": {
                 "flags": ["--pop_vcf"],
                 "help": (
                     "A VCF containing annotations for use with DNAModelApply."
                 ),
                 "type": path_arg(exists=True, is_file=True),
+            },
+            "sample_sex": {
+                "help": (
+                    "The sample sex, used for sex-aware CNV calling. "
+                    "Supplying this argument overrides the sex estimated "
+                    "from read coverage."
+                ),
+                "metavar": "{male,female}",
+                "type": sample_sex_arg,
             },
             "rgsm": {
                 "help": (
@@ -302,6 +321,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         self.lr_aln: List[pathlib.Path] = []
         self.lr_align_input = False
         self.lr_input_ref: Optional[pathlib.Path] = None
+        self.par_bed: Optional[pathlib.Path] = None
         self.pop_vcf: Optional[pathlib.Path] = None
         self.bam_format = False
         self.rgsm: Optional[str] = None
@@ -311,6 +331,10 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         self.assay = "WGS"
         self.skip_model_apply = False
         self.skip_pop_vcf_id_check = False
+        # Stashed by `build_dag` for the second, sex-aware DAG
+        self.ploidy_json: Optional[pathlib.Path] = None
+        self.cnv_sr_aln: List[pathlib.Path] = []
+        self.cnv_replace_rg: Optional[List[List[str]]] = None
 
     def validate(self) -> None:
         self.fai_data = parse_fai(pathlib.Path(str(self.reference) + ".fai"))
@@ -325,6 +349,8 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         self.validate_bundle()
         self.collect_readgroups()
         self.validate_readgroups()
+        # `validate_bundle` may have set `skip_cnv`
+        self.validate_cnv()
 
         self.validate_output_vcf()
         if not self.sr_aln and not self.sr_r1_fastq:
@@ -355,6 +381,24 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
 
         if self.sr_r1_fastq:
             self.validate_bwa_index()
+
+    def validate_cnv(self) -> None:
+        """Validate the arguments used for sex-aware CNV calling"""
+        self.resolve_cnv_par_bed(
+            self.fai_data, self.par_bed, not self.skip_cnv
+        )
+        if self.skip_cnv:
+            return
+
+        # A PAR BED file is required for CNV calling, whatever the sex
+        self.validate_cnv_par(True)
+
+        # CNV calling now runs in the second DAG, so the version of the
+        # driver is checked before the first DAG starts
+        if not self.skip_version_check:
+            for cmd, min_version in CNV_MIN_VERSIONS.items():
+                if not check_version(cmd, min_version):
+                    sys.exit(2)
 
     def validate_bundle(self) -> None:
         bundle_info_bytes = ar_load(
@@ -615,24 +659,27 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         sr_preprocessing_jobs.update(align_fastq_jobs)
         if dedup_job:
             sr_preprocessing_jobs.add(dedup_job)
+        # Estimate the sample ploidy and sex. The JSON output is always
+        # written; `--sample_sex` takes precedence for the sex used by
+        # sex-aware CNV calling.
+        self.ploidy_json = pathlib.Path(
+            str(self.output_vcf).replace(".vcf.gz", "_ploidy.json")
+        )
+        ploidy_job = self.build_ploidy_job(
+            self.ploidy_json,
+            sr_aln,
+            ploidy_contigs_for_build(self.reference_build),
+        )
+        dag.add_job(ploidy_job, sr_preprocessing_jobs)
+
         if not self.skip_cnv:
-            cnvscope_job, cnvmodelapply_job = call_cnvs(
-                self.tmp_dir,
-                self.output_vcf,
-                self.reference,
-                sr_aln,
-                self.model_bundle,
-                self.bed,
-                self.cores,
-                self.skip_version_check,
-                replace_rg=(
-                    rg_info.replace_rg_args[1]
-                    if rg_info.replace_rg_args[1]
-                    else None
-                ),
+            # CNV calling is sex-aware and runs in the second DAG
+            self.cnv_sr_aln = sr_aln
+            self.cnv_replace_rg = (
+                rg_info.replace_rg_args[1]
+                if rg_info.replace_rg_args[1]
+                else None
             )
-            dag.add_job(cnvscope_job, sr_preprocessing_jobs)
-            dag.add_job(cnvmodelapply_job, {cnvscope_job})
 
         (
             call_job,
@@ -695,6 +742,42 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             dag.add_job(rm_job4, {third_stage_job})
             dag.add_job(rm_job5, {concat_job})
 
+        return dag
+
+    def build_second_dag(self) -> Optional[DAG]:
+        """Build the second DAG, for sex-aware CNV calling"""
+        if self.skip_cnv:
+            return None
+        if not self.output_vcf:
+            self.logger.error("output_vcf is required")
+            sys.exit(2)
+        if not self.reference:
+            self.logger.error("reference is required")
+            sys.exit(2)
+        if not self.model_bundle:
+            self.logger.error("model_bundle is required")
+            sys.exit(2)
+        assert self.ploidy_json is not None
+
+        self.get_sex(self.ploidy_json)
+
+        self.logger.info("Building the DNAscope Hybrid CNV DAG")
+        dag = DAG()
+        cnvscope_job, cnvmodelapply_job = call_cnvs(
+            self.tmp_dir,
+            self.output_vcf,
+            self.reference,
+            self.cnv_sr_aln,
+            self.model_bundle,
+            self.bed,
+            self.cores,
+            self.skip_version_check,
+            replace_rg=self.cnv_replace_rg,
+            sample_sex=self.sample_sex,
+            par_bed=self.cnv_par_bed,
+        )
+        dag.add_job(cnvscope_job)
+        dag.add_job(cnvmodelapply_job, {cnvscope_job})
         return dag
 
     def call_variants(

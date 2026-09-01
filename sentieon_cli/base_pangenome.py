@@ -3,8 +3,6 @@ A base class for pangenome pipelines
 """
 
 import copy
-from enum import Enum
-import json
 import pathlib
 import sys
 from typing import List, Optional, Tuple
@@ -29,12 +27,6 @@ from .job import Job
 from .pipeline import BasePipeline
 from .shell_pipeline import Command, Pipeline
 from .util import path_arg
-
-
-class SampleSex(Enum):
-    FEMALE = 1
-    MALE = 2
-    UNKNOWN = 3
 
 
 class BasePangenome(BasePipeline):
@@ -148,27 +140,6 @@ class BasePangenome(BasePipeline):
         )
 
         return kmc_job
-
-    def build_ploidy_job(
-        self,
-        ploidy_json: pathlib.Path,
-        deduped_bam: List[pathlib.Path],
-    ) -> Job:
-        """Estimate sample ploidy and sex"""
-        estimate_ploidy = pathlib.Path(
-            str(files("sentieon_cli.scripts").joinpath("estimate_ploidy.py"))
-        ).resolve()
-        ploidy_job = Job(
-            cmds.cmd_estimate_ploidy(
-                ploidy_json,
-                deduped_bam,
-                estimate_ploidy,
-            ),
-            "estimate-ploidy",
-            0,
-            task_name="ploidy",
-        )
-        return ploidy_job
 
     def build_dedup_job(
         self,
@@ -297,19 +268,3 @@ class BasePangenome(BasePipeline):
             task_name="metrics",
         )
         return (metrics_job, rehead_job)
-
-    def get_sex(self, ploidy_json: pathlib.Path) -> None:
-        """Retrieve the sample sex"""
-        if self.dry_run:
-            self.logger.info("Setting sample sex to MALE for dry-run")
-            self.sample_sex = SampleSex.MALE
-            return
-        with open(ploidy_json) as fh:
-            data = json.load(fh)
-            sex = data["sex"]
-            if sex == "female":
-                self.sample_sex = SampleSex.FEMALE
-            elif sex == "male":
-                self.sample_sex = SampleSex.MALE
-            else:
-                self.sample_sex = SampleSex.UNKNOWN

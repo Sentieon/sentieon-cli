@@ -27,6 +27,10 @@ dependencies = [
 [project.scripts]
 sentieon-cli = "sentieon_cli:main"
 
+[tool.poetry]
+# Ship the packaged pseudo-autosomal region (PAR) BED files
+include = [{ path = "sentieon_cli/data/*.bed", format = ["sdist", "wheel"] }]
+
 [tool.mypy]
 ignore_missing_imports = true
 

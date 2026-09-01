@@ -17,8 +17,9 @@ from importlib.resources import files
 
 from . import command_strings as cmds
 from .archive import ar_load
-from .base_pangenome import BasePangenome, SampleSex
+from .base_pangenome import BasePangenome
 from .dag import DAG
+from .dnascope import CNV_MIN_VERSIONS
 from .driver import (
     CNVModelApply,
     CNVscope,
@@ -33,11 +34,13 @@ from .job import Job
 from .logging import get_logger
 from .shell_pipeline import Command, Pipeline
 from .util import (
+    SampleSex,
     __version__,
     check_version,
     check_kmc_patch,
     parse_rg_line,
     path_arg,
+    sample_sex_arg,
     tmp,
     total_memory,
     vcf_id,
@@ -46,6 +49,7 @@ from .shard import (
     GRCH38_CONTIGS,
     determine_shards_from_fai,
     parse_fai,
+    ploidy_contigs_for_build,
     vcf_contigs,
 )
 from .transfer import build_transfer_jobs
@@ -133,6 +137,23 @@ class SentieonPangenome(BasePangenome):
                 "help": (
                     "Prefix to strip from pangenome contig names (GRCh38#0#)"
                 ),
+            },
+            "par_bed": {
+                "help": (
+                    "A BED file of the pseudo-autosomal regions (PAR), used "
+                    "for sex-aware CNV calling of male samples. Overrides the "
+                    "PAR BED file selected for the reference genome."
+                ),
+                "type": path_arg(exists=True, is_file=True),
+            },
+            "sample_sex": {
+                "help": (
+                    "The sample sex, used by the sex-aware callers. "
+                    "Supplying this argument overrides the sex estimated "
+                    "from read coverage."
+                ),
+                "metavar": "{male,female}",
+                "type": sample_sex_arg,
             },
             "skip_metrics": {
                 "help": "Skip metrics collection and multiQC",
@@ -237,6 +258,8 @@ class SentieonPangenome(BasePangenome):
         self.bed: Optional[pathlib.Path] = None
         self.call_svs = False
         self.gvcf = False
+        self.par_bed: Optional[pathlib.Path] = None
+        self.cnv_input_bams: List[pathlib.Path] = []
         self.pangenome_ref_name = "GRCh38"
         self.extract_model_name = "extract.model"
         self.pangenome_contig_prefix = "GRCh38#0#"
@@ -255,6 +278,18 @@ class SentieonPangenome(BasePangenome):
         self.skip_pop_vcf_id_check: bool = False
         self.skip_model_apply = False
         self.skip_small_variants = False
+
+    def _cnv_in_second_dag(self) -> bool:
+        """CNV calling runs in the second, sex-aware DAG"""
+        return self.call_svs and self.has_cnv_model
+
+    def _needs_second_dag(self) -> bool:
+        """The run has jobs that depend on the estimated sample sex"""
+        return bool(
+            self.expansion_catalog
+            or self.segdup_caller is not None
+            or self._cnv_in_second_dag()
+        )
 
     def main(self, args: argparse.Namespace) -> None:
         """Run the pipeline"""
@@ -287,7 +322,7 @@ class SentieonPangenome(BasePangenome):
                 executor = self.run(dag)
                 self.check_execution(dag, executor)
 
-                if self.expansion_catalog or self.segdup_caller is not None:
+                if self._needs_second_dag():
                     self.get_sex(self.ploidy_json)
                     dag = self.build_second_dag()
                     executor = self.run(dag)
@@ -327,6 +362,7 @@ class SentieonPangenome(BasePangenome):
         self.validate_segdup()
         self.validate_expansion()
         self.validate_t1k()
+        self.validate_cnv()
 
         if not self.skip_version_check:
             for cmd, min_version in SENT_PANGENOME_MIN_VERSIONS.items():
@@ -439,6 +475,22 @@ class SentieonPangenome(BasePangenome):
 
         if not self.skip_version_check:
             for cmd, min_version in EXPANSION_MIN_VERSION.items():
+                if not check_version(cmd, min_version):
+                    sys.exit(2)
+
+    def validate_cnv(self) -> None:
+        """Validate the arguments used for sex-aware CNV calling"""
+        # `validate_bundle` has already set `self.has_cnv_model`
+        cnv_will_run = self._cnv_in_second_dag()
+        self.resolve_cnv_par_bed(self.fai_data, self.par_bed, cnv_will_run)
+        if not cnv_will_run:
+            return
+
+        # A PAR BED file is required for CNV calling, whatever the sex
+        self.validate_cnv_par(True)
+
+        if not self.skip_version_check:
+            for cmd, min_version in CNV_MIN_VERSIONS.items():
                 if not check_version(cmd, min_version):
                     sys.exit(2)
 
@@ -796,13 +848,17 @@ class SentieonPangenome(BasePangenome):
 
         # Stash the short-read alignment for the second DAG
         self.sr_alignment = cnv_input_bams[0]
+        self.cnv_input_bams = cnv_input_bams
 
-        # Estimate ploidy when needed for sex-aware downstream tools
-        if self.expansion_catalog or self.segdup_caller is not None:
-            ploidy_job = self.build_ploidy_job(
-                self.ploidy_json, [cnv_input_bams[0]]
-            )
-            dag.add_job(ploidy_job, cnvscope_deps)
+        # Estimate the sample ploidy and sex. The JSON output is always
+        # written; `--sample_sex` takes precedence for the sex used by
+        # the sex-aware callers.
+        ploidy_job = self.build_ploidy_job(
+            self.ploidy_json,
+            [cnv_input_bams[0]],
+            ploidy_contigs_for_build(self.reference_build),
+        )
+        dag.add_job(ploidy_job, cnvscope_deps)
 
         # T1K HLA/KIR calling
         if self.t1k_hla_seq and self.t1k_hla_coord:
@@ -855,14 +911,7 @@ class SentieonPangenome(BasePangenome):
                 gfa_file=sample_gfa,
             )
             dag.add_job(dnascope_job, dnascope_dependencies)
-            if self.has_cnv_model:
-                self._add_cnv_jobs(
-                    dag,
-                    sv_vcf,
-                    cnv_input_bams,
-                    cnvscope_deps,
-                    dnascope_job,
-                )
+            # CNV calling is sex-aware and runs in the second DAG
             return dag
 
         apply_dependencies = set()
@@ -930,14 +979,7 @@ class SentieonPangenome(BasePangenome):
             gvcftyper_job = self.build_gvcftyper_job(self.output_vcf, out_gvcf)
             dag.add_job(gvcftyper_job, {small_variants_last_job})
 
-        if self.call_svs and sv_vcf and self.has_cnv_model:
-            self._add_cnv_jobs(
-                dag,
-                sv_vcf,
-                cnv_input_bams,
-                cnvscope_deps,
-                dnascope_job,
-            )
+        # CNV calling is sex-aware and runs in the second DAG
 
         return dag
 
@@ -1265,6 +1307,13 @@ class SentieonPangenome(BasePangenome):
         self.logger.info("Building the second pangenome DAG")
         dag = DAG()
 
+        # CNV calling with CNVscope, using the sample sex
+        if self._cnv_in_second_dag():
+            sv_vcf = pathlib.Path(
+                str(self.output_vcf).replace(".vcf.gz", "_sv.vcf.gz")
+            )
+            self._add_cnv_jobs(dag, sv_vcf, self.cnv_input_bams)
+
         if self.expansion_catalog and self.sr_alignment:
             out_expansions = pathlib.Path(
                 str(self.output_vcf).replace(".vcf.gz", "_expansion")
@@ -1370,8 +1419,6 @@ class SentieonPangenome(BasePangenome):
         dag: DAG,
         sv_vcf: pathlib.Path,
         cnv_input_bams: List[pathlib.Path],
-        cnvscope_deps: Set[Job],
-        dnascope_job: Job,
     ) -> None:
         """Add CNV calling jobs to the DAG"""
         if not self.model_bundle:
@@ -1391,9 +1438,10 @@ class SentieonPangenome(BasePangenome):
             str(self.output_vcf).replace(".vcf.gz", "_cnv.vcf.gz")
         )
 
-        # CNVscope on BWA deduped BAM
+        # CNVscope on BWA deduped BAM. The alignment and the PangenomeSV
+        # output were both written by the first DAG.
         cnvscope_job = self._build_cnvscope_job(cnvscope_vcf, cnv_input_bams)
-        dag.add_job(cnvscope_job, cnvscope_deps)
+        dag.add_job(cnvscope_job)
 
         # CNVModelApply on CNVscope output
         cnv_model_apply_job = self._build_cnv_model_apply_job(
@@ -1403,7 +1451,7 @@ class SentieonPangenome(BasePangenome):
 
         # Convert PangenomeSV output to CNVs
         indel2cnv_job = self._build_indel2cnv_job(indel2cnv_vcf, sv_vcf)
-        dag.add_job(indel2cnv_job, {dnascope_job})
+        dag.add_job(indel2cnv_job)
 
         # Combine CNVModelApply output with converted SVs
         combine_job = self._build_combine_cnv_job(
@@ -1418,6 +1466,7 @@ class SentieonPangenome(BasePangenome):
     ) -> Job:
         """Build a CNVscope job"""
         assert self.model_bundle is not None
+        sex, par = self.cnv_sex_args()
         driver = Driver(
             reference=self.reference,
             thread_count=self.cores,
@@ -1428,6 +1477,8 @@ class SentieonPangenome(BasePangenome):
             CNVscope(
                 output=output_vcf,
                 model=self.model_bundle.joinpath("cnv.model"),
+                sex=sex,
+                par=par,
             )
         )
         return Job(

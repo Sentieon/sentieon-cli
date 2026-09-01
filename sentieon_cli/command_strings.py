@@ -1223,6 +1223,10 @@ def cmd_estimate_ploidy(
     output_json: pathlib.Path,
     aln_files: List[pathlib.Path],
     ploidy_script: pathlib.Path,
+    contigs: Optional[List[str]] = None,
+    autosomes: Optional[List[str]] = None,
+    x_contig: Optional[str] = None,
+    y_contig: Optional[str] = None,
 ) -> Pipeline:
     cmd = (
         [
@@ -1236,6 +1240,18 @@ def cmd_estimate_ploidy(
             str(output_json),
         ]
     )
+    # Contig names are only supplied when they differ from the defaults
+    # of the `estimate_ploidy.py` script
+    if contigs:
+        cmd.append("--contigs")
+        cmd.extend(contigs)
+    if autosomes:
+        cmd.append("--autosomes")
+        cmd.extend(autosomes)
+    if x_contig:
+        cmd.extend(["--x_contig", x_contig])
+    if y_contig:
+        cmd.extend(["--y_contig", y_contig])
     return Pipeline(Command(*cmd))
 
 

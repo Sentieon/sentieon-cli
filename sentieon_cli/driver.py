@@ -497,9 +497,14 @@ class CNVscope(BaseAlgo):
         self,
         output: Union[pathlib.Path, str],
         model: pathlib.Path,
+        *,
+        sex: Optional[str] = None,
+        par: Optional[pathlib.Path] = None,
     ):
         self.output = output
         self.model = model
+        self.sex = sex
+        self.par = par
 
 
 class CNVModelApply(BaseAlgo):

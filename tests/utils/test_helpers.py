@@ -202,6 +202,10 @@ class PipelineTestHelper:
         _fai = self.fs.create_file("reference.fa.fai")
         pipeline.model_bundle = self.fs.create_model_bundle("model.bundle", "DNAscope Hybrid")
 
+        # CNV calling requires a PAR BED file, and the mock reference index
+        # is empty, so no packaged PAR BED file can be selected for it
+        pipeline.par_bed = self.fs.create_file("par.bed", b"chrX\t10000\t2781479\n")
+
         # Create BWA index files (required when short-read fastq is supplied)
         for suf in (".amb", ".ann", ".bwt", ".pac", ".sa"):
             self.fs.create_file("reference.fa" + suf)

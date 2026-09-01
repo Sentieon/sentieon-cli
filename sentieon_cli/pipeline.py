@@ -4,15 +4,18 @@ A pipeline class
 
 from abc import ABC, abstractmethod
 import argparse
+import json
 import multiprocessing as mp
 import os
 import pathlib
 import shutil
 import sys
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import packaging.version
+
+from importlib.resources import files
 
 from . import command_strings as cmds
 from .dag import DAG
@@ -22,7 +25,19 @@ from .job import Job
 from .logging import get_logger, set_console_level
 from .run_logs import RunLogs
 from .scheduler import ThreadScheduler
-from .util import __version__, check_version, path_arg, tmp
+from .shard import (
+    PloidyContigs,
+    detect_reference_build,
+    par_bed_for_build,
+)
+from .util import (
+    SampleSex,
+    __version__,
+    check_version,
+    cnvscope_sex_args,
+    path_arg,
+    tmp,
+)
 
 MULTIQC_MIN_VERSION = {
     "multiqc": packaging.version.Version("1.18"),
@@ -124,6 +139,9 @@ class BasePipeline(ABC):
         self.log_dir: Optional[pathlib.Path] = None
         self.output_vcf: Optional[pathlib.Path] = None
         self.run_logs: Optional[RunLogs] = None
+        self.sample_sex: Optional[SampleSex] = None
+        self.cnv_par_bed: Optional[pathlib.Path] = None
+        self.reference_build: Optional[str] = None
 
     def setup_logging(self, args: argparse.Namespace) -> None:
         """Configure console logging"""
@@ -194,6 +212,13 @@ class BasePipeline(ABC):
                 dag = self.build_dag()
                 executor = self.run(dag)
                 self.check_execution(dag, executor)
+
+                # Jobs that depend on the results of the first DAG, such
+                # as sex-aware calling after ploidy estimation
+                second_dag = self.build_second_dag()
+                if second_dag is not None:
+                    executor = self.run(second_dag)
+                    self.check_execution(second_dag, executor)
             finally:
                 if not self.retain_tmpdir:
                     shutil.rmtree(tmp_dir_str)
@@ -277,6 +302,101 @@ class BasePipeline(ABC):
     @abstractmethod
     def build_dag(self) -> DAG:
         pass
+
+    def build_second_dag(self) -> Optional[DAG]:
+        """Build a second DAG, run after the first one has finished.
+
+        Pipelines with jobs that depend on the results of the first DAG,
+        such as sex-aware calling after ploidy estimation, override this
+        hook. Returning `None` runs a single DAG.
+        """
+        return None
+
+    def build_ploidy_job(
+        self,
+        ploidy_json: pathlib.Path,
+        deduped_bam: List[pathlib.Path],
+        ploidy_contigs: Optional[PloidyContigs] = None,
+    ) -> Job:
+        """Estimate sample ploidy and sex"""
+        estimate_ploidy = pathlib.Path(
+            str(files("sentieon_cli.scripts").joinpath("estimate_ploidy.py"))
+        ).resolve()
+        ploidy_contigs = ploidy_contigs or PloidyContigs()
+        ploidy_job = Job(
+            cmds.cmd_estimate_ploidy(
+                ploidy_json,
+                deduped_bam,
+                estimate_ploidy,
+                contigs=ploidy_contigs.contigs,
+                autosomes=ploidy_contigs.autosomes,
+                x_contig=ploidy_contigs.x_contig,
+                y_contig=ploidy_contigs.y_contig,
+            ),
+            "estimate-ploidy",
+            0,
+            task_name="ploidy",
+        )
+        return ploidy_job
+
+    def get_sex(self, ploidy_json: pathlib.Path) -> None:
+        """Retrieve the sample sex"""
+        if self.sample_sex is not None:
+            # Supplied through `--sample_sex`
+            return
+        if self.dry_run:
+            self.logger.info("Setting sample sex to MALE for dry-run")
+            self.sample_sex = SampleSex.MALE
+            return
+        with open(ploidy_json) as fh:
+            data = json.load(fh)
+            sex = data["sex"]
+            if sex == "female":
+                self.sample_sex = SampleSex.FEMALE
+            elif sex == "male":
+                self.sample_sex = SampleSex.MALE
+            else:
+                self.sample_sex = SampleSex.UNKNOWN
+
+    def resolve_cnv_par_bed(
+        self,
+        fai_data: Dict[str, Dict[str, int]],
+        par_bed: Optional[pathlib.Path] = None,
+        cnv_will_run: bool = True,
+    ) -> None:
+        """Identify the reference build and select the PAR BED file.
+
+        `self.reference_build` is always identified, as the ploidy
+        estimation contigs follow it. The PAR BED file is only used by
+        CNV calling, so it is looked up only when CNVs will be called.
+        """
+        self.reference_build = detect_reference_build(fai_data)
+        if not cnv_will_run:
+            return
+        if par_bed is not None:
+            self.cnv_par_bed = par_bed
+            return
+        self.cnv_par_bed = par_bed_for_build(self.reference_build)
+
+    def validate_cnv_par(self, cnv_will_run: bool) -> None:
+        """Confirm a PAR BED file is available for CNV calling.
+
+        The check runs during validation, before any job starts, and does
+        not depend on the sample sex.
+        """
+        if not cnv_will_run or self.cnv_par_bed is not None:
+            return
+
+        self.logger.error(
+            "CNV calling uses a BED file of the pseudo-autosomal regions "
+            "(PAR), and no PAR BED file is available for this reference "
+            "genome. Please supply the `--par_bed` argument."
+        )
+        sys.exit(2)
+
+    def cnv_sex_args(self) -> Tuple[Optional[str], Optional[pathlib.Path]]:
+        """The CNVscope `--sex` and `--par` arguments for this run"""
+        return cnvscope_sex_args(self.sample_sex, self.cnv_par_bed)
 
     def multiqc(self) -> Optional[Job]:
         """Run MultiQC on the metrics files"""

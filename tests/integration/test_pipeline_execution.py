@@ -155,8 +155,12 @@ class TestPipelineDryRunExecution:
             first_pass_job = [job for job in all_jobs if job.name == "calling-1"][0]
             assert "--replace_rg" in first_pass_job.shell.nodes[0].args
 
+            # CNV calling is sex-aware and runs in the second DAG
+            second_dag = pipeline.build_second_dag()
+            second_jobs = list(second_dag.waiting_jobs.keys()) + list(second_dag.ready_jobs.keys())
+
             # should use replace_rg in CNV calling
-            cnv_job = [job for job in all_jobs if job.name == "CNVscope"][0]
+            cnv_job = [job for job in second_jobs if job.name == "CNVscope"][0]
             assert "--replace_rg" in cnv_job.shell.nodes[0].args
 
             # should use replace_rg in SV calling

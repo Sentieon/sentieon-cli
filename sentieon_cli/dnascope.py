@@ -42,7 +42,9 @@ from .job import Job
 from .pipeline import BasePipeline
 from .shell_pipeline import Command, Pipeline
 from .util import (
+    SampleSex,
     check_version,
+    cnvscope_sex_args,
     library_preloaded,
     parse_rg_line,
     path_arg,
@@ -64,7 +66,8 @@ VARIANTS_MIN_VERSIONS = {
 }
 
 CNV_MIN_VERSIONS = {
-    "sentieon driver": packaging.version.Version("202308.03"),
+    # 202503.04 adds the CNVscope `--sex` and `--par` arguments
+    "sentieon driver": packaging.version.Version("202503.04"),
 }
 
 
@@ -995,6 +998,8 @@ def call_cnvs(
     cores: int = mp.cpu_count(),
     skip_version_check: bool = False,
     replace_rg: Optional[List[List[str]]] = None,
+    sample_sex: Optional[SampleSex] = None,
+    par_bed: Optional[pathlib.Path] = None,
     **_kwargs: Any,
 ) -> Tuple[Job, Job]:
     """
@@ -1005,6 +1010,7 @@ def call_cnvs(
             if not check_version(cmd, min_version):
                 sys.exit(2)
 
+    sex, par = cnvscope_sex_args(sample_sex, par_bed)
     cnvscope_vcf = tmp_dir.joinpath("cnvscope.vcf.gz")
     cnv_vcf = pathlib.Path(str(output_vcf).replace(".vcf.gz", ".cnv.vcf.gz"))
     driver = Driver(
@@ -1018,6 +1024,8 @@ def call_cnvs(
         CNVscope(
             cnvscope_vcf,
             model_bundle.joinpath("cnv.model"),
+            sex=sex,
+            par=par,
         )
     )
     cnvscope_job = Job(

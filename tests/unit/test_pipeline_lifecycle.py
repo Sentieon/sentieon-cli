@@ -130,6 +130,84 @@ class _StubExecutor:
         self.jobs_with_errors = jobs_with_errors or []
 
 
+class _TwoDagPipeline(_DummyPipeline):
+    """A pipeline that counts the DAGs run through the `main` hook.
+
+    `second_dag` is the DAG returned by the hook; `fail_on` is the 1-based
+    index of the `check_execution` call that raises.
+    """
+
+    def __init__(self, second_dag=None, fail_on=None):
+        super().__init__()
+        self.second_dag = second_dag
+        self.fail_on = fail_on
+        self.dags_run = 0
+        self.check_calls = 0
+
+    def build_second_dag(self):
+        return self.second_dag
+
+    def run(self, dag):
+        self.dags_run += 1
+        return _StubExecutor()
+
+    def check_execution(self, dag, executor):
+        self.check_calls += 1
+        if self.fail_on == self.check_calls:
+            raise DagExecutionError("a job failed")
+
+
+def test_main_runs_one_dag_when_the_second_dag_hook_returns_none(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("SENTIEON_TMPDIR", str(tmp_path))
+    pipeline = _TwoDagPipeline()
+
+    pipeline.main(argparse.Namespace(loglevel="WARNING"))
+
+    assert pipeline.dags_run == 1
+    assert pipeline.check_calls == 1
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_main_runs_the_dag_returned_by_the_second_dag_hook(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("SENTIEON_TMPDIR", str(tmp_path))
+    pipeline = _TwoDagPipeline(second_dag=DAG())
+
+    pipeline.main(argparse.Namespace(loglevel="WARNING"))
+
+    assert pipeline.dags_run == 2
+    assert pipeline.check_calls == 2
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_main_cleans_up_tmpdir_when_the_second_dag_fails(
+    tmp_path, monkeypatch
+):
+    # The second DAG runs inside the same try/finally, so the temp
+    # directory is removed on its failure path too
+    monkeypatch.setenv("SENTIEON_TMPDIR", str(tmp_path))
+    pipeline = _TwoDagPipeline(second_dag=DAG(), fail_on=2)
+
+    with pytest.raises(DagExecutionError):
+        pipeline.main(argparse.Namespace(loglevel="WARNING"))
+
+    assert pipeline.dags_run == 2
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_hybrid_second_dag_hook_is_skipped_without_cnv_calling():
+    from sentieon_cli.dnascope_hybrid import DNAscopeHybridPipeline
+
+    pipeline = DNAscopeHybridPipeline()
+    pipeline.setup_logging(argparse.Namespace(loglevel="WARNING"))
+    pipeline.skip_cnv = True
+
+    assert pipeline.build_second_dag() is None
+
+
 def test_check_execution_names_the_failed_jobs():
     pipeline = _DummyPipeline()
     pipeline.setup_logging(argparse.Namespace(loglevel="WARNING"))
@@ -217,6 +295,20 @@ def test_pangenome_main_cleans_up_tmpdir_when_the_second_dag_fails(
 
     assert pipeline.dags_built == ["first", "second"]
     assert list(tmp_path.iterdir()) == []
+
+
+def test_pangenome_main_runs_the_second_dag_for_cnv_calling(
+    tmp_path, monkeypatch
+):
+    # CNV calling is sex-aware, so it alone triggers the second DAG
+    pipeline = _stub_pangenome(monkeypatch, tmp_path)
+    pipeline.call_svs = True
+    pipeline.has_cnv_model = True
+
+    pipeline.main(argparse.Namespace(loglevel="WARNING"))
+
+    assert pipeline.dags_built == ["first", "second"]
+    assert pipeline.check_calls == 2
 
 
 def test_pangenome_main_retains_tmpdir_on_failure_when_requested(

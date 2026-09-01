@@ -20,12 +20,20 @@ DEFAULT_CONTIGS = [
 ]
 DEFAULT_AUTOSOMES = DEFAULT_CONTIGS[:-2]
 
-DEFAULT_SEXES = {
-    "male": {"chrX": 1, "chrY": 1},
-    "female": {"chrX": 2, "chrY": 0},
-}
+DEFAULT_X_CONTIG = "chrX"
+DEFAULT_Y_CONTIG = "chrY"
 
 IDXSTATS_CMD = ["samtools", "idxstats"]
+
+
+def sex_requirements(
+    x_contig: str, y_contig: str
+) -> Dict[str, Dict[str, int]]:
+    """The sex chromosome ploidy expected for each sex"""
+    return {
+        "male": {x_contig: 1, y_contig: 1},
+        "female": {x_contig: 2, y_contig: 0},
+    }
 
 
 def process_args():
@@ -48,6 +56,16 @@ def process_args():
         nargs="+",
         default=DEFAULT_AUTOSOMES,
         help="Autosome contigs",
+    )
+    parser.add_argument(
+        "--x_contig",
+        default=DEFAULT_X_CONTIG,
+        help="The name of the X chromosome",
+    )
+    parser.add_argument(
+        "--y_contig",
+        default=DEFAULT_Y_CONTIG,
+        help="The name of the Y chromosome",
     )
     parser.add_argument(
         "--outfile",
@@ -85,6 +103,10 @@ def main(args: argparse.Namespace):
     total_reads = sum(
         [x[1] for contig, x in idxstats_results.items() if contig in autosomes]
     )
+    if total_bases == 0:
+        # No recognized autosomes, so ploidy cannot be estimated
+        json.dump({"contigs": {}, "sex": "Unknown"}, args.outfile, indent=2)
+        return sys.exit(os.EX_OK)
     average_reads_per_base = total_reads / total_bases
 
     # Calculate read coverage by contig
@@ -111,14 +133,16 @@ def main(args: argparse.Namespace):
 
     # Determine sex
     sex = "Unknown"
-    for possible_sex, required_chroms in DEFAULT_SEXES.items():
+    sexes = sex_requirements(args.x_contig, args.y_contig)
+    for possible_sex, required_chroms in sexes.items():
         match = True
         for contig, req_ploidy in required_chroms.items():
             try:
                 found_ploidy = int(results["contigs"][contig]["ploidy"])
                 if found_ploidy != req_ploidy:
                     match = False
-            except ValueError:
+            except (KeyError, ValueError):
+                # An absent or indeterminate sex chromosome
                 match = False
 
         if match:

@@ -14,7 +14,7 @@ from unittest.mock import patch, MagicMock
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from sentieon_cli.sentieon_pangenome import SentieonPangenome
-from sentieon_cli.base_pangenome import SampleSex
+from sentieon_cli.util import SampleSex
 from sentieon_cli.dag import DAG
 
 
@@ -445,13 +445,78 @@ class TestSentieonPangenome:
         )
         return [job.name for job in all_jobs], all_jobs
 
-    def test_cnv_jobs_with_call_svs(self):
-        """Test that CNV jobs are added when --call_svs is enabled"""
+    def _build_cnv_dag(self, pipeline, sample_sex=SampleSex.FEMALE):
+        """Build the second DAG, which holds the sex-aware CNV jobs.
+
+        The first DAG has to be built first so that the CNV input
+        alignments are stashed for the second DAG.
+        """
+        pipeline.build_first_dag()
+        pipeline.sample_sex = sample_sex
+        return pipeline.build_second_dag()
+
+    def validate_cnv(self, pipeline):
+        """Run the CNV validation with the reference index parsed"""
+        pipeline.validate_cnv()
+
+    @pytest.mark.parametrize(
+        "sample_sex", [None, SampleSex.MALE, SampleSex.FEMALE]
+    )
+    def test_validate_cnv_requires_a_par_bed(self, sample_sex):
+        # The mock reference is not a recognized build, so no packaged
+        # PAR BED file can be selected and validation stops the run
         pipeline = self.create_pipeline()
         pipeline.call_svs = True
-        dag = pipeline.build_first_dag()
+        pipeline.sample_sex = sample_sex
 
-        job_names, all_jobs = self._get_all_job_names(dag)
+        with pytest.raises(SystemExit) as excinfo:
+            self.validate_cnv(pipeline)
+        assert excinfo.value.code == 2
+
+    def test_validate_cnv_accepts_the_par_bed_argument(self):
+        par_bed = self.mock_dir / "par.bed"
+        par_bed.write_text("chrX\t10000\t2781479\n")
+
+        pipeline = self.create_pipeline()
+        pipeline.call_svs = True
+        pipeline.par_bed = par_bed
+
+        self.validate_cnv(pipeline)  # no SystemExit
+
+        assert pipeline.cnv_par_bed == par_bed
+
+    def test_validate_cnv_needs_no_par_bed_without_call_svs(self):
+        pipeline = self.create_pipeline()
+
+        self.validate_cnv(pipeline)  # no SystemExit
+
+        assert pipeline.cnv_par_bed is None
+
+    def test_validate_cnv_needs_no_par_bed_without_a_cnv_model(self):
+        pipeline = self.create_pipeline()
+        pipeline.call_svs = True
+        pipeline.has_cnv_model = False
+
+        self.validate_cnv(pipeline)  # no SystemExit
+
+        assert pipeline.cnv_par_bed is None
+
+    def test_cnv_jobs_with_call_svs(self):
+        """CNV jobs run in the second DAG when --call_svs is enabled"""
+        pipeline = self.create_pipeline()
+        pipeline.call_svs = True
+        first_dag = pipeline.build_first_dag()
+
+        # CNV calling is sex-aware, so it is not in the first DAG
+        first_job_names, _ = self._get_all_job_names(first_dag)
+        assert "cnvscope" not in first_job_names
+        assert "cnv-model-apply" not in first_job_names
+        assert "indel2cnv" not in first_job_names
+        assert "combine-cnv" not in first_job_names
+
+        pipeline.sample_sex = SampleSex.FEMALE
+        dag = pipeline.build_second_dag()
+        job_names, _ = self._get_all_job_names(dag)
         assert "cnvscope" in job_names
         assert "cnv-model-apply" in job_names
         assert "indel2cnv" in job_names
@@ -468,12 +533,68 @@ class TestSentieonPangenome:
         assert "indel2cnv" not in job_names
         assert "combine-cnv" not in job_names
 
+        # Nor to the second DAG
+        pipeline.sample_sex = SampleSex.FEMALE
+        second_job_names, _ = self._get_all_job_names(
+            pipeline.build_second_dag()
+        )
+        assert "cnvscope" not in second_job_names
+        assert "combine-cnv" not in second_job_names
+
+    def test_second_dag_needed_for_cnv_only(self):
+        """CNV calling alone triggers the second DAG"""
+        pipeline = self.create_pipeline()
+        pipeline.call_svs = True
+
+        assert pipeline._cnv_in_second_dag() is True
+        assert pipeline._needs_second_dag() is True
+
+    def test_no_second_dag_without_a_sex_aware_caller(self):
+        """No second DAG when nothing consumes the sample sex"""
+        pipeline = self.create_pipeline()
+
+        assert pipeline._cnv_in_second_dag() is False
+        assert pipeline._needs_second_dag() is False
+
+    def test_ploidy_estimation_runs_with_sample_sex(self):
+        """--sample_sex overrides the estimate, which still runs"""
+        pipeline = self.create_pipeline()
+        pipeline.call_svs = True
+        pipeline.sample_sex = SampleSex.FEMALE
+
+        job_names, _ = self._get_all_job_names(pipeline.build_first_dag())
+        assert "estimate-ploidy" in job_names
+
+    def test_ploidy_estimation_runs_without_sex_aware_callers(self):
+        """The ploidy JSON is written by every run"""
+        pipeline = self.create_pipeline()
+
+        assert pipeline._needs_second_dag() is False
+        job_names, all_jobs = self._get_all_job_names(
+            pipeline.build_first_dag()
+        )
+        assert "estimate-ploidy" in job_names
+
+        ploidy_job = next(j for j in all_jobs if j.name == "estimate-ploidy")
+        cmd_str = str(ploidy_job.shell)
+        assert "estimate_ploidy.py" in cmd_str
+        assert str(pipeline.ploidy_json) in cmd_str
+        assert str(pipeline.ploidy_json).endswith("output_ploidy.json")
+
+    def test_ploidy_estimation_runs_with_skip_small_variants(self):
+        """The ploidy job precedes the SV-only early return"""
+        pipeline = self.create_pipeline()
+        pipeline.skip_small_variants = True
+
+        job_names, _ = self._get_all_job_names(pipeline.build_first_dag())
+        assert "estimate-ploidy" in job_names
+
     def test_cnv_jobs_with_skip_small_variants(self):
         """Test CNV jobs are added in SV-only mode"""
         pipeline = self.create_pipeline()
         pipeline.skip_small_variants = True
         pipeline.call_svs = True
-        dag = pipeline.build_first_dag()
+        dag = self._build_cnv_dag(pipeline)
 
         job_names, _ = self._get_all_job_names(dag)
         assert "cnvscope" in job_names
@@ -502,16 +623,23 @@ class TestSentieonPangenome:
         assert "indel2cnv" not in job_names
         assert "combine-cnv" not in job_names
 
+        # And they are not in the second DAG either
+        pipeline.sample_sex = SampleSex.FEMALE
+        second_job_names, _ = self._get_all_job_names(
+            pipeline.build_second_dag()
+        )
+        assert "cnvscope" not in second_job_names
+        assert "combine-cnv" not in second_job_names
+
     def test_call_svs_without_cnv_model_skip_small_variants(self):
         """SV-only mode: SVs run but CNV jobs are skipped without cnv.model"""
         pipeline = self.create_pipeline()
         pipeline.skip_small_variants = True
         pipeline.call_svs = True
         pipeline.has_cnv_model = False
-        dag = pipeline.build_first_dag()
+        dag = self._build_cnv_dag(pipeline)
 
         job_names, _ = self._get_all_job_names(dag)
-        assert "dnascope-raw" in job_names
         assert "cnvscope" not in job_names
         assert "cnv-model-apply" not in job_names
         assert "indel2cnv" not in job_names
@@ -521,7 +649,7 @@ class TestSentieonPangenome:
         """Test CNVscope driver command has correct algo and model"""
         pipeline = self.create_pipeline()
         pipeline.call_svs = True
-        dag = pipeline.build_first_dag()
+        dag = self._build_cnv_dag(pipeline)
 
         _, all_jobs = self._get_all_job_names(dag)
         cnvscope_job = None
@@ -533,14 +661,33 @@ class TestSentieonPangenome:
         cmd_str = str(cnvscope_job.shell)
         assert "--algo CNVscope" in cmd_str
         assert "cnv.model" in cmd_str
+        # Sex-aware calling of a female sample needs no PAR BED file
+        assert "--sex F" in cmd_str
+        assert "--par" not in cmd_str
         # Input should be the sample BAM (BAM input mode)
         assert str(pipeline.sample_input[0]) in cmd_str
+
+    def test_cnvscope_command_male_sample(self):
+        """A male sample is called with the PAR BED file"""
+        par_bed = self.mock_dir / "par.bed"
+        par_bed.touch()
+
+        pipeline = self.create_pipeline()
+        pipeline.call_svs = True
+        pipeline.cnv_par_bed = par_bed
+        dag = self._build_cnv_dag(pipeline, sample_sex=SampleSex.MALE)
+
+        _, all_jobs = self._get_all_job_names(dag)
+        cnvscope_job = next(j for j in all_jobs if j.name == "cnvscope")
+        cmd_str = str(cnvscope_job.shell)
+        assert "--sex M" in cmd_str
+        assert f"--par {par_bed}" in cmd_str
 
     def test_cnv_model_apply_command(self):
         """Test CNVModelApply driver command"""
         pipeline = self.create_pipeline()
         pipeline.call_svs = True
-        dag = pipeline.build_first_dag()
+        dag = self._build_cnv_dag(pipeline)
 
         _, all_jobs = self._get_all_job_names(dag)
         job = None
@@ -557,7 +704,7 @@ class TestSentieonPangenome:
         """Test indel2cnv script command"""
         pipeline = self.create_pipeline()
         pipeline.call_svs = True
-        dag = pipeline.build_first_dag()
+        dag = self._build_cnv_dag(pipeline)
 
         _, all_jobs = self._get_all_job_names(dag)
         job = None
@@ -574,7 +721,7 @@ class TestSentieonPangenome:
         """Test combine_cnv script command"""
         pipeline = self.create_pipeline()
         pipeline.call_svs = True
-        dag = pipeline.build_first_dag()
+        dag = self._build_cnv_dag(pipeline)
 
         _, all_jobs = self._get_all_job_names(dag)
         job = None
@@ -598,10 +745,15 @@ class TestSentieonPangenome:
         pipeline = self.create_pipeline()
         pipeline.call_svs = True
         pipeline.skip_model_apply = True
-        dag = pipeline.build_first_dag()
+        first_job_names, _ = self._get_all_job_names(
+            pipeline.build_first_dag()
+        )
+        assert "model-apply" not in first_job_names
+
+        pipeline.sample_sex = SampleSex.FEMALE
+        dag = pipeline.build_second_dag()
 
         job_names, _ = self._get_all_job_names(dag)
-        assert "model-apply" not in job_names
         assert "cnvscope" in job_names
         assert "cnv-model-apply" in job_names
         assert "indel2cnv" in job_names
