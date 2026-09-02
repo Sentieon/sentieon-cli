@@ -48,9 +48,9 @@ from .stages.transfer import TransferConfig, TransferStage
 from .util import (
     __version__,
     check_kmc_patch,
-    check_version,
     parse_rg_line,
     path_arg,
+    require_versions,
     total_memory,
     vcf_id,
 )
@@ -258,19 +258,18 @@ class HybridPangenome(BasePangenome):
         self.collect_readgroups()
         self.validate_readgroups()
 
-        if not self.skip_version_check:
-            for cmd, min_version in HYBRID_PANGENOME_MIN_VERSIONS.items():
-                if not check_version(cmd, min_version):
-                    sys.exit(2)
+        require_versions(
+            HYBRID_PANGENOME_MIN_VERSIONS, skip=self.skip_version_check
+        )
 
-            if not check_kmc_patch("kmc"):
-                self.logger.error(
-                    "Error: The 'kmc' executable in the PATH does not "
-                    "support reading from stdin. Please ensure "
-                    "you are using the patched version of KMC from "
-                    "https://github.com/Sentieon/KMC/releases."
-                )
-                sys.exit(2)
+        if not self.skip_version_check and not check_kmc_patch("kmc"):
+            self.logger.error(
+                "Error: The 'kmc' executable in the PATH does not "
+                "support reading from stdin. Please ensure "
+                "you are using the patched version of KMC from "
+                "https://github.com/Sentieon/KMC/releases."
+            )
+            sys.exit(2)
 
         if self.bed is None:
             self.logger.info(
@@ -599,35 +598,25 @@ class HybridPangenome(BasePangenome):
 
     def build_dag(self) -> DAG:
         """Build the DAG for the hybrid-pangenome pipeline"""
-        if not self.reference:
-            self.logger.error("reference is required")
-            sys.exit(2)
-        if not self.model_bundle:
-            self.logger.error("model_bundle is required")
-            sys.exit(2)
-        if not self.output_vcf:
-            self.logger.error("output_vcf is required")
-            sys.exit(2)
-        if not self.pop_vcf:
-            self.logger.error("pop_vcf is required")
-            sys.exit(2)
+        bundle = self.required(self.model_bundle, "model_bundle")
+        self.required(self.pop_vcf, "pop_vcf")
 
         self.logger.info("Building the hybrid-pangenome DAG")
         dag = DAG()
         ctx = self.stage_context()
 
-        ref_fai = pathlib.Path(str(self.reference) + ".fai")
+        ref_fai = pathlib.Path(str(ctx.reference) + ".fai")
 
         # Output files
         suffix = "bam" if self.bam_format else "cram"
         out_bwa_aln = pathlib.Path(
-            str(self.output_vcf).replace(".vcf.gz", f"_bwa_deduped.{suffix}")
+            str(ctx.output_vcf).replace(".vcf.gz", f"_bwa_deduped.{suffix}")
         )
         out_lift_aln = pathlib.Path(
-            str(self.output_vcf).replace(".vcf.gz", f"_lift_deduped.{suffix}")
+            str(ctx.output_vcf).replace(".vcf.gz", f"_lift_deduped.{suffix}")
         )
         sv_vcf = pathlib.Path(
-            str(self.output_vcf).replace(".vcf.gz", "_sv.vcf.gz")
+            str(ctx.output_vcf).replace(".vcf.gz", "_sv.vcf.gz")
         )
 
         # Intermediate file paths
@@ -762,7 +751,7 @@ class HybridPangenome(BasePangenome):
             # is assumed to be deduplicated already.
             # Emit Dedup metrics for the primary (bwa) short-read alignment
             # so they land in the metrics directory scanned by MultiQC.
-            paths = MetricsPaths.from_output_vcf(self.output_vcf)
+            paths = MetricsPaths.from_output_vcf(ctx.output_vcf)
             dedup_metrics: Optional[pathlib.Path] = None
             if not self.skip_metrics:
                 paths.ensure_dir(self.dry_run)
@@ -822,7 +811,7 @@ class HybridPangenome(BasePangenome):
         if self.skip_small_variants:
             return dag
 
-        model = self.model_bundle.joinpath("dnascope.model")
+        model = bundle.joinpath("dnascope.model")
         pcr_indel_model = "NONE" if self.pcr_free else "CONSERVATIVE"
         call = DNAscopeStage(
             ctx=ctx,
@@ -841,7 +830,7 @@ class HybridPangenome(BasePangenome):
 
         # transfer annotations from the pop_vcf
         transfer_target = (
-            transfer_vcf if not self.skip_model_apply else self.output_vcf
+            transfer_vcf if not self.skip_model_apply else ctx.output_vcf
         )
         transfer = TransferStage(
             ctx=ctx,
@@ -855,7 +844,7 @@ class HybridPangenome(BasePangenome):
                 ctx=ctx,
                 model=model,
                 vcf=transfer_vcf,
-                output=self.output_vcf,
+                output=ctx.output_vcf,
             ).add_to(dag, transfer.terminal)
 
         return dag

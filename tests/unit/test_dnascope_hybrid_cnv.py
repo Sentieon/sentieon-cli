@@ -82,19 +82,13 @@ class TestDNAscopeHybridCnv:
 
     def build_dag(self, pipeline):
         """Build the first DAG and index the jobs by name"""
-        with patch(
-            "sentieon_cli.dnascope_hybrid.check_version", return_value=True
-        ):
-            dag = pipeline.build_dag()
+        dag = pipeline.build_dag()
         jobs = list(dag.waiting_jobs.keys()) + list(dag.ready_jobs.keys())
         return dag, {job.name: job for job in jobs}
 
     def build_second_dag(self, pipeline):
         """Build the second DAG and index the jobs by name"""
-        with patch(
-            "sentieon_cli.dnascope_hybrid.check_version", return_value=True
-        ):
-            dag = pipeline.build_second_dag()
+        dag = pipeline.build_second_dag()
         if dag is None:
             return None, {}
         jobs = list(dag.waiting_jobs.keys()) + list(dag.ready_jobs.keys())

@@ -36,10 +36,10 @@ from .stages.small_variants import DNAscopeStage, ModelApplyStage
 from .stages.transfer import TransferConfig, TransferStage
 from .util import (
     __version__,
-    check_version,
     library_preloaded,
     parse_rg_line,
     path_arg,
+    require_versions,
     sample_sex_arg,
     split_alignment,
     vcf_id,
@@ -396,10 +396,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
 
         # CNV calling now runs in the second DAG, so the version of the
         # driver is checked before the first DAG starts
-        if not self.skip_version_check:
-            for cmd, min_version in CNV_MIN_VERSIONS.items():
-                if not check_version(cmd, min_version):
-                    sys.exit(2)
+        require_versions(CNV_MIN_VERSIONS, skip=self.skip_version_check)
 
     def validate_bundle(self) -> None:
         bundle_info_bytes = ar_load(
@@ -571,15 +568,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         self.logger.info("Building the DAG")
         dag = DAG()
 
-        if not self.output_vcf:
-            self.logger.error("output_vcf is required")
-            sys.exit(2)
-        if not self.reference:
-            self.logger.error("reference is required")
-            sys.exit(2)
-        if not self.model_bundle:
-            self.logger.error("model_bundle is required")
-            sys.exit(2)
+        self.required(self.model_bundle, "model_bundle")
         ctx = self.stage_context()
 
         rg_info = RgInfo(
@@ -674,15 +663,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         """Build the second DAG, for sex-aware CNV calling"""
         if self.skip_cnv:
             return None
-        if not self.output_vcf:
-            self.logger.error("output_vcf is required")
-            sys.exit(2)
-        if not self.reference:
-            self.logger.error("reference is required")
-            sys.exit(2)
-        if not self.model_bundle:
-            self.logger.error("model_bundle is required")
-            sys.exit(2)
+        bundle = self.required(self.model_bundle, "model_bundle")
         assert self.ploidy_json is not None
         ctx = self.stage_context()
 
@@ -693,7 +674,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         CNVscopeStage(
             ctx=ctx,
             inputs=self.cnv_sr_aln,
-            model=self.model_bundle.joinpath("cnv.model"),
+            model=bundle.joinpath("cnv.model"),
             cnvscope_vcf=ctx.tmp_dir.joinpath("cnvscope.vcf.gz"),
             cnv_vcf=pathlib.Path(
                 str(ctx.output_vcf).replace(".vcf.gz", ".cnv.vcf.gz")
@@ -752,24 +733,13 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         the short reads there; a second pass recalls those regions, and the
         two call sets are merged, annotated and filtered.
         """
-        if not self.output_vcf:
-            self.logger.error("output_vcf is required")
-            sys.exit(2)
-        if not self.reference:
-            self.logger.error("reference is required")
-            sys.exit(2)
-        if not self.model_bundle:
-            self.logger.error("model_bundle is required")
-            sys.exit(2)
+        bundle = self.required(self.model_bundle, "model_bundle")
 
-        ref_fai = pathlib.Path(str(self.reference) + ".fai")
+        ref_fai = pathlib.Path(str(ctx.reference) + ".fai")
 
-        if not self.skip_version_check:
-            for cmd, min_version in CALLING_MIN_VERSIONS.items():
-                if not check_version(cmd, min_version):
-                    sys.exit(2)
+        require_versions(CALLING_MIN_VERSIONS, skip=self.skip_version_check)
 
-        hybrid_model = self.model_bundle.joinpath("hybrid.model")
+        hybrid_model = bundle.joinpath("hybrid.model")
 
         # First pass - combined variant calling
         vcf_suffix = ".g.vcf.gz" if self.gvcf else ".vcf.gz"
@@ -819,9 +789,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             ctx,
             [
                 HybridStage2(
-                    model=self.model_bundle.joinpath(
-                        "HybridStage2_region.model"
-                    ),
+                    model=bundle.joinpath("HybridStage2_region.model"),
                     all_bed=mapq0_bed,
                 )
             ],
@@ -869,7 +837,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         stage1_ins_fa = self.tmp_dir.joinpath("stage1_ins.fa")
         stage1_ins_bed = self.tmp_dir.joinpath("stage1_ins.bed")
         ins_driver = Driver(
-            reference=self.reference,
+            reference=ctx.reference,
             thread_count=self.cores,
             replace_rg=rg_info.replace_rg_args[0],
             input=lr_aln,
@@ -878,7 +846,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         ins_driver.add_algo(
             HybridStage1(
                 "-",
-                model=self.model_bundle.joinpath("HybridStage1_ins.model"),
+                model=bundle.joinpath("HybridStage1_ins.model"),
                 fa_file=stage1_ins_fa,
                 bed_file=stage1_ins_bed,
             )
@@ -901,7 +869,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         dag.add_job(stage1_fifo_job)
 
         stage1_driver = Driver(
-            reference=self.reference,
+            reference=ctx.reference,
             thread_count=self.cores,
             replace_rg=rg_info.replace_rg_args[0],
             input=lr_aln,
@@ -911,7 +879,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         stage1_driver.add_algo(
             HybridStage1(
                 stage1_fifo,
-                model=self.model_bundle.joinpath("HybridStage1.model"),
+                model=bundle.joinpath("HybridStage1.model"),
                 hap_bam="-",
                 hap_bed=stage1_hap_bed,
                 hap_vcf=stage1_hap_vcf,
@@ -938,12 +906,12 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         stage1_job = Job(
             cmds.hybrid_stage1(
                 out_aln=stage1_bam,
-                reference=self.reference,
+                reference=ctx.reference,
                 cores=self.cores,
                 readgroup=f"@RG\\tID:hybrid-18893\\tSM:{self.hybrid_rg_sm}",
                 ins_driver=ins_driver,
                 hap_fastq_fifo=stage1_fifo,
-                bwa_model=self.model_bundle.joinpath("HybridStage1_bwa.model"),
+                bwa_model=bundle.joinpath("HybridStage1_bwa.model"),
             ),
             "first-stage",
             self.cores,
@@ -964,7 +932,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             ctx,
             [
                 HybridStage2(
-                    model=self.model_bundle.joinpath("HybridStage2.model"),
+                    model=bundle.joinpath("HybridStage2.model"),
                     hap_bed=stage1_hap_bed,
                     unmap_bam=stage2_unmap_bam,
                     alt_bam=stage2_alt_bam,
@@ -985,10 +953,10 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
 
         suffix = "bam" if self.bam_format else "cram"
         stage3_aln = pathlib.Path(
-            str(self.output_vcf).replace(".vcf.gz", f"_sr_realigned.{suffix}")
+            str(ctx.output_vcf).replace(".vcf.gz", f"_sr_realigned.{suffix}")
         )
         stage3_driver = Driver(
-            reference=self.reference,
+            reference=ctx.reference,
             thread_count=self.cores,
             replace_rg=rg_info.replace_rg_args[0] + rg_info.replace_rg_args[1],
             input=lr_aln + sr_aln + [stage2_unmap_bam, stage2_alt_bam],
@@ -998,13 +966,13 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         stage3_driver.add_algo(
             HybridStage3(
                 "-",
-                model=self.model_bundle.joinpath("HybridStage3.model"),
+                model=bundle.joinpath("HybridStage3.model"),
             )
         )
         third_stage_job = Job(
             cmds.hybrid_stage3(
                 stage3_aln,
-                reference=self.reference,
+                reference=ctx.reference,
                 driver=stage3_driver,
                 cores=self.cores,
             ),
@@ -1077,7 +1045,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         )
         anno_target = self.tmp_dir.joinpath("combined_tmp_anno.vcf.gz")
         if self.skip_model_apply and not self.pop_vcf:
-            anno_target = self.output_vcf
+            anno_target = ctx.output_vcf
 
         anno_job = Job(
             cmds.cmd_pyexec_hybrid_anno(
@@ -1100,7 +1068,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
                 "combined_tmp_transfer.vcf.gz"
             )
             if self.skip_model_apply:
-                transfer_target = self.output_vcf
+                transfer_target = ctx.output_vcf
 
             transfer = TransferStage(
                 ctx=ctx,
@@ -1126,9 +1094,9 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         # Final normalize
         norm_job = Job(
             cmds.filter_norm(
-                self.output_vcf,
+                ctx.output_vcf,
                 apply_vcf,
-                self.reference,
+                ctx.reference,
                 exclude_homref=not self.gvcf,
             ),
             "final-norm",

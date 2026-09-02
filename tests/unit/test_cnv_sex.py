@@ -289,13 +289,6 @@ def test_validate_cnv_par_errors_in_a_dry_run_too():
     assert excinfo.value.code == 2
 
 
-def test_cnv_sex_args_for_a_male_sample_with_a_par_bed():
-    par_bed = pathlib.Path("/par.bed")
-    pipeline = _pipeline(sample_sex=SampleSex.MALE, cnv_par_bed=par_bed)
-
-    assert pipeline.cnv_sex_args() == ("M", par_bed)
-
-
 def test_resolve_cnv_par_bed_prefers_the_supplied_file(tmp_path):
     par_bed = tmp_path.joinpath("custom_par.bed")
     par_bed.write_text("chrX\t10000\t2781479\n")

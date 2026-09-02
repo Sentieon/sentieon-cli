@@ -154,8 +154,7 @@ class TestDNAscopeLRPopVcf:
         pipeline.pop_vcf = self.mock_pop_vcf
         
         # Mock methods to avoid real execution/checking
-        with patch("sentieon_cli.dnascope_longread.check_version", return_value=True), \
-             patch("sentieon_cli.dnascope_longread.DNAscopeLRPipeline.lr_align_inputs", return_value=([], set())), \
+        with patch("sentieon_cli.dnascope_longread.DNAscopeLRPipeline.lr_align_inputs", return_value=([], set())), \
              patch("sentieon_cli.dnascope_longread.DNAscopeLRPipeline.lr_align_fastq", return_value=([], set())), \
              patch("sentieon_cli.dnascope_longread.DNAscopeLRPipeline.mosdepth", return_value=set()), \
              patch("sentieon_cli.dnascope_longread.DNAscopeLRPipeline.merge_input_files", return_value=(pathlib.Path("merged.bam"), MagicMock())), \
@@ -177,8 +176,7 @@ class TestDNAscopeLRPopVcf:
         pipeline = self.create_pipeline()
         pipeline.pop_vcf = self.mock_pop_vcf
         
-        with patch("sentieon_cli.dnascope_longread.check_version", return_value=True), \
-             patch("sentieon_cli.dnascope_longread.DNAscopeLRPipeline.lr_align_inputs", return_value=([], set())), \
+        with patch("sentieon_cli.dnascope_longread.DNAscopeLRPipeline.lr_align_inputs", return_value=([], set())), \
              patch("sentieon_cli.dnascope_longread.DNAscopeLRPipeline.lr_align_fastq", return_value=([], set())), \
              patch("sentieon_cli.dnascope_longread.DNAscopeLRPipeline.mosdepth", return_value=set()), \
              patch("sentieon_cli.dnascope_longread.DNAscopeLRPipeline.merge_input_files", return_value=(pathlib.Path("merged.bam"), MagicMock())), \

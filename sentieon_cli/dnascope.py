@@ -47,10 +47,10 @@ from .stages.small_variants import (
     TransferApplyStage,
 )
 from .util import (
-    check_version,
     library_preloaded,
     parse_rg_line,
     path_arg,
+    require_versions,
     split_alignment,
     total_memory,
 )
@@ -272,9 +272,7 @@ class DNAscopePipeline(BasePipeline):
         self.no_split_alignment = False
 
     def validate(self) -> None:
-        if not self.output_vcf:
-            self.logger.error("output_vcf is required")
-            sys.exit(2)
+        self.required(self.output_vcf, "output_vcf")
 
         # uniquify pipeline attributes
         self.sr_r1_fastq = self.r1_fastq
@@ -462,19 +460,14 @@ class DNAscopePipeline(BasePipeline):
         self, dag: DAG, ctx: StageContext
     ) -> AlignResult:
         """Align input BAM/CRAM/uBAM/uCRAM files with bwa"""
-        if not self.model_bundle:
-            self.logger.error("model_bundle is required")
-            sys.exit(2)
+        bundle = self.required(self.model_bundle, "model_bundle")
 
-        if not self.skip_version_check:
-            for cmd, min_version in ALN_MIN_VERSIONS.items():
-                if not check_version(cmd, min_version):
-                    sys.exit(2)
+        require_versions(ALN_MIN_VERSIONS, skip=self.skip_version_check)
 
         return BwaRealignStage(
             ctx=ctx,
             inputs=self.sample_input,
-            model_bundle=self.model_bundle,
+            model_bundle=bundle,
             bam_format=self.bam_format,
             duplicate_marking=self.sr_duplicate_marking,
             input_ref=self.input_ref,
@@ -488,26 +481,21 @@ class DNAscopePipeline(BasePipeline):
         self, dag: DAG, ctx: StageContext
     ) -> AlignResult:
         """Align fastq files to the reference genome using bwa"""
-        if not self.model_bundle:
-            self.logger.error("model_bundle is required")
-            sys.exit(2)
+        bundle = self.required(self.model_bundle, "model_bundle")
 
         if not self.sr_r1_fastq and not self.sr_readgroups:
             return AlignResult(
                 jobs=[], terminal=set(), outputs=[], cleanup_paths=[]
             )
 
-        if not self.skip_version_check:
-            for cmd, min_version in FQ_MIN_VERSIONS.items():
-                if not check_version(cmd, min_version):
-                    sys.exit(2)
+        require_versions(FQ_MIN_VERSIONS, skip=self.skip_version_check)
 
         return BwaFastqStage(
             ctx=ctx,
             r1_fastq=self.sr_r1_fastq,
             r2_fastq=self.sr_r2_fastq,
             readgroups=self.sr_readgroups,
-            model_bundle=self.model_bundle,
+            model_bundle=bundle,
             numa_nodes=self.numa_nodes,
             bam_format=self.bam_format,
             duplicate_marking=self.sr_duplicate_marking,
@@ -537,12 +525,9 @@ class DNAscopePipeline(BasePipeline):
         upstream: Set[Job],
     ) -> SrPreprocessing:
         """Mark duplicates and collect metrics from the short reads"""
-        if not self.output_vcf:
-            self.logger.error("output_vcf is required")
-            sys.exit(2)
         suffix = "bam" if self.bam_format else "cram"
 
-        paths = MetricsPaths.from_output_vcf(self.output_vcf)
+        paths = MetricsPaths.from_output_vcf(ctx.output_vcf)
         paths.ensure_dir(self.dry_run)
 
         if self.sr_duplicate_marking == "none":
@@ -578,7 +563,7 @@ class DNAscopePipeline(BasePipeline):
             lc_extra_algos.extend(self.sr_metrics_algos(paths))
 
         deduped = pathlib.Path(
-            str(self.output_vcf).replace(".vcf.gz", f"_deduped.{suffix}")
+            str(ctx.output_vcf).replace(".vcf.gz", f"_deduped.{suffix}")
         )
         dedup_result = DedupStage(
             ctx=ctx,
@@ -636,41 +621,33 @@ class DNAscopePipeline(BasePipeline):
         upstream: Set[Job],
     ) -> None:
         """Call SNVs, indels, and SVs using DNAscope"""
-        if not self.model_bundle:
-            self.logger.error("model_bundle is required")
-            sys.exit(2)
-        if not self.output_vcf:
-            self.logger.error("output_vcf is required")
-            sys.exit(2)
+        bundle = self.required(self.model_bundle, "model_bundle")
 
-        if not self.skip_version_check:
-            for cmd, min_version in VARIANTS_MIN_VERSIONS.items():
-                if not check_version(cmd, min_version):
-                    sys.exit(2)
+        require_versions(VARIANTS_MIN_VERSIONS, skip=self.skip_version_check)
 
         out_gvcf = pathlib.Path(
-            str(self.output_vcf).replace(".vcf.gz", ".g.vcf.gz")
+            str(ctx.output_vcf).replace(".vcf.gz", ".g.vcf.gz")
         )
         out_svs_tmp = pathlib.Path(
-            str(self.output_vcf).replace(".vcf.gz", "_svs_tmp.vcf.gz")
+            str(ctx.output_vcf).replace(".vcf.gz", "_svs_tmp.vcf.gz")
         )
         out_svs = pathlib.Path(
-            str(self.output_vcf).replace(".vcf.gz", "_svs.vcf.gz")
+            str(ctx.output_vcf).replace(".vcf.gz", "_svs.vcf.gz")
         )
         pcr_indel_model = "NONE" if self.pcr_free else "CONSERVATIVE"
-        model = self.model_bundle.joinpath("dnascope.model")
+        model = bundle.joinpath("dnascope.model")
 
         # Call variants with DNAscope
         emit_mode = "variant"
-        ds_out = self.output_vcf
+        ds_out = ctx.output_vcf
         tmp_vcf = pathlib.Path(
-            str(self.output_vcf).replace(".vcf.gz", "_tmp.vcf.gz")
+            str(ctx.output_vcf).replace(".vcf.gz", "_tmp.vcf.gz")
         )
         if self.gvcf:
             emit_mode = "gvcf"
             ds_out = out_gvcf
             tmp_vcf = pathlib.Path(
-                str(self.output_vcf).replace(".vcf.gz", "_tmp.g.vcf.gz")
+                str(ctx.output_vcf).replace(".vcf.gz", "_tmp.g.vcf.gz")
             )
 
         algos: List[BaseAlgo] = [
@@ -716,7 +693,7 @@ class DNAscopePipeline(BasePipeline):
             GVCFtyperStage(
                 ctx=ctx,
                 gvcf=out_gvcf,
-                output=self.output_vcf,
+                output=ctx.output_vcf,
                 interval=self.bed,
             ).add_to(dag, transfer_apply.terminal)
 

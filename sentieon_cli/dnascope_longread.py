@@ -50,11 +50,12 @@ from .stages.small_variants import (
 from .stages.transfer import TransferConfig, TransferStage
 from .util import (
     __version__,
-    check_version,
+    library_preloaded,
     parse_rg_line,
     path_arg,
-    library_preloaded,
+    require_versions,
     vcf_id,
+    versions_available,
 )
 
 TOOL_MIN_VERSIONS = {
@@ -493,22 +494,15 @@ class DNAscopeLRPipeline(BasePipeline):
         """
         Align reads to the reference genome using minimap2
         """
-        if not self.output_vcf:
-            self.logger.error("output_vcf is required")
-            sys.exit(2)
-        if not self.model_bundle:
-            self.logger.error("model_bundle is required")
-            sys.exit(2)
-        if not self.skip_version_check:
-            for cmd, min_version in ALN_MIN_VERSIONS.items():
-                if not check_version(cmd, min_version):
-                    sys.exit(2)
+        output_vcf = self.required(self.output_vcf, "output_vcf")
+        bundle = self.required(self.model_bundle, "model_bundle")
+        require_versions(ALN_MIN_VERSIONS, skip=self.skip_version_check)
 
         result = Minimap2RealignStage(
             ctx=self.stage_context(),
             inputs=self.lr_aln,
-            model_bundle=self.model_bundle,
-            sample_name=self.output_vcf.name.replace(".vcf.gz", ""),
+            model_bundle=bundle,
+            sample_name=output_vcf.name.replace(".vcf.gz", ""),
             bam_format=self.bam_format,
             input_ref=self.lr_input_ref,
             fastq_taglist=self.fastq_taglist,
@@ -521,22 +515,17 @@ class DNAscopeLRPipeline(BasePipeline):
         """
         Align fastq to the reference genome using minimap2
         """
-        if not self.model_bundle:
-            self.logger.error("model_bundle is required")
-            sys.exit(2)
+        bundle = self.required(self.model_bundle, "model_bundle")
         if self.fastq is None and self.readgroups is None:
             return ([], set())
 
-        if not self.skip_version_check:
-            for cmd, min_version in FQ_MIN_VERSIONS.items():
-                if not check_version(cmd, min_version):
-                    sys.exit(2)
+        require_versions(FQ_MIN_VERSIONS, skip=self.skip_version_check)
 
         result = Minimap2FastqStage(
             ctx=self.stage_context(),
             fastq=self.fastq,
             readgroups=self.readgroups,
-            model_bundle=self.model_bundle,
+            model_bundle=bundle,
             bam_format=self.bam_format,
             unzip=find_unzip(self.logger),
             minimap2_args=self.minimap2_args,
@@ -547,19 +536,14 @@ class DNAscopeLRPipeline(BasePipeline):
     def mosdepth(self, sample_input: List[pathlib.Path]) -> Set[Job]:
         """Run mosdepth for QC"""
 
-        if not self.skip_version_check:
-            if not all(
-                [
-                    check_version(cmd, min_version)
-                    for (cmd, min_version) in MOSDEPTH_MIN_VERSIONS.items()
-                ]
-            ):
-                self.logger.warning(
-                    "Skipping mosdepth. mosdepth version %s or later "
-                    "not found",
-                    MOSDEPTH_MIN_VERSIONS["mosdepth"],
-                )
-                return set()
+        if not versions_available(
+            MOSDEPTH_MIN_VERSIONS, skip=self.skip_version_check
+        ):
+            self.logger.warning(
+                "Skipping mosdepth. mosdepth version %s or later not found",
+                MOSDEPTH_MIN_VERSIONS["mosdepth"],
+            )
+            return set()
 
         mosdepth_jobs = set()
         for i, input_file in enumerate(sample_input):
@@ -587,10 +571,7 @@ class DNAscopeLRPipeline(BasePipeline):
         """
         Merge the aligned reads into a single BAM
         """
-        if not self.skip_version_check:
-            for cmd, min_version in MERGE_MIN_VERSIONS.items():
-                if not check_version(cmd, min_version):
-                    sys.exit(2)
+        require_versions(MERGE_MIN_VERSIONS, skip=self.skip_version_check)
 
         # Merge the sample_input into a single BAM
         merged_bam = self.tmp_dir.joinpath("longread_merged.bam")
@@ -611,10 +592,7 @@ class DNAscopeLRPipeline(BasePipeline):
         """
         Call SVs with pbsv
         """
-        if not self.skip_version_check:
-            for cmd, min_version in PBSV_MIN_VERSIONS.items():
-                if not check_version(cmd, min_version):
-                    sys.exit(2)
+        require_versions(PBSV_MIN_VERSIONS, skip=self.skip_version_check)
 
         # pbsv discover
         pbsv_discover_fn = str(self.output_vcf).replace(
@@ -662,15 +640,14 @@ class DNAscopeLRPipeline(BasePipeline):
         """
         Call CNVs with HiFiCNV
         """
-        if not self.skip_version_check:
-            for cmd, min_version in HIFICNV_MIN_VERSIONS.items():
-                if not check_version(cmd, min_version):
-                    self.logger.warning(
-                        "Skipping hificnv. hificnv version %s or later not "
-                        "found",
-                        HIFICNV_MIN_VERSIONS["hificnv"],
-                    )
-                    return None
+        if not versions_available(
+            HIFICNV_MIN_VERSIONS, skip=self.skip_version_check
+        ):
+            self.logger.warning(
+                "Skipping hificnv. hificnv version %s or later not found",
+                HIFICNV_MIN_VERSIONS["hificnv"],
+            )
+            return None
 
         hifi_cnv_fn = str(self.output_vcf).replace(".vcf.gz", ".hificnv")
         hificnv_cmd = [
@@ -723,24 +700,13 @@ class DNAscopeLRPipeline(BasePipeline):
         the diploid HP model. The three call sets are patched, filtered and
         merged into the output VCF, with optional haploid calling on top.
         """
-        if not self.model_bundle:
-            self.logger.error("model_bundle is required")
-            sys.exit(2)
-        if not self.reference:
-            self.logger.error("reference is required")
-            sys.exit(2)
-        if not self.output_vcf:
-            self.logger.error("output_vcf is required")
-            sys.exit(2)
-        if not self.skip_version_check:
-            for check_cmd, min_version in TOOL_MIN_VERSIONS.items():
-                if not check_version(check_cmd, min_version):
-                    sys.exit(2)
+        bundle = self.required(self.model_bundle, "model_bundle")
+        require_versions(TOOL_MIN_VERSIONS, skip=self.skip_version_check)
 
         # First pass - diploid calling
         diploid_gvcf_fn = self.tmp_dir.joinpath("out_diploid.g.vcf.gz")
         diploid_tmp_vcf = self.tmp_dir.joinpath("out_diploid_tmp.vcf.gz")
-        diploid_model = self.model_bundle.joinpath("diploid_model")
+        diploid_model = bundle.joinpath("diploid_model")
         diploid_algos: List[BaseAlgo] = []
         if self.gvcf:
             diploid_algos.append(
@@ -748,7 +714,7 @@ class DNAscopeLRPipeline(BasePipeline):
                     diploid_gvcf_fn,
                     dbsnp=self.dbsnp,
                     emit_mode="gvcf",
-                    model=self.model_bundle.joinpath("gvcf_model"),
+                    model=bundle.joinpath("gvcf_model"),
                 )
             )
         diploid_algos.append(
@@ -847,7 +813,7 @@ class DNAscopeLRPipeline(BasePipeline):
             bed = self.tmp_dir.joinpath("reference.bed")
             fai_to_bed_job = Job(
                 cmds.cmd_fai_to_bed(
-                    pathlib.Path(str(self.reference) + ".fai"),
+                    pathlib.Path(str(ctx.reference) + ".fai"),
                     bed,
                 ),
                 "fai-to-bed",
@@ -909,8 +875,8 @@ class DNAscopeLRPipeline(BasePipeline):
             repeat_model_deps.add(repeatmodel_job)
 
         # Second pass - phased variants
-        haploid_model = self.model_bundle.joinpath("haploid_model")
-        haploid_hp_model = self.model_bundle.joinpath("haploid_hp_model")
+        haploid_model = bundle.joinpath("haploid_model")
+        haploid_hp_model = bundle.joinpath("haploid_hp_model")
         for phase in (1, 2):
             hp_std_vcf = self.tmp_dir.joinpath(
                 f"out_hap{phase}_nohp_tmp.vcf.gz"
@@ -1022,7 +988,7 @@ class DNAscopeLRPipeline(BasePipeline):
                 DNAscopeHP(
                     diploid_unphased_hp,
                     dbsnp=self.dbsnp,
-                    model=self.model_bundle.joinpath("diploid_hp_model"),
+                    model=bundle.joinpath("diploid_hp_model"),
                     pcr_indel_model=self.repeat_model,
                 )
             ],
@@ -1068,7 +1034,7 @@ class DNAscopeLRPipeline(BasePipeline):
             raw_vcf=diploid_unphased_patch,
             transfer=unphased_transfer,
             apply=ApplySpec(
-                model=self.model_bundle.joinpath("diploid_model_unphased"),
+                model=bundle.joinpath("diploid_model_unphased"),
                 output=diploid_unphased,
                 name="model-apply-unphased",
             ),
@@ -1078,7 +1044,7 @@ class DNAscopeLRPipeline(BasePipeline):
         # merge calls to create the output
         diploid_merged_vcf = self.tmp_dir.joinpath("out_diploid_merged.vcf.gz")
         merge_out_vcf = (
-            diploid_merged_vcf if self.haploid_bed else self.output_vcf
+            diploid_merged_vcf if self.haploid_bed else ctx.output_vcf
         )
         merge_job = Job(
             cmds.cmd_pyexec_vcf_mod_merge(
@@ -1101,7 +1067,7 @@ class DNAscopeLRPipeline(BasePipeline):
         if self.gvcf:
             gvcf_combine_job = Job(
                 cmds.cmd_pyexec_gvcf_combine(
-                    self.reference,
+                    ctx.reference,
                     str(diploid_gvcf_fn),
                     str(merge_out_vcf),
                     self.cores,
@@ -1142,7 +1108,7 @@ class DNAscopeLRPipeline(BasePipeline):
                     dbsnp=self.dbsnp,
                     emit_mode="gvcf",
                     ploidy=1,
-                    model=self.model_bundle.joinpath("gvcf_model"),
+                    model=bundle.joinpath("gvcf_model"),
                 )
             )
         haploid_call = DNAscopeStage(
@@ -1169,7 +1135,7 @@ class DNAscopeLRPipeline(BasePipeline):
 
         haploid_concat_job = Job(
             cmds.bcftools_concat(
-                self.output_vcf,
+                ctx.output_vcf,
                 [diploid_merged_vcf, haploid_out_fn],
             ),
             "haploid-diploid-concat",
@@ -1182,7 +1148,7 @@ class DNAscopeLRPipeline(BasePipeline):
             return
 
         output_gvcf = pathlib.Path(
-            str(self.output_vcf).replace(".vcf.gz", ".g.vcf.gz")
+            str(ctx.output_vcf).replace(".vcf.gz", ".g.vcf.gz")
         )
         diploid_gvcf = pathlib.Path(
             str(diploid_merged_vcf).replace(".vcf.gz", ".g.vcf.gz")
@@ -1192,7 +1158,7 @@ class DNAscopeLRPipeline(BasePipeline):
         )
         haploid_gvcf_combine_job = Job(
             cmds.cmd_pyexec_gvcf_combine(
-                self.reference,
+                ctx.reference,
                 str(haploid_gvcf_fn),
                 str(haploid_out_fn),
                 self.cores,
@@ -1226,13 +1192,8 @@ class DNAscopeLRPipeline(BasePipeline):
         """
         Call SVs using Sentieon LongReadSV
         """
-        if not self.model_bundle:
-            self.logger.error("model_bundle is required")
-            sys.exit(2)
-        if not self.skip_version_check:
-            for cmd, min_version in SV_MIN_VERSIONS.items():
-                if not check_version(cmd, min_version):
-                    sys.exit(2)
+        bundle = self.required(self.model_bundle, "model_bundle")
+        require_versions(SV_MIN_VERSIONS, skip=self.skip_version_check)
 
         sv_vcf = pathlib.Path(
             str(self.output_vcf).replace(".vcf.gz", ".sv.vcf.gz")
@@ -1247,7 +1208,7 @@ class DNAscopeLRPipeline(BasePipeline):
         driver.add_algo(
             LongReadSV(
                 sv_vcf,
-                self.model_bundle.joinpath("longreadsv.model"),
+                bundle.joinpath("longreadsv.model"),
             )
         )
         longreadsv_job = Job(

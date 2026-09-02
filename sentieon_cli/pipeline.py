@@ -11,7 +11,7 @@ import pathlib
 import shutil
 import sys
 import time
-from typing import Any, Dict, List, Optional, Tuple, TypeVar
+from typing import Any, Dict, List, Optional, TypeVar
 
 import packaging.version
 
@@ -32,10 +32,9 @@ from .stages.metrics import MetricsPaths
 from .util import (
     SampleSex,
     __version__,
-    check_version,
-    cnvscope_sex_args,
     path_arg,
     tmp,
+    versions_available,
 )
 
 MULTIQC_MIN_VERSION = {
@@ -409,25 +408,17 @@ class BasePipeline(ABC):
         )
         sys.exit(2)
 
-    def cnv_sex_args(self) -> Tuple[Optional[str], Optional[pathlib.Path]]:
-        """The CNVscope `--sex` and `--par` arguments for this run"""
-        return cnvscope_sex_args(self.sample_sex, self.cnv_par_bed)
-
     def multiqc(self) -> Optional[Job]:
         """Run MultiQC on the metrics files"""
 
-        if not self.skip_version_check:
-            if not all(
-                [
-                    check_version(cmd, min_version)
-                    for (cmd, min_version) in MULTIQC_MIN_VERSION.items()
-                ]
-            ):
-                self.logger.warning(
-                    "Skipping MultiQC. MultiQC version %s or later not found",
-                    MULTIQC_MIN_VERSION["multiqc"],
-                )
-                return None
+        if not versions_available(
+            MULTIQC_MIN_VERSION, skip=self.skip_version_check
+        ):
+            self.logger.warning(
+                "Skipping MultiQC. MultiQC version %s or later not found",
+                MULTIQC_MIN_VERSION["multiqc"],
+            )
+            return None
 
         metrics_dir = MetricsPaths.from_output_vcf(
             pathlib.Path(str(self.output_vcf))
