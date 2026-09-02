@@ -12,8 +12,9 @@ import re
 import shlex
 import shutil
 import subprocess as sp
+import sys
 import tempfile
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Mapping, Optional, Tuple
 
 import packaging.version
 
@@ -135,6 +136,45 @@ def check_version(
         )
         return False
     return True
+
+
+def require_versions(
+    min_versions: Mapping[str, Optional[packaging.version.Version]],
+    *,
+    skip: bool = False,
+) -> None:
+    """Exit unless every executable meets its minimum version.
+
+    `check_version` has already logged the reason, so the exit is silent.
+    Pass `skip=True` (the pipelines' `--skip_version_check`) to do nothing.
+
+    A `Mapping` rather than a `Dict`, so the pipelines' module-level
+    `*_MIN_VERSIONS` constants -- some of which mypy infers as
+    `Dict[str, Version]`, with no `None` entry -- are accepted.
+    """
+    if skip:
+        return
+    for cmd, min_version in min_versions.items():
+        if not check_version(cmd, min_version):
+            sys.exit(2)
+
+
+def versions_available(
+    min_versions: Mapping[str, Optional[packaging.version.Version]],
+    *,
+    skip: bool = False,
+) -> bool:
+    """Whether every executable meets its minimum version.
+
+    For optional tools, where a missing or outdated executable skips a step
+    rather than ending the run. `skip=True` reports them as available.
+    """
+    if skip:
+        return True
+    return all(
+        check_version(cmd, min_version)
+        for cmd, min_version in min_versions.items()
+    )
 
 
 def path_arg(

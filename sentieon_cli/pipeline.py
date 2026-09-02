@@ -11,7 +11,7 @@ import pathlib
 import shutil
 import sys
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TypeVar
 
 import packaging.version
 
@@ -30,6 +30,7 @@ from .shard import (
     detect_reference_build,
     par_bed_for_build,
 )
+from .stages.base import StageContext
 from .util import (
     SampleSex,
     __version__,
@@ -44,6 +45,8 @@ MULTIQC_MIN_VERSION = {
 }
 
 BWA_INDEX_SUFFIXES = (".amb", ".ann", ".bwt", ".pac", ".sa")
+
+T = TypeVar("T")
 
 
 class BasePipeline(ABC):
@@ -245,6 +248,47 @@ class BasePipeline(ABC):
                 f"Waiting jobs: {dag.waiting_jobs}\n"
                 f"Ready jobs: {dag.ready_jobs}\n"
             )
+
+    def required(self, value: Optional[T], name: str) -> T:
+        """Return `value`, ending the run when it was not supplied.
+
+        Narrows an optional pipeline attribute to its value, so callers do
+        not have to repeat the "missing argument" check.
+        """
+        if value is None:
+            self.logger.error("%s is required", name)
+            sys.exit(2)
+        return value
+
+    def stage_context(self) -> StageContext:
+        """The run-wide settings this pipeline's stages need.
+
+        Built fresh on every call, so it always reflects the pipeline's
+        current attributes. Only available once `main` has created the
+        run's temporary directory.
+        """
+        if self.reference is None:
+            self.logger.error("reference is required")
+            sys.exit(2)
+        if self.output_vcf is None:
+            self.logger.error("output_vcf is required")
+            sys.exit(2)
+        tmp_dir: Optional[pathlib.Path] = getattr(self, "tmp_dir", None)
+        if tmp_dir is None:
+            self.logger.error(
+                "The temporary directory has not been created yet; "
+                "`stage_context` is only available after `main` sets "
+                "`tmp_dir`"
+            )
+            sys.exit(2)
+        return StageContext(
+            reference=self.reference,
+            output_vcf=self.output_vcf,
+            tmp_dir=tmp_dir,
+            cores=self.cores,
+            dry_run=self.dry_run,
+            skip_version_check=self.skip_version_check,
+        )
 
     @abstractmethod
     def validate(self) -> None:
