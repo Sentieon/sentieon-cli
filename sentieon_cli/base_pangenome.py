@@ -4,28 +4,23 @@ A base class for pangenome pipelines
 
 import copy
 import pathlib
-import sys
-from typing import List, Optional, Tuple
-
-from importlib.resources import files
+from typing import List, Optional
 
 from . import command_strings as cmds
 from .driver import (
     AlignmentStat,
+    BaseAlgo,
     BaseDistributionByCycle,
     CoverageMetrics,
-    Dedup,
-    Driver,
     GCBias,
     InsertSizeMetricAlgo,
-    LocusCollector,
     MeanQualityByCycle,
     QualDistribution,
     WgsMetricsAlgo,
 )
 from .job import Job
 from .pipeline import BasePipeline
-from .shell_pipeline import Command, Pipeline
+from .stages.metrics import MetricsPaths
 from .util import path_arg
 
 
@@ -141,130 +136,15 @@ class BasePangenome(BasePipeline):
 
         return kmc_job
 
-    def build_dedup_job(
-        self,
-        output_bam,
-        input_bam: List[pathlib.Path],
-        tag: str,
-        left_align_rgid: Optional[str] = None,
-        metrics: Optional[pathlib.Path] = None,
-    ) -> Tuple[Job, Job]:
-        """Build deduplication job"""
-        score_file = self.tmp_dir.joinpath(f"sample-{tag}-score.txt.gz")
-
-        read_filters = []
-        if left_align_rgid:
-            read_filters.append(
-                f"IndelLeftAlignReadTransform,rgid={left_align_rgid}"
-            )
-
-        # LocusCollector + Dedup
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-            input=input_bam,
-            read_filter=read_filters,
-        )
-        driver.add_algo(LocusCollector(score_file))
-
-        lc_job = Job(
-            Pipeline(Command(*driver.build_cmd())),
-            f"locuscollector-{tag}",
-            self.cores,
-            task_name="dedup",
-        )
-
-        driver2 = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-            input=input_bam,
-            read_filter=read_filters,
-        )
-        driver2.add_algo(Dedup(output_bam, score_file, metrics=metrics))
-
-        dedup_job = Job(
-            Pipeline(Command(*driver2.build_cmd())),
-            f"dedup-{tag}",
-            self.cores,
-            task_name="dedup",
-        )
-
-        return lc_job, dedup_job
-
-    def build_metrics_job(
-        self,
-        sample_input: List[pathlib.Path],
-    ) -> Tuple[Job, Job]:
-        """Build a metrics job"""
-        if not self.output_vcf:
-            self.logger.error("output_vcf is required")
-            sys.exit(2)
-
-        # Create the metrics directory
-        sample_name = self.output_vcf.name.replace(".vcf.gz", "")
-        metric_base = sample_name + ".txt"
-        metrics_dir = pathlib.Path(
-            str(self.output_vcf).replace(".vcf.gz", "_metrics")
-        )
-        if not self.dry_run:
-            metrics_dir.mkdir(exist_ok=True)
-
-        is_metrics = metrics_dir.joinpath(metric_base + ".insert_size.txt")
-        mqbc_metrics = metrics_dir.joinpath(
-            metric_base + ".mean_qual_by_cycle.txt"
-        )
-        bdbc_metrics = metrics_dir.joinpath(
-            metric_base + ".base_distribution_by_cycle.txt"
-        )
-        qualdist_metrics = metrics_dir.joinpath(
-            metric_base + ".qual_distribution.txt"
-        )
-        as_metrics = metrics_dir.joinpath(metric_base + ".alignment_stat.txt")
-        coverage_metrics = metrics_dir.joinpath("coverage")
-
-        # WGS metrics
-        wgs_metrics = metrics_dir.joinpath(metric_base + ".wgs.txt")
-        gc_metrics = metrics_dir.joinpath(metric_base + ".gc_bias.txt")
-        gc_summary = metrics_dir.joinpath(metric_base + ".gc_bias_summary.txt")
-
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-            input=sample_input,
-        )
-
-        driver.add_algo(InsertSizeMetricAlgo(is_metrics))
-        driver.add_algo(MeanQualityByCycle(mqbc_metrics))
-        driver.add_algo(BaseDistributionByCycle(bdbc_metrics))
-        driver.add_algo(QualDistribution(qualdist_metrics))
-        driver.add_algo(AlignmentStat(as_metrics))
-        driver.add_algo(GCBias(gc_metrics, summary=gc_summary))
-        driver.add_algo(WgsMetricsAlgo(wgs_metrics, include_unpaired="true"))
-        driver.add_algo(CoverageMetrics(coverage_metrics))
-
-        metrics_job = Job(
-            Pipeline(Command(*driver.build_cmd())),
-            "metrics",
-            0,
-            task_name="metrics",
-        )
-
-        rehead_script = pathlib.Path(
-            str(
-                files("sentieon_cli.scripts").joinpath("rehead_wgs_metrics.py")
-            )
-        )
-        rehead_job = Job(
-            Pipeline(
-                Command(
-                    sys.executable,
-                    str(rehead_script),
-                    "--metrics_file",
-                    str(wgs_metrics),
-                )
-            ),
-            "Rehead metrics",
-            0,
-            task_name="metrics",
-        )
-        return (metrics_job, rehead_job)
+    def pangenome_metrics_algos(self, paths: MetricsPaths) -> List[BaseAlgo]:
+        """The metrics collected from a deduplicated pangenome alignment"""
+        return [
+            InsertSizeMetricAlgo(paths.insert_size),
+            MeanQualityByCycle(paths.mean_qual_by_cycle),
+            BaseDistributionByCycle(paths.base_distribution_by_cycle),
+            QualDistribution(paths.qual_distribution),
+            AlignmentStat(paths.alignment_stat),
+            GCBias(paths.gc_bias, summary=paths.gc_bias_summary),
+            WgsMetricsAlgo(paths.wgs, include_unpaired="true"),
+            CoverageMetrics(paths.coverage),
+        ]

@@ -4,6 +4,7 @@ DNAscope alignment and variant calling
 
 import argparse
 import copy
+from dataclasses import dataclass, field
 import itertools
 import os
 import pathlib
@@ -13,15 +14,13 @@ from typing import List, Optional, Set, Tuple
 
 import packaging.version
 
-from importlib.resources import files
-
 from . import command_strings as cmds
 from .dag import DAG
 from .driver import (
     AlignmentStat,
+    BaseAlgo,
     BaseDistributionByCycle,
     CoverageMetrics,
-    Dedup,
     DNAModelApply,
     DNAscope,
     Driver,
@@ -30,7 +29,6 @@ from .driver import (
     HsMetricAlgo,
     InsertSizeMetricAlgo,
     MeanQualityByCycle,
-    LocusCollector,
     QualDistribution,
     SVSolver,
     WgsMetricsAlgo,
@@ -38,6 +36,9 @@ from .driver import (
 from .job import Job
 from .pipeline import BasePipeline
 from .shell_pipeline import Command, Pipeline
+from .stages.base import StageContext
+from .stages.dedup import DedupStage
+from .stages.metrics import MetricsPaths, MetricsStage
 from .util import (
     check_version,
     library_preloaded,
@@ -59,6 +60,21 @@ FQ_MIN_VERSIONS = {
 VARIANTS_MIN_VERSIONS = {
     "sentieon driver": packaging.version.Version("202308"),
 }
+
+
+@dataclass
+class SrPreprocessing:
+    """The short-read dedup and metrics jobs added to a DAG.
+
+    * ``deduped`` -- the alignment to call variants from; the input files
+      unchanged when duplicate marking is off.
+    * ``dedup_job`` -- the Dedup job, absent when duplicate marking is off.
+    * ``qc_jobs`` -- every metrics-producing job, for MultiQC to wait on.
+    """
+
+    deduped: List[pathlib.Path]
+    dedup_job: Optional[Job] = None
+    qc_jobs: List[Job] = field(default_factory=list)
 
 
 class DNAscopePipeline(BasePipeline):
@@ -384,6 +400,7 @@ class DNAscopePipeline(BasePipeline):
         """Build the DAG for the pipeline"""
         self.logger.info("Building the DAG")
         dag = DAG()
+        ctx = self.stage_context()
 
         # Alignment
         align_jobs: Set[Job] = set()
@@ -399,25 +416,16 @@ class DNAscopePipeline(BasePipeline):
         sample_input += aligned_fastq
 
         # Dedup and metrics
-        (
-            deduped,
-            lc_job,
-            dedup_job,
-            metrics_job,
-            rehead_job,
-        ) = self.dedup_and_metrics(sample_input)
-        if lc_job:
-            dag.add_job(lc_job, align_jobs.union(align_fastq_jobs))
-            if dedup_job:
-                dag.add_job(dedup_job, {lc_job})
-                if metrics_job:
-                    dag.add_job(metrics_job, {dedup_job})
-                    if rehead_job:
-                        dag.add_job(rehead_job, {metrics_job})
-                if bam_rm_job:
-                    dag.add_job(bam_rm_job, {dedup_job})
-                if fq_rm_job:
-                    dag.add_job(fq_rm_job, {dedup_job})
+        preprocessing = self.add_sr_preprocessing(
+            dag, ctx, sample_input, align_jobs.union(align_fastq_jobs)
+        )
+        deduped = preprocessing.deduped
+        dedup_job = preprocessing.dedup_job
+        if dedup_job:
+            if bam_rm_job:
+                dag.add_job(bam_rm_job, {dedup_job})
+            if fq_rm_job:
+                dag.add_job(fq_rm_job, {dedup_job})
 
         # Small variants
         if not self.skip_small_variants:
@@ -447,16 +455,8 @@ class DNAscopePipeline(BasePipeline):
         # Multiqc
         if not self.skip_multiqc:
             multiqc_job = self.multiqc()
-            multiqc_dependencies: Set[Job] = set()
-            if lc_job:
-                multiqc_dependencies.add(lc_job)
-            if metrics_job:
-                multiqc_dependencies.add(metrics_job)
-            if rehead_job:
-                multiqc_dependencies.add(rehead_job)
-
             if multiqc_job:
-                dag.add_job(multiqc_job, multiqc_dependencies)
+                dag.add_job(multiqc_job, set(preprocessing.qc_jobs))
         return dag
 
     def sr_align_inputs(self) -> Tuple[List[pathlib.Path], Set[Job], Job]:
@@ -629,188 +629,116 @@ class DNAscopePipeline(BasePipeline):
 
         return (res, jobs, rm_job)
 
-    def dedup_and_metrics(
+    def sr_metrics_algos(self, paths: MetricsPaths) -> List[BaseAlgo]:
+        """The metrics that do not need duplicate-marked reads"""
+        algos: List[BaseAlgo] = [
+            MeanQualityByCycle(paths.mean_qual_by_cycle),
+            BaseDistributionByCycle(paths.base_distribution_by_cycle),
+            QualDistribution(paths.qual_distribution),
+            AlignmentStat(paths.alignment_stat),
+        ]
+        if self.assay == "WGS":
+            algos.append(GCBias(paths.gc_bias, summary=paths.gc_bias_summary))
+        return algos
+
+    def add_sr_preprocessing(
         self,
-        sample_input,
-    ) -> Tuple[
-        List[pathlib.Path],
-        Optional[Job],
-        Optional[Job],
-        Optional[Job],
-        Optional[Job],
-    ]:
-        """Perform dedup and metrics collection"""
+        dag: DAG,
+        ctx: StageContext,
+        sample_input: List[pathlib.Path],
+        upstream: Set[Job],
+    ) -> SrPreprocessing:
+        """Mark duplicates and collect metrics from the short reads"""
         if not self.output_vcf:
             self.logger.error("output_vcf is required")
             sys.exit(2)
         suffix = "bam" if self.bam_format else "cram"
 
-        # Create the metrics directory
-        sample_name = self.output_vcf.name.replace(".vcf.gz", "")
-        metric_base = sample_name + ".txt"
-        metrics_dir = pathlib.Path(
-            str(self.output_vcf).replace(".vcf.gz", "_metrics")
-        )
-        if not self.dry_run:
-            metrics_dir.mkdir(exist_ok=True)
-
-        # LocusCollector and Metrics
-        out_score = metrics_dir.joinpath(metric_base + ".score.txt.gz")
-        is_metrics = metrics_dir.joinpath(metric_base + ".insert_size.txt")
-        mqbc_metrics = metrics_dir.joinpath(
-            metric_base + ".mean_qual_by_cycle.txt"
-        )
-        bdbc_metrics = metrics_dir.joinpath(
-            metric_base + ".base_distribution_by_cycle.txt"
-        )
-        qualdist_metrics = metrics_dir.joinpath(
-            metric_base + ".qual_distribution.txt"
-        )
-        as_metrics = metrics_dir.joinpath(metric_base + ".alignment_stat.txt")
-        coverage_metrics = metrics_dir.joinpath("coverage")
-
-        # WES metrics
-        hs_metrics = metrics_dir.joinpath(
-            metric_base + ".hybrid-selection.txt"
-        )
-
-        # WGS metrics
-        wgs_metrics = metrics_dir.joinpath(metric_base + ".wgs.txt")
-        gc_metrics = metrics_dir.joinpath(metric_base + ".gc_bias.txt")
-        gc_summary = metrics_dir.joinpath(metric_base + ".gc_bias_summary.txt")
-
-        lc_job = None
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-            input=sample_input,
-        )
-        if self.sr_duplicate_marking != "none":
-            driver.add_algo(
-                LocusCollector(
-                    out_score,
-                    consensus=self.consensus,
-                )
-            )
-
-        # Prefer to run InsertSizeMetricAlgo after duplicate marking
-        if not self.skip_metrics and (
-            (self.assay == "WES" and not self.bed)
-            or self.sr_duplicate_marking == "none"
-        ):
-            driver.add_algo(InsertSizeMetricAlgo(is_metrics))
-
-        if not self.skip_metrics:
-            driver.add_algo(MeanQualityByCycle(mqbc_metrics))
-            driver.add_algo(BaseDistributionByCycle(bdbc_metrics))
-            driver.add_algo(QualDistribution(qualdist_metrics))
-            driver.add_algo(AlignmentStat(as_metrics))
-            if self.assay == "WGS":
-                driver.add_algo(GCBias(gc_metrics, summary=gc_summary))
-
-        if not (self.sr_duplicate_marking == "none" and self.skip_metrics):
-            lc_job = Job(
-                Pipeline(Command(*driver.build_cmd())),
-                "locuscollector",
-                self.cores,
-                task_name="dedup",
-            )
+        paths = MetricsPaths.from_output_vcf(self.output_vcf)
+        paths.ensure_dir(self.dry_run)
 
         if self.sr_duplicate_marking == "none":
-            return (sample_input, lc_job, None, None, None)
+            # Without duplicate marking there is nothing to collect after
+            # the fact, so every metric comes from one pass over the input
+            if self.skip_metrics:
+                return SrPreprocessing(
+                    deduped=sample_input, dedup_job=None, qc_jobs=[]
+                )
+            metrics_result = MetricsStage(
+                ctx=ctx,
+                inputs=sample_input,
+                algos=[
+                    InsertSizeMetricAlgo(paths.insert_size),
+                    *self.sr_metrics_algos(paths),
+                ],
+                name="metrics",
+                task_name="metrics",
+                threads=ctx.cores,
+            ).add_to(dag, upstream)
+            return SrPreprocessing(
+                deduped=sample_input,
+                dedup_job=None,
+                qc_jobs=list(metrics_result.jobs),
+            )
 
-        # Dedup
+        # Metrics that ride along on the LocusCollector pass
+        lc_extra_algos: List[BaseAlgo] = []
+        if not self.skip_metrics:
+            # Prefer to run InsertSizeMetricAlgo after duplicate marking
+            if self.assay == "WES" and not self.bed:
+                lc_extra_algos.append(InsertSizeMetricAlgo(paths.insert_size))
+            lc_extra_algos.extend(self.sr_metrics_algos(paths))
+
         deduped = pathlib.Path(
             str(self.output_vcf).replace(".vcf.gz", f"_deduped.{suffix}")
         )
-        dedup_metrics = metrics_dir.joinpath(
-            metric_base + ".dedup_metrics.txt"
-        )
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-            input=sample_input,
-        )
-        driver.add_algo(
-            Dedup(
-                deduped,
-                out_score,
-                cram_write_options="version=3.0,compressor=rans",
-                metrics=dedup_metrics,
-                rmdup=(self.sr_duplicate_marking == "rmdup"),
-            )
-        )
-        dedup_job = Job(
-            Pipeline(Command(*driver.build_cmd())),
-            "dedup",
-            self.cores,
-            task_name="dedup",
-        )
+        dedup_result = DedupStage(
+            ctx=ctx,
+            inputs=sample_input,
+            output=deduped,
+            score_file=paths.score,
+            consensus=self.consensus,
+            rmdup=(self.sr_duplicate_marking == "rmdup"),
+            cram_write_options="version=3.0,compressor=rans",
+            dedup_metrics=paths.dedup_metrics,
+            lc_extra_algos=lc_extra_algos,
+        ).add_to(dag, upstream)
+        qc_jobs: List[Job] = [dedup_result.lc_job]
 
-        if self.skip_metrics:
-            return ([deduped], lc_job, dedup_job, None, None)
+        # HsMetricAlgo and WgsMetricsAlgo run after duplicate marking to
+        # account for duplicate reads
+        post_algos: List[BaseAlgo] = []
+        rehead_metrics: Optional[pathlib.Path] = None
+        if not self.skip_metrics:
+            if self.assay == "WES" and self.bed:
+                post_algos = [
+                    HsMetricAlgo(paths.hybrid_selection, self.bed, self.bed),
+                    InsertSizeMetricAlgo(paths.insert_size),
+                ]
+            elif self.assay == "WGS":
+                post_algos = [
+                    InsertSizeMetricAlgo(paths.insert_size),
+                    WgsMetricsAlgo(paths.wgs, include_unpaired="true"),
+                    CoverageMetrics(paths.coverage),
+                ]
+                # Rehead WGS metrics so they are recognized by MultiQC
+                rehead_metrics = paths.wgs
+        if post_algos:
+            metrics_result = MetricsStage(
+                ctx=ctx,
+                inputs=[deduped],
+                algos=post_algos,
+                interval=self.bed,
+                rehead_metrics=rehead_metrics,
+                threads=0,  # Run metrics in the background
+            ).add_to(dag, {dedup_result.dedup_job})
+            qc_jobs.extend(metrics_result.jobs)
 
-        # Run HsMetricAlgo after duplicate marking to account for
-        # duplicate reads
-        metrics_job = None
-        rehead_job = None
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-            input=(
-                [deduped]
-                if self.sr_duplicate_marking != "none"
-                else sample_input
-            ),
-            interval=self.bed,
+        return SrPreprocessing(
+            deduped=[deduped],
+            dedup_job=dedup_result.dedup_job,
+            qc_jobs=qc_jobs,
         )
-        if self.assay == "WES" and self.bed:
-            driver.add_algo(HsMetricAlgo(hs_metrics, self.bed, self.bed))
-            driver.add_algo(InsertSizeMetricAlgo(is_metrics))
-            metrics_job = Job(
-                Pipeline(Command(*driver.build_cmd())),
-                "metrics",
-                0,
-                task_name="metrics",
-            )  # Run metrics in the background
-
-        # Run WgsMetricsAlgo after duplicate marking to account for
-        # duplicate reads
-        if self.assay == "WGS":
-            driver.add_algo(InsertSizeMetricAlgo(is_metrics))
-            driver.add_algo(
-                WgsMetricsAlgo(wgs_metrics, include_unpaired="true")
-            )
-            driver.add_algo(CoverageMetrics(coverage_metrics))
-            metrics_job = Job(
-                Pipeline(Command(*driver.build_cmd())),
-                "metrics",
-                0,
-                task_name="metrics",
-            )  # Run metrics in the background
-
-            # Rehead WGS metrics so they are recognized by MultiQC
-            rehead_script = pathlib.Path(
-                str(
-                    files("sentieon_cli.scripts").joinpath(
-                        "rehead_wgs_metrics.py"
-                    )
-                )
-            )
-            rehead_job = Job(
-                Pipeline(
-                    Command(
-                        sys.executable,
-                        str(rehead_script),
-                        "--metrics_file",
-                        str(wgs_metrics),
-                    )
-                ),
-                "Rehead metrics",
-                0,
-                task_name="metrics",
-            )
-        return ([deduped], lc_job, dedup_job, metrics_job, rehead_job)
 
     def sr_call_variants(
         self,

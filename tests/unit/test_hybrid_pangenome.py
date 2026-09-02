@@ -273,7 +273,7 @@ class TestHybridPangenome:
         )
         assert "--algo GCBias" in cmd_str
         assert "--algo WgsMetricsAlgo" in cmd_str
-        assert "Rehead metrics" in job_names
+        assert "rehead-metrics" in job_names
 
     def test_skip_metrics(self):
         """skip_metrics removes the metrics jobs and the Dedup metrics"""
@@ -283,7 +283,7 @@ class TestHybridPangenome:
         job_names, all_jobs = self._get_all_job_names(dag)
 
         assert "metrics" not in job_names
-        assert "Rehead metrics" not in job_names
+        assert "rehead-metrics" not in job_names
         assert "multiqc" not in job_names
         # Deduplication still runs
         assert "dedup-bwa" in job_names
@@ -561,7 +561,7 @@ class TestHybridPangenome:
             "locuscollector-lift",
             "dedup-lift",
             "metrics",
-            "Rehead metrics",
+            "rehead-metrics",
             "multiqc",
         ):
             assert name not in job_names, f"unexpected job: {name}"

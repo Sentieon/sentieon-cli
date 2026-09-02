@@ -31,6 +31,8 @@ from .job import Job
 from .logging import get_logger
 from .shell_pipeline import Command, Pipeline
 from .stages.cnv import CNV_MIN_VERSIONS, CNVscopeStage
+from .stages.dedup import DedupStage
+from .stages.metrics import MetricsPaths, MetricsStage
 from .stages.ploidy import PloidyStage
 from .util import (
     SampleSex,
@@ -798,47 +800,49 @@ class SentieonPangenome(BasePangenome):
 
             # Emit Dedup metrics for the primary (bwa) short-read alignment so
             # they land in the metrics directory scanned by MultiQC.
+            paths = MetricsPaths.from_output_vcf(self.output_vcf)
             dedup_metrics: Optional[pathlib.Path] = None
             if not self.skip_metrics:
-                metrics_dir = pathlib.Path(
-                    str(self.output_vcf).replace(".vcf.gz", "_metrics")
-                )
-                if not self.dry_run:
-                    metrics_dir.mkdir(exist_ok=True)
-                sample_name = self.output_vcf.name.replace(".vcf.gz", "")
-                dedup_metrics = metrics_dir.joinpath(
-                    sample_name + ".txt.dedup_metrics.txt"
-                )
+                paths.ensure_dir(self.dry_run)
+                dedup_metrics = paths.dedup_metrics
 
-            bwa_lc_job, bwa_dedup_job = self.build_dedup_job(
-                out_bwa_aln, [bwa_bam], "bwa", metrics=dedup_metrics
-            )
-            mm2_lc_job, mm2_dedup_job = self.build_dedup_job(
-                out_mm2_aln,
-                [mm2_bam],
-                "mm2",
-                left_align_rgid=f"{self.fastq_readgroup['ID']}-mm2",
-            )
-            dag.add_job(bwa_lc_job, bwa_lc_dependencies)
-            dag.add_job(bwa_dedup_job, {bwa_lc_job})
+            bwa_dedup = DedupStage(
+                ctx=ctx,
+                tag="bwa",
+                inputs=[bwa_bam],
+                output=out_bwa_aln,
+                score_file=self.tmp_dir.joinpath("sample-bwa-score.txt.gz"),
+                dedup_metrics=dedup_metrics,
+            ).add_to(dag, bwa_lc_dependencies)
+            bwa_dedup_job = bwa_dedup.dedup_job
             dnascope_dependencies.add(bwa_dedup_job)
-            dag.add_job(mm2_lc_job, {mm2_job})
-            dag.add_job(mm2_dedup_job, {mm2_lc_job})
-            dnascope_dependencies.add(mm2_dedup_job)
+            mm2_dedup = DedupStage(
+                ctx=ctx,
+                tag="mm2",
+                inputs=[mm2_bam],
+                output=out_mm2_aln,
+                score_file=self.tmp_dir.joinpath("sample-mm2-score.txt.gz"),
+                read_filters=[
+                    "IndelLeftAlignReadTransform,rgid="
+                    f"{self.fastq_readgroup['ID']}-mm2"
+                ],
+            ).add_to(dag, {mm2_job})
+            dnascope_dependencies.add(mm2_dedup.dedup_job)
 
             cnv_input_bams = [out_bwa_aln]
             cnvscope_deps = {bwa_dedup_job}
 
             if not self.skip_metrics:
-                metrics_job, rehead_job = self.build_metrics_job(
-                    [out_bwa_aln],
-                )
-                dag.add_job(metrics_job, {bwa_dedup_job})
-                dag.add_job(rehead_job, {metrics_job})
+                metrics_result = MetricsStage(
+                    ctx=ctx,
+                    inputs=[out_bwa_aln],
+                    algos=self.pangenome_metrics_algos(paths),
+                    rehead_metrics=paths.wgs,
+                ).add_to(dag, {bwa_dedup_job})
                 if not self.skip_multiqc:
                     multiqc_job = self.multiqc()
                     if multiqc_job:
-                        dag.add_job(multiqc_job, {rehead_job})
+                        dag.add_job(multiqc_job, metrics_result.terminal)
         else:
             dnascope_bams.append(mm2_bam)
             cnv_input_bams = list(self.sample_input)

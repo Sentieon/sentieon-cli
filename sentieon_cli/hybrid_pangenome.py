@@ -36,6 +36,8 @@ from .shard import (
     vcf_contigs,
 )
 from .shell_pipeline import Command, Pipeline
+from .stages.dedup import DedupStage
+from .stages.metrics import MetricsPaths, MetricsStage
 from .transfer import build_transfer_jobs
 from .util import (
     __version__,
@@ -617,6 +619,7 @@ class HybridPangenome(BasePangenome):
 
         self.logger.info("Building the hybrid-pangenome DAG")
         dag = DAG()
+        ctx = self.stage_context()
 
         ref_fai = pathlib.Path(str(self.reference) + ".fai")
 
@@ -762,42 +765,42 @@ class HybridPangenome(BasePangenome):
             # is assumed to be deduplicated already.
             # Emit Dedup metrics for the primary (bwa) short-read alignment
             # so they land in the metrics directory scanned by MultiQC.
+            paths = MetricsPaths.from_output_vcf(self.output_vcf)
             dedup_metrics: Optional[pathlib.Path] = None
             if not self.skip_metrics:
-                metrics_dir = pathlib.Path(
-                    str(self.output_vcf).replace(".vcf.gz", "_metrics")
-                )
-                if not self.dry_run:
-                    metrics_dir.mkdir(exist_ok=True)
-                sample_name = self.output_vcf.name.replace(".vcf.gz", "")
-                dedup_metrics = metrics_dir.joinpath(
-                    sample_name + ".txt.dedup_metrics.txt"
-                )
+                paths.ensure_dir(self.dry_run)
+                dedup_metrics = paths.dedup_metrics
 
-            bwa_lc_job, bwa_dedup_job = self.build_dedup_job(
-                out_bwa_aln, [bwa_bam], "bwa", metrics=dedup_metrics
-            )
-            lift_lc_job, lift_dedup_job = self.build_dedup_job(
-                out_lift_aln,
-                [lift_bam],
-                "lift",
-            )
-            dag.add_job(bwa_lc_job, {bwa_job})
-            dag.add_job(bwa_dedup_job, {bwa_lc_job})
-            dag.add_job(lift_lc_job, {mm2_job})
-            dag.add_job(lift_dedup_job, {lift_lc_job})
+            bwa_dedup = DedupStage(
+                ctx=ctx,
+                tag="bwa",
+                inputs=[bwa_bam],
+                output=out_bwa_aln,
+                score_file=self.tmp_dir.joinpath("sample-bwa-score.txt.gz"),
+                dedup_metrics=dedup_metrics,
+            ).add_to(dag, {bwa_job})
+            bwa_dedup_job = bwa_dedup.dedup_job
+            lift_dedup = DedupStage(
+                ctx=ctx,
+                tag="lift",
+                inputs=[lift_bam],
+                output=out_lift_aln,
+                score_file=self.tmp_dir.joinpath("sample-lift-score.txt.gz"),
+            ).add_to(dag, {mm2_job})
+            lift_dedup_job = lift_dedup.dedup_job
 
             # Alignment metrics from the deduplicated short reads
             if not self.skip_metrics:
-                metrics_job, rehead_job = self.build_metrics_job(
-                    [out_bwa_aln, out_lift_aln],
-                )
-                dag.add_job(metrics_job, {bwa_dedup_job, lift_dedup_job})
-                dag.add_job(rehead_job, {metrics_job})
+                metrics_result = MetricsStage(
+                    ctx=ctx,
+                    inputs=[out_bwa_aln, out_lift_aln],
+                    algos=self.pangenome_metrics_algos(paths),
+                    rehead_metrics=paths.wgs,
+                ).add_to(dag, {bwa_dedup_job, lift_dedup_job})
                 if not self.skip_multiqc:
                     multiqc_job = self.multiqc()
                     if multiqc_job:
-                        dag.add_job(multiqc_job, {rehead_job})
+                        dag.add_job(multiqc_job, metrics_result.terminal)
 
             calling_bams = [out_bwa_aln, out_lift_aln] + calling_lr
             calling_dependencies = {bwa_dedup_job, lift_dedup_job}

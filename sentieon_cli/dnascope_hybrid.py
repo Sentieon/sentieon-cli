@@ -604,26 +604,13 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         sr_aln.extend(aligned_fastq)
 
         # Short-read dedup
-        (
-            deduped,
-            lc_job,
-            dedup_job,
-            metrics_job,
-            rehead_job,
-        ) = self.dedup_and_metrics(
-            sample_input=sr_aln,
+        preprocessing = self.add_sr_preprocessing(
+            dag, ctx, sr_aln, set(align_fastq_jobs)
         )
-        sr_aln = deduped
-        if lc_job:
-            dag.add_job(lc_job, align_fastq_jobs)
-            if dedup_job:
-                dag.add_job(dedup_job, {lc_job})
-                if metrics_job and not self.skip_metrics:
-                    dag.add_job(metrics_job, {dedup_job})
-                    if rehead_job:
-                        dag.add_job(rehead_job, {metrics_job})
-                if fq_rm_job:
-                    dag.add_job(fq_rm_job, {dedup_job})
+        sr_aln = preprocessing.deduped
+        dedup_job = preprocessing.dedup_job
+        if dedup_job and fq_rm_job:
+            dag.add_job(fq_rm_job, {dedup_job})
 
         # Long-read alignment
         realign_jobs: Set[Job] = set()
@@ -640,16 +627,8 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
 
         if not self.skip_multiqc:
             multiqc_job = self.multiqc()
-            multiqc_dependencies: Set[Job] = set()
-            if lc_job:
-                multiqc_dependencies.add(lc_job)
-            if metrics_job:
-                multiqc_dependencies.add(metrics_job)
-            if rehead_job:
-                multiqc_dependencies.add(rehead_job)
-
             if multiqc_job:
-                dag.add_job(multiqc_job, multiqc_dependencies)
+                dag.add_job(multiqc_job, set(preprocessing.qc_jobs))
 
         if not self.skip_svs:
             longreadsv_job = self.call_svs(

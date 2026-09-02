@@ -28,6 +28,7 @@ from .shard import (
     par_bed_for_build,
 )
 from .stages.base import StageContext
+from .stages.metrics import MetricsPaths
 from .util import (
     SampleSex,
     __version__,
@@ -428,9 +429,9 @@ class BasePipeline(ABC):
                 )
                 return None
 
-        metrics_dir = pathlib.Path(
-            str(self.output_vcf).replace(".vcf.gz", "_metrics")
-        )
+        metrics_dir = MetricsPaths.from_output_vcf(
+            pathlib.Path(str(self.output_vcf))
+        ).metrics_dir
         multiqc_job = Job(
             cmds.cmd_multiqc(
                 metrics_dir,
