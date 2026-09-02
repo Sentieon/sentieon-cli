@@ -235,7 +235,7 @@ class DNAscopePipeline(BasePipeline):
         self.model_bundle: Optional[pathlib.Path] = None
         self.dbsnp: Optional[pathlib.Path] = None
         self.bed: Optional[pathlib.Path] = None
-        self.interval_padding = 0
+        self.interval_padding: Optional[int] = None
         self.pcr_free = False
         self.gvcf = False
         self.duplicate_marking = "markdup"

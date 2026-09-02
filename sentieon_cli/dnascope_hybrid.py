@@ -1227,7 +1227,6 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         driver = Driver(
             reference=self.reference,
             thread_count=self.cores,
-            interval=self.bed,
         )
         driver.add_algo(
             DNAModelApply(
