@@ -93,9 +93,6 @@ class Shard(NamedTuple):
     def __str__(self) -> str:
         return f"{self.contig}:{self.start}-{self.stop}"
 
-    def bcftools_str(self) -> str:
-        return f"{{{self.contig}}}:{self.start}-{self.stop}"
-
 
 def parse_fai(ref_fai: pathlib.Path) -> Dict[str, Dict[str, int]]:
     """Parse a faidx index"""

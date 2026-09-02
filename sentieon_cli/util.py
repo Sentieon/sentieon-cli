@@ -9,7 +9,6 @@ import multiprocessing as mp
 import os
 import pathlib
 import re
-import shlex
 import shutil
 import subprocess as sp
 import sys
@@ -31,7 +30,6 @@ PRELOAD_SEP = r":| "
 PRELOAD_SEP_PAT = re.compile(PRELOAD_SEP)
 
 NUMA_NODE_PAT = re.compile(r"^NUMA node. CPU\(s\):\s+(?P<cpus>.*)$")
-READ_LENGTH_PAT = re.compile(r"SN\taverage length:\t(?P<length>\d*)$")
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
 
@@ -300,48 +298,6 @@ def parse_rg_line(rg_line: str) -> Dict[str, str]:
             )
         parsed[key] = value
     return parsed
-
-
-def get_read_length_aln(
-    aln: pathlib.Path,
-    reference: pathlib.Path,
-    n_reads: int = 100000,
-) -> int:
-    """Get the average read length for an alignment file"""
-    cmds = []
-    cmds.append(
-        [
-            "samtools",
-            "view",
-            "-h",
-            "--reference",
-            shlex.quote(str(reference)),
-            shlex.quote(str(aln)),
-        ]
-    )
-    cmds.append(
-        [
-            "head",
-            "-n",
-            str(n_reads),
-        ]
-    )
-    cmds.append(["samtools", "stats", "-"])
-    all_cmds = [shlex.join(x) for x in cmds]
-    cmd = " | ".join(all_cmds)
-    res = sp.run(
-        cmd,
-        shell=True,
-        capture_output=True,
-        text=True,
-        executable="/bin/bash",
-    )
-
-    for line in res.stdout.split("\n"):
-        m = READ_LENGTH_PAT.match(line)
-        if m:
-            return int(m.groupdict()["length"])
-    return 151
 
 
 def vcf_id(in_vcf: pathlib.Path) -> Optional[str]:
