@@ -594,14 +594,14 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
 
         # Short-read alignment
         sr_aln = self.sr_aln
-        (
-            aligned_fastq,
-            align_fastq_jobs,
-            fq_rm_job,
-        ) = self.sr_align_fastq()
-        for job in align_fastq_jobs:
-            dag.add_job(job)
-        sr_aln.extend(aligned_fastq)
+        fq_result = self.add_sr_fastq_alignment(dag, ctx)
+        align_fastq_jobs = set(fq_result.jobs)
+        fq_rm_job = (
+            rm_job(fq_result.cleanup_paths, "rm-fq-aln")
+            if fq_result.cleanup_paths
+            else None
+        )
+        sr_aln.extend(fq_result.outputs)
 
         # Short-read dedup
         preprocessing = self.add_sr_preprocessing(

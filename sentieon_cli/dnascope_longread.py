@@ -6,7 +6,6 @@ import argparse
 import copy
 import json
 import pathlib
-import shutil
 import sys
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -23,7 +22,6 @@ from .driver import (
     DNAscope,
     DNAscopeHP,
     LongReadSV,
-    ReadWriter,
     RepeatModel,
     VariantPhaser,
 )
@@ -35,6 +33,12 @@ from .shard import (
     vcf_contigs,
 )
 from .shell_pipeline import Command, Pipeline
+from .stages.alignment import (
+    Minimap2FastqStage,
+    Minimap2RealignStage,
+    ReadWriterStage,
+    find_unzip,
+)
 from .stages.base import StageContext, driver_job
 from .stages.small_variants import (
     ApplySpec,
@@ -492,9 +496,6 @@ class DNAscopeLRPipeline(BasePipeline):
         if not self.output_vcf:
             self.logger.error("output_vcf is required")
             sys.exit(2)
-        if not self.reference:
-            self.logger.error("reference is required")
-            sys.exit(2)
         if not self.model_bundle:
             self.logger.error("model_bundle is required")
             sys.exit(2)
@@ -503,99 +504,45 @@ class DNAscopeLRPipeline(BasePipeline):
                 if not check_version(cmd, min_version):
                     sys.exit(2)
 
-        res: List[pathlib.Path] = []
-        suffix = "bam" if self.bam_format else "cram"
-        sample_name = self.output_vcf.name.replace(".vcf.gz", "")
-        realign_jobs = set()
-        for i, input_aln in enumerate(self.lr_aln):
-            out_aln = pathlib.Path(
-                str(self.output_vcf).replace(
-                    ".vcf.gz", f"_mm2_sorted_{i}.{suffix}"
-                )
-            )
-            rg_lines = cmds.get_rg_lines(
-                input_aln,
-                self.dry_run,
-            )
-
-            realign_jobs.add(
-                Job(
-                    cmds.cmd_samtools_fastq_minimap2(
-                        out_aln,
-                        input_aln,
-                        self.reference,
-                        self.model_bundle,
-                        self.cores,
-                        rg_lines,
-                        sample_name,
-                        self.lr_input_ref,
-                        self.fastq_taglist,
-                        self.minimap2_args,
-                        self.util_sort_args,
-                    ),
-                    f"bam-realign-{i}",
-                    self.cores,
-                    task_name="alignment",
-                )
-            )
-            res.append(out_aln)
-        return (res, realign_jobs)
+        result = Minimap2RealignStage(
+            ctx=self.stage_context(),
+            inputs=self.lr_aln,
+            model_bundle=self.model_bundle,
+            sample_name=self.output_vcf.name.replace(".vcf.gz", ""),
+            bam_format=self.bam_format,
+            input_ref=self.lr_input_ref,
+            fastq_taglist=self.fastq_taglist,
+            minimap2_args=self.minimap2_args,
+            util_sort_args=self.util_sort_args,
+        ).build()
+        return (result.outputs, set(result.jobs))
 
     def lr_align_fastq(self) -> Tuple[List[pathlib.Path], Set[Job]]:
         """
         Align fastq to the reference genome using minimap2
         """
-        if not self.reference:
-            self.logger.error("reference is required")
-            sys.exit(2)
         if not self.model_bundle:
             self.logger.error("model_bundle is required")
             sys.exit(2)
-        res: List[pathlib.Path] = []
         if self.fastq is None and self.readgroups is None:
-            return (res, set())
+            return ([], set())
 
         if not self.skip_version_check:
             for cmd, min_version in FQ_MIN_VERSIONS.items():
                 if not check_version(cmd, min_version):
                     sys.exit(2)
 
-        unzip = "igzip"
-        if not shutil.which(unzip):
-            self.logger.warning(
-                "igzip is recommended for decompression, but is not "
-                "available. Falling back to gzip."
-            )
-            unzip = "gzip"
-
-        suffix = "bam" if self.bam_format else "cram"
-        align_jobs = set()
-        for i, (fq, rg) in enumerate(zip(self.fastq, self.readgroups)):
-            out_aln = pathlib.Path(
-                str(self.output_vcf).replace(
-                    ".vcf.gz", f"_mm2_sorted_fq_{i}.{suffix}"
-                )
-            )
-            align_jobs.add(
-                Job(
-                    cmds.cmd_fastq_minimap2(
-                        out_aln,
-                        fq,
-                        rg,
-                        self.reference,
-                        self.model_bundle,
-                        self.cores,
-                        unzip,
-                        self.minimap2_args,
-                        self.util_sort_args,
-                    ),
-                    f"align-{i}",
-                    self.cores,
-                    task_name="alignment",
-                )
-            )
-            res.append(out_aln)
-        return (res, align_jobs)
+        result = Minimap2FastqStage(
+            ctx=self.stage_context(),
+            fastq=self.fastq,
+            readgroups=self.readgroups,
+            model_bundle=self.model_bundle,
+            bam_format=self.bam_format,
+            unzip=find_unzip(self.logger),
+            minimap2_args=self.minimap2_args,
+            util_sort_args=self.util_sort_args,
+        ).build()
+        return (result.outputs, set(result.jobs))
 
     def mosdepth(self, sample_input: List[pathlib.Path]) -> Set[Job]:
         """Run mosdepth for QC"""
@@ -647,19 +594,15 @@ class DNAscopeLRPipeline(BasePipeline):
 
         # Merge the sample_input into a single BAM
         merged_bam = self.tmp_dir.joinpath("longread_merged.bam")
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-            input=sample_input,
-        )
-        driver.add_algo(ReadWriter(merged_bam))
-        merge_job = Job(
-            Pipeline(Command(*driver.build_cmd())),
-            "merge-bam",
-            0,
+        result = ReadWriterStage(
+            ctx=self.stage_context(),
+            inputs=sample_input,
+            output=merged_bam,
+            name="merge-bam",
             task_name="alignment",
-        )
-        return (merged_bam, merge_job)
+            threads=0,  # Run in the background
+        ).build()
+        return (merged_bam, result.jobs[0])
 
     def pbsv(
         self,

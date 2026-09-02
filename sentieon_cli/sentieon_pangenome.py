@@ -5,6 +5,7 @@ Sentieon's pangenome alignment and variant calling pipeline
 import argparse
 import copy
 import json
+import logging
 import pathlib
 import shutil
 import sys
@@ -22,13 +23,17 @@ from .dag import DAG
 from .driver import (
     BaseAlgo,
     DNAscope,
-    Driver,
     PangenomeSV,
-    ReadWriter,
 )
 from .job import Job
 from .logging import get_logger
 from .shell_pipeline import Command, Pipeline
+from .stages.alignment import (
+    BwaExtractStage,
+    ReadWriterStage,
+    find_unzip,
+)
+from .stages.base import StageContext
 from .stages.cnv import CNV_MIN_VERSIONS, CNVscopeStage
 from .stages.dedup import DedupStage
 from .stages.metrics import MetricsPaths, MetricsStage
@@ -737,8 +742,10 @@ class SentieonPangenome(BasePangenome):
             haplotype_dependencies.add(kmc_job)
 
             # BWA alignment and extraction
-            bwa_job = self.build_alignment_job(bwa_bam, ext_fastq)
-            dag.add_job(bwa_job)
+            bwa_result = self.bwa_extract_stage(
+                ctx, bwa_bam, ext_fastq
+            ).add_to(dag)
+            bwa_job = bwa_result.jobs[0]
             mm2_dependencies.add(bwa_job)
             bwa_lc_dependencies.add(bwa_job)
             # Do not run vg-haplotypes with bwa in low-mem environments
@@ -1015,47 +1022,36 @@ class SentieonPangenome(BasePangenome):
             fai_data=self.fai_data,
         )
 
-    def build_alignment_job(
+    def bwa_extract_stage(
         self,
+        ctx: StageContext,
         sample_bam: pathlib.Path,
         sample_fastq: pathlib.Path,
-    ) -> Job:
-        """Build the alignment and extract jobs"""
-        if not self.reference:
-            self.logger.error("reference is required")
-            sys.exit(2)
+    ) -> BwaExtractStage:
+        """The bwa alignment and read extraction stage.
+
+        The bwa alignment reuses the input readgroup ID with a `-bwa`
+        suffix, so it stays distinct from the lifted alignment's.
+        """
         if not self.model_bundle:
             self.logger.error("model_bundle is required")
             sys.exit(2)
 
-        unzip = "igzip"
-        if not shutil.which(unzip):
-            self.logger.info(
-                "igzip is recommended for decompression, but is not "
-                "available. Falling back to gzip."
-            )
-            unzip = "gzip"
-
         rg = copy.deepcopy(self.fastq_readgroup)
         rg["ID"] = rg["ID"] + "-bwa"
-        bwa_job = Job(
-            cmds.cmd_bwa_extract(
-                sample_bam,
-                sample_fastq,
-                self.reference,
-                self.r1_fastq,
-                self.r2_fastq,
-                "@RG\\t" + "\\t".join([f"{x[0]}:{x[1]}" for x in rg.items()]),
-                self.model_bundle.joinpath(self.extract_model_name),
-                self.model_bundle.joinpath("bwa.model"),
-                self.cores,
-                unzip=unzip,
+        return BwaExtractStage(
+            ctx=ctx,
+            output_bam=sample_bam,
+            output_fastq=sample_fastq,
+            r1_fastq=self.r1_fastq,
+            r2_fastq=self.r2_fastq,
+            readgroup=(
+                "@RG\\t" + "\\t".join([f"{x[0]}:{x[1]}" for x in rg.items()])
             ),
-            "bwa-extract",
-            self.cores,
-            task_name="alignment",
+            extract_model=self.model_bundle.joinpath(self.extract_model_name),
+            bwa_model=self.model_bundle.joinpath("bwa.model"),
+            unzip=find_unzip(self.logger, logging.INFO),
         )
-        return bwa_job
 
     def build_haplotypes_job(
         self, output_gbz: pathlib.Path, kmer_file: pathlib.Path
@@ -1289,19 +1285,15 @@ class SentieonPangenome(BasePangenome):
 
         # Extract reads overlapping the locus to a BAM file with ReadWriter
         extracted_bam = self.tmp_dir.joinpath(f"sample_{tag}.bam")
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-            input=sr_alignments,
-            interval=locus,
-        )
-        driver.add_algo(ReadWriter(extracted_bam))
-        extract_job = Job(
-            Pipeline(Command(*driver.build_cmd())),
-            f"t1k-{tag}-extract",
-            self.cores,
+        extract_result = ReadWriterStage(
+            ctx=self.stage_context(),
+            inputs=sr_alignments,
+            output=extracted_bam,
+            name=f"t1k-{tag}-extract",
             task_name="t1k",
-        )
+            interval=locus,
+        ).build()
+        extract_job = extract_result.jobs[0]
 
         t1k_job = Job(
             cmds.cmd_t1k(

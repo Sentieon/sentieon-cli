@@ -10,11 +10,10 @@ import os
 import pathlib
 import shutil
 import sys
-from typing import List, Optional, Set, Tuple
+from typing import List, Optional, Set
 
 import packaging.version
 
-from . import command_strings as cmds
 from .dag import DAG
 from .driver import (
     AlignmentStat,
@@ -32,7 +31,12 @@ from .driver import (
 )
 from .job import Job
 from .pipeline import BasePipeline
-from .shell_pipeline import Command, Pipeline
+from .stages.alignment import (
+    AlignResult,
+    BwaFastqStage,
+    BwaRealignStage,
+    find_unzip,
+)
 from .stages.base import StageContext, driver_job, rm_job
 from .stages.dedup import DedupStage
 from .stages.metrics import MetricsPaths, MetricsStage
@@ -410,13 +414,18 @@ class DNAscopePipeline(BasePipeline):
         sample_input = copy.deepcopy(self.sample_input)
         bam_rm_job = None
         if self.align or self.collate_align:
-            sample_input, align_jobs, bam_rm_job = self.sr_align_inputs()
-            for job in align_jobs:
-                dag.add_job(job)
-        aligned_fastq, align_fastq_jobs, fq_rm_job = self.sr_align_fastq()
-        for job in align_fastq_jobs:
-            dag.add_job(job)
-        sample_input += aligned_fastq
+            aln_result = self.add_sr_input_alignment(dag, ctx)
+            sample_input = aln_result.outputs
+            align_jobs = set(aln_result.jobs)
+            bam_rm_job = rm_job(aln_result.cleanup_paths, "rm-bam-aln")
+        fq_result = self.add_sr_fastq_alignment(dag, ctx)
+        align_fastq_jobs = set(fq_result.jobs)
+        fq_rm_job = (
+            rm_job(fq_result.cleanup_paths, "rm-fq-aln")
+            if fq_result.cleanup_paths
+            else None
+        )
+        sample_input += fq_result.outputs
 
         # Dedup and metrics
         preprocessing = self.add_sr_preprocessing(
@@ -449,11 +458,10 @@ class DNAscopePipeline(BasePipeline):
                 dag.add_job(multiqc_job, set(preprocessing.qc_jobs))
         return dag
 
-    def sr_align_inputs(self) -> Tuple[List[pathlib.Path], Set[Job], Job]:
+    def add_sr_input_alignment(
+        self, dag: DAG, ctx: StageContext
+    ) -> AlignResult:
         """Align input BAM/CRAM/uBAM/uCRAM files with bwa"""
-        if not self.reference:
-            self.logger.error("reference is required")
-            sys.exit(2)
         if not self.model_bundle:
             self.logger.error("model_bundle is required")
             sys.exit(2)
@@ -463,161 +471,51 @@ class DNAscopePipeline(BasePipeline):
                 if not check_version(cmd, min_version):
                     sys.exit(2)
 
-        res: List[pathlib.Path] = []
-        suffix = "bam" if self.bam_format else "cram"
-        util_sort_args = self.util_sort_args
-        if self.sr_duplicate_marking != "none":
-            suffix = "bam"
-            util_sort_args += " --bam_compression 1 "
-        jobs = set()
-        align_outputs: List[pathlib.Path] = []
-        for i, input_aln in enumerate(self.sample_input):
-            out_aln = pathlib.Path(
-                str(self.output_vcf).replace(
-                    ".vcf.gz", f"_bwa_sorted_{i}.{suffix}"
-                )
-            )
-            if self.sr_duplicate_marking != "none":
-                out_aln = self.tmp_dir.joinpath(f"bwa_sorted_{i}.{suffix}")
-            rg_lines = cmds.get_rg_lines(input_aln, self.dry_run)
-            rg_header = self.tmp_dir.joinpath(f"input_{i}.hdr")
-            with open(rg_header, "w", encoding="utf-8") as rg_fh:
-                for line in rg_lines:
-                    print(line, file=rg_fh)
-            job = Job(
-                cmds.cmd_samtools_fastq_bwa(
-                    out_aln,
-                    input_aln,
-                    self.reference,
-                    self.model_bundle,
-                    self.cores,
-                    rg_header,
-                    self.input_ref,
-                    collate=self.collate_align,
-                    bwa_args=self.bwa_args,
-                    bwa_k=str(self.bwa_k),
-                    util_sort_args=util_sort_args,
-                ),
-                f"bam-align-{i}",
-                self.cores,
-                task_name="alignment",
-            )
-            res.append(out_aln)
-            jobs.add(job)
-            align_outputs.append(out_aln)
-            align_outputs.append(pathlib.Path(str(out_aln) + ".bai"))
-            if suffix == "cram":
-                align_outputs.append(pathlib.Path(str(out_aln) + ".crai"))
+        return BwaRealignStage(
+            ctx=ctx,
+            inputs=self.sample_input,
+            model_bundle=self.model_bundle,
+            bam_format=self.bam_format,
+            duplicate_marking=self.sr_duplicate_marking,
+            input_ref=self.input_ref,
+            collate=self.collate_align,
+            bwa_args=self.bwa_args,
+            bwa_k=str(self.bwa_k),
+            util_sort_args=self.util_sort_args,
+        ).add_to(dag)
 
-        # Create an unscheduled job to remove the aligned inputs
-        rm_job = Job(
-            Pipeline(
-                Command("rm", *[str(x) for x in align_outputs], fail_ok=True)
-            ),
-            "rm-bam-aln",
-            0,
-            task_name="cleanup",
-        )
-
-        return (res, jobs, rm_job)
-
-    def sr_align_fastq(
-        self,
-    ) -> Tuple[List[pathlib.Path], Set[Job], Optional[Job]]:
+    def add_sr_fastq_alignment(
+        self, dag: DAG, ctx: StageContext
+    ) -> AlignResult:
         """Align fastq files to the reference genome using bwa"""
-        if not self.reference:
-            self.logger.error("reference is required")
-            sys.exit(2)
         if not self.model_bundle:
             self.logger.error("model_bundle is required")
             sys.exit(2)
 
-        res: List[pathlib.Path] = []
-        jobs: Set[Job] = set()
         if not self.sr_r1_fastq and not self.sr_readgroups:
-            return (res, jobs, None)
+            return AlignResult(
+                jobs=[], terminal=set(), outputs=[], cleanup_paths=[]
+            )
 
         if not self.skip_version_check:
             for cmd, min_version in FQ_MIN_VERSIONS.items():
                 if not check_version(cmd, min_version):
                     sys.exit(2)
 
-        unzip = "igzip"
-        if not shutil.which(unzip):
-            self.logger.warning(
-                "igzip is recommended for decompression, but is not "
-                "available. Falling back to gzip."
-            )
-            unzip = "gzip"
-
-        n_alignment_jobs = max(1, len(self.numa_nodes))
-        suffix = "bam" if self.bam_format else "cram"
-        util_sort_args = self.util_sort_args
-        if self.sr_duplicate_marking != "none":
-            suffix = "bam"
-            util_sort_args += " --bam_compression 1 "
-        align_outputs: List[pathlib.Path] = []
-        for i, (r1, r2, rg) in enumerate(
-            itertools.zip_longest(
-                self.sr_r1_fastq, self.sr_r2_fastq, self.sr_readgroups
-            )
-        ):
-            for j in range(n_alignment_jobs):
-                out_aln = pathlib.Path(
-                    str(self.output_vcf).replace(
-                        ".vcf.gz", f"_bwa_sorted_fq_{i}_{j}.{suffix}"
-                    )
-                )
-                if self.sr_duplicate_marking != "none":
-                    out_aln = self.tmp_dir.joinpath(
-                        f"bwa_sorted_fq_{i}_{j}.{suffix}"
-                    )
-                numa = self.numa_nodes[j] if len(self.numa_nodes) > 1 else None
-                split = (
-                    f"{j}/{n_alignment_jobs}"
-                    if len(self.numa_nodes) > 1
-                    else None
-                )
-                split_cores = max(1, int(self.cores / n_alignment_jobs))
-                job = Job(
-                    cmds.cmd_fastq_bwa(
-                        out_aln,
-                        r1,
-                        r2,
-                        rg,
-                        self.reference,
-                        self.model_bundle,
-                        split_cores,
-                        unzip,
-                        self.bwa_args,
-                        str(self.bwa_k),
-                        util_sort_args,
-                        numa,
-                        split,
-                    ),
-                    f"bam-align-{i}-{j}",
-                    split_cores,
-                    resources={f"node{j}": 1},
-                    task_name="alignment",
-                )
-                res.append(out_aln)
-                jobs.add(job)
-                align_outputs.append(out_aln)
-                align_outputs.append(pathlib.Path(str(out_aln) + ".bai"))
-                if suffix == "cram":
-                    align_outputs.append(pathlib.Path(str(out_aln) + ".crai"))
-
-        # Create an unscheduled job to remove the aligned inputs
-        rm_job = Job(
-            Pipeline(
-                Command("rm", *[str(x) for x in align_outputs], fail_ok=True)
-            ),
-            "rm-fq-aln",
-            0,
-            task_name="cleanup",
-        )
-
-        return (res, jobs, rm_job)
+        return BwaFastqStage(
+            ctx=ctx,
+            r1_fastq=self.sr_r1_fastq,
+            r2_fastq=self.sr_r2_fastq,
+            readgroups=self.sr_readgroups,
+            model_bundle=self.model_bundle,
+            numa_nodes=self.numa_nodes,
+            bam_format=self.bam_format,
+            duplicate_marking=self.sr_duplicate_marking,
+            unzip=find_unzip(self.logger),
+            bwa_args=self.bwa_args,
+            bwa_k=str(self.bwa_k),
+            util_sort_args=self.util_sort_args,
+        ).add_to(dag)
 
     def sr_metrics_algos(self, paths: MetricsPaths) -> List[BaseAlgo]:
         """The metrics that do not need duplicate-marked reads"""

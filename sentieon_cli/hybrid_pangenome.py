@@ -8,8 +8,8 @@ for highly accurate variant calling.
 import argparse
 import copy
 import json
+import logging
 import pathlib
-import shutil
 import sys
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -35,6 +35,12 @@ from .shard import (
     vcf_contigs,
 )
 from .shell_pipeline import Command, Pipeline
+from .stages.alignment import (
+    BwaExtractStage,
+    Minimap2RealignStage,
+    find_unzip,
+)
+from .stages.base import StageContext
 from .stages.dedup import DedupStage
 from .stages.metrics import MetricsPaths, MetricsStage
 from .stages.small_variants import DNAscopeStage, ModelApplyStage
@@ -591,17 +597,6 @@ class HybridPangenome(BasePangenome):
         """Configure pipeline parameters"""
         pass
 
-    def find_unzip(self) -> str:
-        """The decompression tool for fastq input"""
-        unzip = "igzip"
-        if not shutil.which(unzip):
-            self.logger.info(
-                "igzip is recommended for decompression, but is not "
-                "available. Falling back to gzip."
-            )
-            unzip = "gzip"
-        return unzip
-
     def build_dag(self) -> DAG:
         """Build the DAG for the hybrid-pangenome pipeline"""
         if not self.reference:
@@ -657,9 +652,9 @@ class HybridPangenome(BasePangenome):
         calling_lr = list(self.lr_aln)
         realign_jobs: Set[Job] = set()
         if self.lr_align_input:
-            calling_lr, realign_jobs = self.lr_align_inputs()
-            for job in realign_jobs:
-                dag.add_job(job)
+            lr_result = self.lr_realign_stage(ctx).add_to(dag)
+            calling_lr = lr_result.outputs
+            realign_jobs = set(lr_result.jobs)
 
         haplotype_dependencies: Set[Job] = set()
         mm2_dependencies: Set[Job] = set()
@@ -670,8 +665,10 @@ class HybridPangenome(BasePangenome):
             haplotype_dependencies.add(kmc_job)
 
             # BWA alignment and extraction
-            bwa_job = self.build_alignment_job(bwa_bam, ext_fastq)
-            dag.add_job(bwa_job)
+            bwa_result = self.bwa_extract_stage(
+                ctx, bwa_bam, ext_fastq
+            ).add_to(dag)
+            bwa_job = bwa_result.jobs[0]
             mm2_dependencies.add(bwa_job)
             # Do not run vg-haplotypes with bwa in low-mem environments
             total_mem_gb = total_memory() / (1024.0**3)
@@ -900,7 +897,7 @@ class HybridPangenome(BasePangenome):
                 self.tmp_dir,
                 memory=self.kmer_memory,
                 threads=self.cores,
-                unzip=self.find_unzip(),
+                unzip=find_unzip(self.logger, logging.INFO),
             ),
             "kmc",
             0,  # run in the background
@@ -947,78 +944,50 @@ class HybridPangenome(BasePangenome):
         )
         return symlink_job, extract_kmc_job
 
-    def lr_align_inputs(self) -> Tuple[List[pathlib.Path], Set[Job]]:
-        """Align the long-read input files to the linear reference genome
-        with minimap2"""
-        assert self.output_vcf is not None
-        assert self.reference is not None
+    def lr_realign_stage(self, ctx: StageContext) -> Minimap2RealignStage:
+        """Re-align the long-read input to the linear reference genome"""
         assert self.model_bundle is not None
 
-        res: List[pathlib.Path] = []
-        realign_jobs: Set[Job] = set()
-        suffix = "bam" if self.bam_format else "cram"
-        for i, input_aln in enumerate(self.lr_aln):
-            out_aln = pathlib.Path(
-                str(self.output_vcf).replace(
-                    ".vcf.gz", f"_mm2_sorted_{i}.{suffix}"
-                )
-            )
-            rg_lines = cmds.get_rg_lines(input_aln, self.dry_run)
-            realign_jobs.add(
-                Job(
-                    cmds.cmd_samtools_fastq_minimap2(
-                        out_aln,
-                        input_aln,
-                        self.reference,
-                        self.model_bundle,
-                        self.cores,
-                        rg_lines,
-                        self.sample_sm,
-                        self.lr_input_ref,
-                        minimap2_model=self.model_bundle.joinpath(
-                            "minimap2_lr.model"
-                        ),
-                    ),
-                    f"bam-realign-{i}",
-                    self.cores,
-                    task_name="alignment",
-                )
-            )
-            res.append(out_aln)
-        return (res, realign_jobs)
+        return Minimap2RealignStage(
+            ctx=ctx,
+            inputs=self.lr_aln,
+            model_bundle=self.model_bundle,
+            sample_name=self.sample_sm,
+            bam_format=self.bam_format,
+            input_ref=self.lr_input_ref,
+            minimap2_model=self.model_bundle.joinpath("minimap2_lr.model"),
+        )
 
-    def build_alignment_job(
+    def bwa_extract_stage(
         self,
+        ctx: StageContext,
         sample_bam: pathlib.Path,
         sample_fastq: pathlib.Path,
-    ) -> Job:
-        """Build the bwa alignment and read extraction job"""
-        assert self.reference is not None
-        assert self.model_bundle is not None
+    ) -> BwaExtractStage:
+        """The bwa alignment and read extraction stage.
 
+        The short reads are given the sample name and marked as short
+        reads (`LR:0`) so the hybrid caller can tell them apart.
+        """
+        assert self.model_bundle is not None
         assert self.fastq_readgroup is not None
 
         rg = copy.deepcopy(self.fastq_readgroup)
         rg["SM"] = self.sample_sm
         rg["LR"] = "0"
-        bwa_job = Job(
-            cmds.cmd_bwa_extract(
-                sample_bam,
-                sample_fastq,
-                self.reference,
-                self.r1_fastq,
-                self.r2_fastq,
-                "@RG\\t" + "\\t".join([f"{x[0]}:{x[1]}" for x in rg.items()]),
-                self.model_bundle.joinpath(self.extract_model_name),
-                self.model_bundle.joinpath("bwa.model"),
-                self.cores,
-                unzip=self.find_unzip(),
+        return BwaExtractStage(
+            ctx=ctx,
+            output_bam=sample_bam,
+            output_fastq=sample_fastq,
+            r1_fastq=self.r1_fastq,
+            r2_fastq=self.r2_fastq,
+            readgroup=(
+                "@RG\\t" + "\\t".join([f"{x[0]}:{x[1]}" for x in rg.items()])
             ),
-            "bwa-extract",
-            self.cores,
-            task_name="alignment",
+            extract_model=self.model_bundle.joinpath(self.extract_model_name),
+            bwa_model=self.model_bundle.joinpath("bwa.model"),
+            unzip=find_unzip(self.logger, logging.INFO),
         )
-        return bwa_job
 
     def build_haplotypes_job(
         self, output_gbz: pathlib.Path, kmer_file: pathlib.Path
