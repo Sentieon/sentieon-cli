@@ -20,7 +20,6 @@ from .archive import ar_load
 from .base_pangenome import BasePangenome
 from .dag import DAG
 from .driver import (
-    DNAModelApply,
     DNAscope,
     Driver,
     LongReadSV,
@@ -38,7 +37,8 @@ from .shard import (
 from .shell_pipeline import Command, Pipeline
 from .stages.dedup import DedupStage
 from .stages.metrics import MetricsPaths, MetricsStage
-from .transfer import build_transfer_jobs
+from .stages.small_variants import DNAscopeStage, ModelApplyStage
+from .stages.transfer import TransferConfig, TransferStage
 from .util import (
     __version__,
     check_kmc_patch,
@@ -825,39 +825,56 @@ class HybridPangenome(BasePangenome):
         if self.skip_small_variants:
             return dag
 
-        dnascope_job = self.build_dnascope_job(
-            raw_vcf,
-            calling_bams,
-            replace_rg,
-        )
-        dag.add_job(dnascope_job, calling_dependencies)
+        model = self.model_bundle.joinpath("dnascope.model")
+        pcr_indel_model = "NONE" if self.pcr_free else "CONSERVATIVE"
+        call = DNAscopeStage(
+            ctx=ctx,
+            algos=[
+                DNAscope(
+                    raw_vcf,
+                    model=model,
+                    pcr_indel_model=pcr_indel_model,
+                    dbsnp=self.dbsnp,
+                )
+            ],
+            inputs=calling_bams,
+            interval=self.bed,
+            replace_rg=replace_rg,
+        ).add_to(dag, calling_dependencies)
 
         # transfer annotations from the pop_vcf
         transfer_target = (
             transfer_vcf if not self.skip_model_apply else self.output_vcf
         )
-        transfer_jobs, concat_job = build_transfer_jobs(
-            transfer_target,
-            self.pop_vcf,
-            raw_vcf,
-            self.tmp_dir,
-            self.shards,
-            self.pop_vcf_contigs,
-            self.fai_data,
-            self.dry_run,
-            self.cores,
-        )
-        for job in transfer_jobs:
-            dag.add_job(job, {dnascope_job})
-        dag.add_job(concat_job, set(transfer_jobs))
+        transfer = TransferStage(
+            ctx=ctx,
+            config=self.transfer_config(),
+            raw_vcf=raw_vcf,
+            out_vcf=transfer_target,
+        ).add_to(dag, call.terminal)
 
         if not self.skip_model_apply:
-            apply_job = self.build_dnamodelapply_job(
-                transfer_vcf, self.output_vcf
-            )
-            dag.add_job(apply_job, {concat_job})
+            ModelApplyStage(
+                ctx=ctx,
+                model=model,
+                vcf=transfer_vcf,
+                output=self.output_vcf,
+            ).add_to(dag, transfer.terminal)
 
         return dag
+
+    def transfer_config(self) -> TransferConfig:
+        """The inputs the annotation-transfer stage needs.
+
+        `build_dag` requires `--pop_vcf` before it calls this.
+        """
+        assert self.pop_vcf is not None
+        return TransferConfig(
+            pop_vcf=self.pop_vcf,
+            shards=self.shards,
+            pop_vcf_contigs=self.pop_vcf_contigs,
+            fai_data=self.fai_data,
+        )
 
     def lr_kmc_pairs(self) -> List[Tuple[pathlib.Path, pathlib.Path]]:
         """`(alignment, decode reference)` pairs for the long-read k-mer
@@ -1205,60 +1222,4 @@ class HybridPangenome(BasePangenome):
             "pangenome-sv",
             self.cores,
             task_name="sv-calling",
-        )
-
-    def build_dnascope_job(
-        self,
-        out_vcf: pathlib.Path,
-        input_bams: List[pathlib.Path],
-        replace_rg: List[List[str]],
-    ) -> Job:
-        """Call small variants with the original, lifted, and long reads"""
-        assert self.model_bundle is not None
-        pcr_indel_model = "NONE" if self.pcr_free else "CONSERVATIVE"
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-            input=input_bams,
-            interval=self.bed,
-            replace_rg=replace_rg,
-        )
-        driver.add_algo(
-            DNAscope(
-                out_vcf,
-                model=self.model_bundle.joinpath("dnascope.model"),
-                pcr_indel_model=pcr_indel_model,
-                dbsnp=self.dbsnp,
-            )
-        )
-        return Job(
-            Pipeline(Command(*driver.build_cmd())),
-            "dnascope-raw",
-            self.cores,
-            task_name="variant-calling",
-        )
-
-    def build_dnamodelapply_job(
-        self,
-        in_vcf: pathlib.Path,
-        out_vcf: pathlib.Path,
-    ) -> Job:
-        """Apply the DNAscope model"""
-        assert self.model_bundle is not None
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-        )
-        driver.add_algo(
-            DNAModelApply(
-                model=self.model_bundle.joinpath("dnascope.model"),
-                vcf=in_vcf,
-                output=out_vcf,
-            )
-        )
-        return Job(
-            Pipeline(Command(*driver.build_cmd())),
-            "model-apply",
-            self.cores,
-            task_name="model-apply",
         )

@@ -20,10 +20,9 @@ from .archive import ar_load
 from .base_pangenome import BasePangenome
 from .dag import DAG
 from .driver import (
-    DNAModelApply,
+    BaseAlgo,
     DNAscope,
     Driver,
-    GVCFtyper,
     PangenomeSV,
     ReadWriter,
 )
@@ -34,6 +33,14 @@ from .stages.cnv import CNV_MIN_VERSIONS, CNVscopeStage
 from .stages.dedup import DedupStage
 from .stages.metrics import MetricsPaths, MetricsStage
 from .stages.ploidy import PloidyStage
+from .stages.small_variants import (
+    ApplySpec,
+    DNAscopeStage,
+    GVCFtyperStage,
+    TransferApplyStage,
+    TransferSpec,
+)
+from .stages.transfer import TransferConfig
 from .util import (
     SampleSex,
     __version__,
@@ -52,7 +59,6 @@ from .shard import (
     parse_fai,
     vcf_contigs,
 )
-from .transfer import build_transfer_jobs
 
 SENT_PANGENOME_MIN_VERSIONS = {
     "kmc": None,
@@ -903,27 +909,48 @@ class SentieonPangenome(BasePangenome):
         if self.skip_small_variants and not self.call_svs:
             return dag
 
-        if self.skip_small_variants and self.call_svs and sv_vcf:
-            # SV calling only
-            dnascope_job = self.build_dnascope_job(
-                raw_vcf,
-                dnascope_bams,
-                sv_vcf=sv_vcf,
-                gfa_file=sample_gfa,
+        read_filters: List[str] = []
+        if self.tech.upper() == "ULTIMA":
+            read_filters.append("UltimaReadFilter")
+        pcr_indel_model = "NONE" if self.pcr_free else "CONSERVATIVE"
+        model = self.model_bundle.joinpath("dnascope.model")
+        gfa_file = sample_gfa if self.call_svs else None
+
+        algos: List[BaseAlgo] = []
+        if not self.skip_small_variants:
+            algos.append(
+                DNAscope(
+                    raw_vcf,
+                    model=model,
+                    pcr_indel_model=pcr_indel_model,
+                    dbsnp=self.dbsnp,
+                    emit_mode="gvcf" if self.gvcf else "variant",
+                )
             )
-            dag.add_job(dnascope_job, dnascope_dependencies)
-            # CNV calling is sex-aware and runs in the second DAG
+        if sv_vcf and gfa_file:
+            algos.append(
+                PangenomeSV(
+                    sv_vcf,
+                    gfa_file=gfa_file,
+                    prefix=self.pangenome_contig_prefix,
+                )
+            )
+        call = DNAscopeStage(
+            ctx=ctx,
+            algos=algos,
+            inputs=dnascope_bams,
+            interval=self.bed,
+            read_filter=read_filters,
+        ).add_to(dag, dnascope_dependencies)
+
+        if self.skip_small_variants:
+            # SV calling only. CNV calling is sex-aware and runs in the
+            # second DAG
             return dag
 
-        apply_dependencies = set()
-        dnascope_job = self.build_dnascope_job(
-            raw_vcf,
-            dnascope_bams,
-            sv_vcf=sv_vcf,
-            gfa_file=sample_gfa if self.call_svs else None,
-        )
-        dag.add_job(dnascope_job, dnascope_dependencies)
-        apply_dependencies.add(dnascope_job)
+        if self.skip_model_apply and not self.pop_vcf:
+            # Nothing post-processes the raw VCF
+            return dag
 
         # When --gvcf is set, the model-apply / transfer outputs are
         # gVCFs; GVCFtyper produces the final VCF at self.output_vcf.
@@ -934,55 +961,59 @@ class SentieonPangenome(BasePangenome):
             else "sample-snv_apply.vcf.gz"
         )
 
-        # transfer annotations from the pop_vcf
+        # Transfer annotations from the pop_vcf, then apply the model
+        transfer: Optional[TransferSpec] = None
         if self.pop_vcf:
-            transfer_jobs, concat_job = build_transfer_jobs(
-                (
+            transfer = TransferSpec(
+                config=self.transfer_config(),
+                out_vcf=(
                     transfer_vcf
                     if not self.skip_model_apply
-                    else (snv_apply_vcf)
+                    else snv_apply_vcf
                 ),
-                self.pop_vcf,
-                raw_vcf,
-                self.tmp_dir,
-                self.shards,
-                self.pop_vcf_contigs,
-                self.fai_data,
-                self.dry_run,
-                self.cores,
             )
-            for job in transfer_jobs:
-                dag.add_job(job, {dnascope_job})
-            dag.add_job(concat_job, set(transfer_jobs))
-            apply_dependencies.add(concat_job)
-
-        small_variants_last_job: Optional[Job] = None
+        apply_spec: Optional[ApplySpec] = None
         if not self.skip_model_apply:
-            # DNAModelApply
-            apply_job = self.build_dnamodelapply_job(
-                transfer_vcf, snv_apply_vcf
-            )
-            dag.add_job(apply_job, apply_dependencies)
-            small_variants_last_job = apply_job
-        elif self.pop_vcf:
-            small_variants_last_job = concat_job
+            apply_spec = ApplySpec(model=model, output=snv_apply_vcf)
+        transfer_apply = TransferApplyStage(
+            ctx=ctx,
+            raw_vcf=raw_vcf,
+            transfer=transfer,
+            apply=apply_spec,
+        ).add_to(dag, call.terminal)
 
         # Update the overestimated AD/DP of the joint pileup
-        if small_variants_last_job is not None:
-            ad_update_job = self.build_count_ad_update_job(
-                small_variants_out, snv_apply_vcf
-            )
-            dag.add_job(ad_update_job, {small_variants_last_job})
-            small_variants_last_job = ad_update_job
+        ad_update_job = self.build_count_ad_update_job(
+            small_variants_out, snv_apply_vcf
+        )
+        dag.add_job(ad_update_job, transfer_apply.terminal)
 
         # Genotype the gVCF to also produce a regular VCF at output_vcf
-        if self.gvcf and small_variants_last_job is not None:
-            gvcftyper_job = self.build_gvcftyper_job(self.output_vcf, out_gvcf)
-            dag.add_job(gvcftyper_job, {small_variants_last_job})
+        if self.gvcf:
+            GVCFtyperStage(
+                ctx=ctx,
+                gvcf=out_gvcf,
+                output=self.output_vcf,
+                interval=self.bed,
+            ).add_to(dag, {ad_update_job})
 
         # CNV calling is sex-aware and runs in the second DAG
 
         return dag
+
+    def transfer_config(self) -> TransferConfig:
+        """The inputs the annotation-transfer stage needs.
+
+        Only valid once `--pop_vcf` is known to be set; `validate_bundle`
+        requires it.
+        """
+        assert self.pop_vcf is not None
+        return TransferConfig(
+            pop_vcf=self.pop_vcf,
+            shards=self.shards,
+            pop_vcf_contigs=self.pop_vcf_contigs,
+            fai_data=self.fai_data,
+        )
 
     def build_alignment_job(
         self,
@@ -1133,109 +1164,6 @@ class SentieonPangenome(BasePangenome):
             task_name="pangenome-alignment",
         )
         return mm2_job
-
-    def build_dnascope_job(
-        self,
-        out_vcf: pathlib.Path,
-        input_bams: List[pathlib.Path],
-        sv_vcf: Optional[pathlib.Path] = None,
-        gfa_file: Optional[pathlib.Path] = None,
-    ) -> Job:
-        if not self.model_bundle:
-            self.logger.error("model_bundle is required")
-            sys.exit(2)
-
-        read_filters = []
-        if self.tech.upper() == "ULTIMA":
-            read_filters.append("UltimaReadFilter")
-
-        pcr_indel_model = "NONE" if self.pcr_free else "CONSERVATIVE"
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-            input=input_bams,
-            interval=self.bed,
-            read_filter=read_filters,
-        )
-        if not self.skip_small_variants:
-            driver.add_algo(
-                DNAscope(
-                    out_vcf,
-                    model=self.model_bundle.joinpath("dnascope.model"),
-                    pcr_indel_model=pcr_indel_model,
-                    dbsnp=self.dbsnp,
-                    emit_mode="gvcf" if self.gvcf else "variant",
-                )
-            )
-        if sv_vcf and gfa_file:
-            driver.add_algo(
-                PangenomeSV(
-                    sv_vcf,
-                    gfa_file=gfa_file,
-                    prefix=self.pangenome_contig_prefix,
-                )
-            )
-        return Job(
-            Pipeline(Command(*driver.build_cmd())),
-            "dnascope-raw",
-            self.cores,
-            task_name="variant-calling",
-        )
-
-    def build_dnamodelapply_job(
-        self,
-        in_vcf: pathlib.Path,
-        out_vcf: pathlib.Path,
-    ) -> Job:
-        if not self.model_bundle:
-            self.logger.error("model_bundle is required")
-            sys.exit(2)
-
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-        )
-        driver.add_algo(
-            DNAModelApply(
-                model=self.model_bundle.joinpath("dnascope.model"),
-                vcf=in_vcf,
-                output=out_vcf,
-            )
-        )
-        return Job(
-            Pipeline(Command(*driver.build_cmd())),
-            "model-apply",
-            self.cores,
-            task_name="model-apply",
-        )
-
-    def build_gvcftyper_job(
-        self,
-        out_vcf: pathlib.Path,
-        in_gvcf: pathlib.Path,
-    ) -> Job:
-        """Genotype a gVCF to produce a VCF"""
-        if not self.reference:
-            self.logger.error("reference is required")
-            sys.exit(2)
-
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-            interval=self.bed,
-        )
-        driver.add_algo(
-            GVCFtyper(
-                output=out_vcf,
-                vcf=in_gvcf,
-            )
-        )
-        return Job(
-            Pipeline(Command(*driver.build_cmd())),
-            "gvcftyper",
-            self.cores,
-            task_name="gvcftyper",
-        )
 
     def build_count_ad_update_job(
         self,

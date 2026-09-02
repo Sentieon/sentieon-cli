@@ -28,8 +28,17 @@ def build_transfer_jobs(
     fai_data: Dict[str, Dict[str, int]],
     dry_run: bool = False,
     cores: int = 1,
+    *,
+    tag: Optional[str] = None,
 ) -> Tuple[List[Job], Job]:
-    """Transfer annotations from the pop_vcf to the raw_vcf"""
+    """Transfer annotations from the pop_vcf to the raw_vcf.
+
+    ``tag`` is inserted into the job names (``merge-trim-{tag}-...``) so a
+    pipeline that transfers annotations more than once in a run can tell
+    the two fan-outs apart.
+    """
+
+    name_base = "merge-trim" if tag is None else f"merge-trim-{tag}"
 
     # Get a unique tmpdir
     tmp_dir_str = tempfile.mkdtemp(dir=base_tmp_dir)
@@ -87,7 +96,7 @@ def build_transfer_jobs(
                     raw_vcf,
                     regions_file=subset_bed,
                 ),
-                "merge-trim-extra",
+                f"{name_base}-extra",
                 1,
                 task_name="annotation-transfer",
             )
@@ -122,7 +131,7 @@ def build_transfer_jobs(
                     ],
                     view_xargs=["--no-version"],
                 ),
-                f"merge-trim-{i}",
+                f"{name_base}-{i}",
                 1,
                 task_name="annotation-transfer",
             )
@@ -136,7 +145,7 @@ def build_transfer_jobs(
             sharded_vcfs,
             xargs=["--no-version", "--threads", str(cores)],
         ),
-        "merge-trim-concat",
+        f"{name_base}-concat",
         cores,
         task_name="annotation-transfer",
     )

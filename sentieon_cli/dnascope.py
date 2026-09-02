@@ -21,11 +21,8 @@ from .driver import (
     BaseAlgo,
     BaseDistributionByCycle,
     CoverageMetrics,
-    DNAModelApply,
     DNAscope,
-    Driver,
     GCBias,
-    GVCFtyper,
     HsMetricAlgo,
     InsertSizeMetricAlgo,
     MeanQualityByCycle,
@@ -36,9 +33,15 @@ from .driver import (
 from .job import Job
 from .pipeline import BasePipeline
 from .shell_pipeline import Command, Pipeline
-from .stages.base import StageContext
+from .stages.base import StageContext, driver_job, rm_job
 from .stages.dedup import DedupStage
 from .stages.metrics import MetricsPaths, MetricsStage
+from .stages.small_variants import (
+    ApplySpec,
+    DNAscopeStage,
+    GVCFtyperStage,
+    TransferApplyStage,
+)
 from .util import (
     check_version,
     library_preloaded,
@@ -429,28 +432,15 @@ class DNAscopePipeline(BasePipeline):
 
         # Small variants
         if not self.skip_small_variants:
-            (
-                call_job,
-                apply_job,
-                rm_job,
-                gvcftyper_job,
-                svsolver_job,
-                sv_rm_job,
-            ) = self.sr_call_variants(deduped)
             call_dependencies: Set[Job] = set()
             if dedup_job:
                 call_dependencies.add(dedup_job)
             else:
                 call_dependencies.update(align_jobs)
                 call_dependencies.update(align_fastq_jobs)
-            dag.add_job(call_job, call_dependencies)
-            dag.add_job(apply_job, {call_job})
-            dag.add_job(rm_job, {apply_job})
-            if gvcftyper_job:
-                dag.add_job(gvcftyper_job, {apply_job})
-            if svsolver_job and sv_rm_job:
-                dag.add_job(svsolver_job, {call_job})
-                dag.add_job(sv_rm_job, {svsolver_job})
+            self.add_small_variant_calling(
+                dag, ctx, deduped, call_dependencies
+            )
 
         # Multiqc
         if not self.skip_multiqc:
@@ -740,10 +730,13 @@ class DNAscopePipeline(BasePipeline):
             qc_jobs=qc_jobs,
         )
 
-    def sr_call_variants(
+    def add_small_variant_calling(
         self,
+        dag: DAG,
+        ctx: StageContext,
         deduped: List[pathlib.Path],
-    ) -> Tuple[Job, Job, Job, Optional[Job], Optional[Job], Optional[Job]]:
+        upstream: Set[Job],
+    ) -> None:
         """Call SNVs, indels, and SVs using DNAscope"""
         if not self.model_bundle:
             self.logger.error("model_bundle is required")
@@ -766,7 +759,6 @@ class DNAscopePipeline(BasePipeline):
         out_svs = pathlib.Path(
             str(self.output_vcf).replace(".vcf.gz", "_svs.vcf.gz")
         )
-        emit_mode = "gvcf" if self.gvcf else "variant"
         pcr_indel_model = "NONE" if self.pcr_free else "CONSERVATIVE"
         model = self.model_bundle.joinpath("dnascope.model")
 
@@ -782,14 +774,8 @@ class DNAscopePipeline(BasePipeline):
             tmp_vcf = pathlib.Path(
                 str(self.output_vcf).replace(".vcf.gz", "_tmp.g.vcf.gz")
             )
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-            input=deduped,
-            interval=self.bed,
-            interval_padding=self.interval_padding,
-        )
-        driver.add_algo(
+
+        algos: List[BaseAlgo] = [
             DNAscope(
                 tmp_vcf,
                 dbsnp=self.dbsnp,
@@ -797,110 +783,57 @@ class DNAscopePipeline(BasePipeline):
                 pcr_indel_model=pcr_indel_model,
                 model=model,
             )
-        )
+        ]
         if not self.skip_svs:
-            driver.add_algo(
+            algos.append(
                 DNAscope(
                     out_svs_tmp,
                     dbsnp=self.dbsnp,
                     var_type="BND",
                 )
             )
-        call_job = Job(
-            Pipeline(Command(*driver.build_cmd())),
-            "variant-calling",
-            self.cores,
-            task_name="variant-calling",
-        )
+        call = DNAscopeStage(
+            ctx=ctx,
+            algos=algos,
+            inputs=deduped,
+            interval=self.bed,
+            interval_padding=self.interval_padding,
+        ).add_to(dag, upstream)
 
         # Genotyping and filtering with DNAModelApply
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-        )
-        driver.add_algo(
-            DNAModelApply(
-                model,
-                tmp_vcf,
-                ds_out,
-            )
-        )
-        apply_job = Job(
-            Pipeline(Command(*driver.build_cmd())),
-            "model-apply",
-            self.cores,
-            task_name="model-apply",
-        )
+        transfer_apply = TransferApplyStage(
+            ctx=ctx,
+            raw_vcf=tmp_vcf,
+            apply=ApplySpec(model=model, output=ds_out),
+        ).add_to(dag, call.terminal)
 
         # Remove the tmp_vcf
-        rm_cmd = ["rm", str(tmp_vcf), str(tmp_vcf) + ".tbi"]
-        rm_job = Job(
-            Pipeline(Command(*rm_cmd, fail_ok=True)),
-            "rm-tmp-vcf",
-            0,
-            task_name="cleanup",
+        dag.add_job(
+            rm_job([tmp_vcf, str(tmp_vcf) + ".tbi"], "rm-tmp-vcf"),
+            transfer_apply.terminal,
         )
 
         # Genotype gVCFs
-        gvcftyper_job = None
         if self.gvcf:
-            driver = Driver(
-                reference=self.reference,
-                thread_count=self.cores,
+            GVCFtyperStage(
+                ctx=ctx,
+                gvcf=out_gvcf,
+                output=self.output_vcf,
                 interval=self.bed,
-            )
-            driver.add_algo(
-                GVCFtyper(
-                    output=self.output_vcf,
-                    vcf=out_gvcf,
-                )
-            )
-            gvcftyper_job = Job(
-                Pipeline(Command(*driver.build_cmd())),
-                "gvcftyper",
-                self.cores,
-                task_name="gvcftyper",
-            )
+            ).add_to(dag, transfer_apply.terminal)
 
         # Call SVs
-        svsolver_job = None
-        sv_rm_job = None
         if not self.skip_svs:
-            driver = Driver(
-                reference=self.reference,
-                thread_count=self.cores,
+            svsolver_job = driver_job(
+                ctx,
+                [SVSolver(output=out_svs, vcf=out_svs_tmp)],
                 interval=self.bed,
-            )
-            driver.add_algo(
-                SVSolver(
-                    output=out_svs,
-                    vcf=out_svs_tmp,
-                )
-            )
-            svsolver_job = Job(
-                Pipeline(Command(*driver.build_cmd())),
-                "svsolver",
+                threads=1,
+                name="svsolver",
                 task_name="sv-calling",
             )
-            sv_rm_job = Job(
-                Pipeline(
-                    Command(
-                        "rm",
-                        str(out_svs_tmp),
-                        str(out_svs_tmp) + ".tbi",
-                        fail_ok=True,
-                    )
-                ),
-                "rm-tmp-sv",
-                0,
-                task_name="cleanup",
+            dag.add_job(svsolver_job, call.terminal)
+            dag.add_job(
+                rm_job([out_svs_tmp, str(out_svs_tmp) + ".tbi"], "rm-tmp-sv"),
+                {svsolver_job},
             )
-
-        return (
-            call_job,
-            apply_job,
-            rm_job,
-            gvcftyper_job,
-            svsolver_job,
-            sv_rm_job,
-        )

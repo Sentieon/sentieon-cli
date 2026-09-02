@@ -192,7 +192,7 @@ class TestPipelineCommandGeneration:
         dag = pipeline.build_dag()
 
         # Find variant calling job
-        variant_job = DAGAnalyzer.get_job_by_name(dag, "variant-calling")
+        variant_job = DAGAnalyzer.get_job_by_name(dag, "dnascope")
         assert variant_job is not None, "Should have variant calling job"
 
         # Check that command includes expected parameters
@@ -364,7 +364,7 @@ class TestDAGDependencyValidation:
         dag = pipeline.build_dag()
 
         # Variant calling should depend on either dedup or input processing
-        variant_jobs = DAGAnalyzer.get_jobs_by_type(dag, "variant")
+        variant_jobs = DAGAnalyzer.get_jobs_by_type(dag, "dnascope")
 
         assert len(variant_jobs) > 0, "Should have variant calling jobs"
 

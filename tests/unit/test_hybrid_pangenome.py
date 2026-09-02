@@ -159,7 +159,7 @@ class TestHybridPangenome:
             "dedup-lift",
             "metrics",
             "pangenome-sv",
-            "dnascope-raw",
+            "dnascope",
             "model-apply",
         ):
             assert name in job_names, f"missing job: {name}"
@@ -366,7 +366,7 @@ class TestHybridPangenome:
         lift_aln = str(self.mock_vcf).replace(".vcf.gz", "_lift_deduped.cram")
         replace_arg = r"lr-rg1=ID:lr-rg1\tSM:sample1\tLR:1"
 
-        for job_name in ("pangenome-sv", "dnascope-raw"):
+        for job_name in ("pangenome-sv", "dnascope"):
             cmd_str = str(self._get_job(all_jobs, job_name).shell)
             assert bwa_aln in cmd_str
             assert lift_aln in cmd_str
@@ -421,7 +421,7 @@ class TestHybridPangenome:
         dag = pipeline.build_dag()
         _, all_jobs = self._get_all_job_names(dag)
 
-        cmd_str = str(self._get_job(all_jobs, "dnascope-raw").shell)
+        cmd_str = str(self._get_job(all_jobs, "dnascope").shell)
         assert "--algo DNAscope" in cmd_str
         assert "dnascope.model" in cmd_str
         assert "--pcr_indel_model CONSERVATIVE" in cmd_str
@@ -435,7 +435,7 @@ class TestHybridPangenome:
         dag = pipeline.build_dag()
         _, all_jobs = self._get_all_job_names(dag)
 
-        cmd_str = str(self._get_job(all_jobs, "dnascope-raw").shell)
+        cmd_str = str(self._get_job(all_jobs, "dnascope").shell)
         assert "--pcr_indel_model NONE" in cmd_str
 
     def test_bam_format(self):
@@ -451,7 +451,7 @@ class TestHybridPangenome:
         assert bwa_bam in str(self._get_job(all_jobs, "dedup-bwa").shell)
         assert lift_bam in str(self._get_job(all_jobs, "dedup-lift").shell)
 
-        cmd_str = str(self._get_job(all_jobs, "dnascope-raw").shell)
+        cmd_str = str(self._get_job(all_jobs, "dnascope").shell)
         assert bwa_bam in cmd_str
         assert lift_bam in cmd_str
 
@@ -484,7 +484,7 @@ class TestHybridPangenome:
         job_names, _ = self._get_all_job_names(dag)
 
         assert "pangenome-sv" not in job_names
-        assert "dnascope-raw" in job_names
+        assert "dnascope" in job_names
         assert "graph-update" in job_names
 
     def test_skip_small_variants(self):
@@ -494,7 +494,7 @@ class TestHybridPangenome:
         dag = pipeline.build_dag()
         job_names, _ = self._get_all_job_names(dag)
 
-        assert "dnascope-raw" not in job_names
+        assert "dnascope" not in job_names
         assert "model-apply" not in job_names
         assert "merge-trim-concat" not in job_names
         assert "pangenome-sv" in job_names
@@ -513,7 +513,7 @@ class TestHybridPangenome:
         dag = pipeline.build_dag()
         _, all_jobs = self._get_all_job_names(dag)
 
-        cmd_str = str(self._get_job(all_jobs, "dnascope-raw").shell)
+        cmd_str = str(self._get_job(all_jobs, "dnascope").shell)
         assert r"lr-rg1=ID:lr-rg1\tSM:sample1\tLR:1" in cmd_str
         assert r"lr-rg2=ID:lr-rg2\tSM:sample1\tLR:1" in cmd_str
         assert str(lr_bam2) in cmd_str
@@ -526,7 +526,7 @@ class TestHybridPangenome:
         dag = pipeline.build_dag()
         _, all_jobs = self._get_all_job_names(dag)
 
-        cmd_str = str(self._get_job(all_jobs, "dnascope-raw").shell)
+        cmd_str = str(self._get_job(all_jobs, "dnascope").shell)
         assert r"lr-rg1=ID:lr-rg1\tSM:override_sm\tLR:1" in cmd_str
 
         bwa_cmd = str(self._get_job(all_jobs, "bwa-extract").shell)
@@ -548,7 +548,7 @@ class TestHybridPangenome:
             "graph-update",
             "mm2-lift",
             "pangenome-sv",
-            "dnascope-raw",
+            "dnascope",
             "model-apply",
         ):
             assert name in job_names, f"missing job: {name}"
@@ -619,7 +619,7 @@ class TestHybridPangenome:
             "extract-kmc"
         }
         assert "extract-kmc" in self._get_dep_names(dag, all_jobs, "mm2-lift")
-        assert self._get_dep_names(dag, all_jobs, "dnascope-raw") == {
+        assert self._get_dep_names(dag, all_jobs, "dnascope") == {
             "mm2-lift"
         }
 
@@ -646,7 +646,7 @@ class TestHybridPangenome:
         sr_arg = r"sr-rg1=ID:sr-rg1\tSM:sample1\tLR:0"
         lr_arg = r"lr-rg1=ID:lr-rg1\tSM:sample1\tLR:1"
 
-        cmd_str = str(self._get_job(all_jobs, "dnascope-raw").shell)
+        cmd_str = str(self._get_job(all_jobs, "dnascope").shell)
         assert cmd_str.count("--replace_rg") == 2
         # Each row precedes the input file it applies to
         assert cmd_str.index(sr_arg) < cmd_str.index(str(self.mock_sr_bam))
@@ -669,7 +669,7 @@ class TestHybridPangenome:
 
         lift_bam = str(self.mock_vcf).replace(".vcf.gz", "_lift_deduped.bam")
         assert lift_bam in str(self._get_job(all_jobs, "mm2-lift").shell)
-        assert lift_bam in str(self._get_job(all_jobs, "dnascope-raw").shell)
+        assert lift_bam in str(self._get_job(all_jobs, "dnascope").shell)
 
     # Short-read input validation
 
@@ -753,19 +753,19 @@ class TestHybridPangenome:
             "graph-update-raw",
             "graph-update",
             "pangenome-sv",
-            "dnascope-raw",
+            "dnascope",
         ):
             cmd_str = str(self._get_job(all_jobs, job_name).shell)
             assert realigned in cmd_str, job_name
             assert str(self.mock_lr_bam) not in cmd_str, job_name
 
-        for job_name in ("longreadsv", "graph-update-raw", "dnascope-raw"):
+        for job_name in ("longreadsv", "graph-update-raw", "dnascope"):
             assert "bam-realign-0" in self._get_dep_names(
                 dag, all_jobs, job_name
             ), job_name
 
         # The readgroups of the realigned input are unchanged
-        cmd_str = str(self._get_job(all_jobs, "dnascope-raw").shell)
+        cmd_str = str(self._get_job(all_jobs, "dnascope").shell)
         assert r"lr-rg1=ID:lr-rg1\tSM:sample1\tLR:1" in cmd_str
 
     def test_lr_realign_kmc_reads_original_input(self):
@@ -803,13 +803,13 @@ class TestHybridPangenome:
 
         realigned = str(self.mock_vcf).replace(".vcf.gz", "_mm2_sorted_0.cram")
         lift_cram = str(self.mock_vcf).replace(".vcf.gz", "_lift_deduped.cram")
-        cmd_str = str(self._get_job(all_jobs, "dnascope-raw").shell)
+        cmd_str = str(self._get_job(all_jobs, "dnascope").shell)
         assert (
             cmd_str.index(str(self.mock_sr_bam))
             < cmd_str.index(lift_cram)
             < cmd_str.index(realigned)
         )
-        assert self._get_dep_names(dag, all_jobs, "dnascope-raw") == {
+        assert self._get_dep_names(dag, all_jobs, "dnascope") == {
             "mm2-lift",
             "bam-realign-0",
         }

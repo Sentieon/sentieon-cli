@@ -236,10 +236,10 @@ class TestSentieonPangenome:
         assert apply_gvcf.endswith("sample-snv_apply.g.vcf.gz")
 
         # DNAscope emits gVCF; model-apply writes gVCF
-        for name in ("dnascope-raw", "model-apply"):
+        for name in ("dnascope", "model-apply"):
             job = next(j for j in all_jobs if j.name == name)
             cmd_str = str(job.shell)
-            if name == "dnascope-raw":
+            if name == "dnascope":
                 assert "--emit_mode gvcf" in cmd_str
             else:
                 assert apply_gvcf in cmd_str
@@ -346,18 +346,18 @@ class TestSentieonPangenome:
 
         assert isinstance(dag, DAG)
 
-        # The dnascope-raw job should exist
+        # The dnascope job should exist
         all_jobs = list(dag.waiting_jobs.keys()) + list(
             dag.ready_jobs.keys()
         )
         job_names = [job.name for job in all_jobs]
-        assert "dnascope-raw" in job_names
+        assert "dnascope" in job_names
 
-        # Find the dnascope-raw job and check its command includes
+        # Find the dnascope job and check its command includes
         # both DNAscope and PangenomeSV
         dnascope_job = None
         for job in all_jobs:
-            if job.name == "dnascope-raw":
+            if job.name == "dnascope":
                 dnascope_job = job
                 break
         assert dnascope_job is not None
@@ -382,7 +382,7 @@ class TestSentieonPangenome:
         )
         dnascope_job = None
         for job in all_jobs:
-            if job.name == "dnascope-raw":
+            if job.name == "dnascope":
                 dnascope_job = job
                 break
         assert dnascope_job is not None
@@ -402,7 +402,7 @@ class TestSentieonPangenome:
             dag.ready_jobs.keys()
         )
         job_names = [job.name for job in all_jobs]
-        assert "dnascope-raw" not in job_names
+        assert "dnascope" not in job_names
         assert "model-apply" not in job_names
         assert "merge-trim-concat" not in job_names
 
@@ -421,7 +421,7 @@ class TestSentieonPangenome:
         job_names = [job.name for job in all_jobs]
 
         # The driver job should still run for SV calling
-        assert "dnascope-raw" in job_names
+        assert "dnascope" in job_names
 
         # Transfer and model-apply should be skipped
         assert "model-apply" not in job_names
@@ -430,7 +430,7 @@ class TestSentieonPangenome:
         # The driver command should have PangenomeSV but NOT DNAscope
         dnascope_job = None
         for job in all_jobs:
-            if job.name == "dnascope-raw":
+            if job.name == "dnascope":
                 dnascope_job = job
                 break
         assert dnascope_job is not None
@@ -612,8 +612,8 @@ class TestSentieonPangenome:
         job_names, all_jobs = self._get_all_job_names(dag)
 
         # PangenomeSV still runs
-        assert "dnascope-raw" in job_names
-        dnascope_job = next(j for j in all_jobs if j.name == "dnascope-raw")
+        assert "dnascope" in job_names
+        dnascope_job = next(j for j in all_jobs if j.name == "dnascope")
         cmd_str = str(dnascope_job.shell)
         assert "--algo PangenomeSV" in cmd_str
 
