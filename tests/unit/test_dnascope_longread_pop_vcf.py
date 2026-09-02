@@ -170,7 +170,7 @@ class TestDNAscopeLRPopVcf:
         
         # Expect merge-trim jobs
         assert any("merge-trim" in name for name in job_names)
-        assert "merge-trim-concat" in job_names
+        assert "merge-trim-diploid-concat" in job_names
 
     def test_model_apply_dependency(self):
         """Test that model apply uses the transfer output when pop_vcf is present"""
@@ -188,16 +188,16 @@ class TestDNAscopeLRPopVcf:
              
              dag = pipeline.build_dag()
         
-        # Find first-modelapply job
+        # Find the diploid model-apply job
         apply_job = None
         for job in dag.waiting_jobs:
-            if job.name == "first-modelapply":
+            if job.name == "model-apply-diploid":
                 apply_job = job
                 break
         
         assert apply_job is not None
         
-        # Check dependency: apply_job should depend on merge-trim-concat (transfer_vcf_job)
+        # Check dependency: apply_job should depend on the transfer concat job
         deps = dag.waiting_jobs[apply_job]
         dep_names = [j.name for j in deps]
-        assert "merge-trim-concat" in dep_names
+        assert "merge-trim-diploid-concat" in dep_names
