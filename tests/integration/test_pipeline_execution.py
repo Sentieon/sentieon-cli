@@ -152,7 +152,7 @@ class TestPipelineDryRunExecution:
             all_jobs = [job for job in list(dag.waiting_jobs.keys()) + list(dag.ready_jobs.keys())]
 
             # with --rgsm should use replace_rg during first pass
-            first_pass_job = [job for job in all_jobs if job.name == "calling-1"][0]
+            first_pass_job = [job for job in all_jobs if job.name == "dnascope-1"][0]
             assert "--replace_rg" in first_pass_job.shell.nodes[0].args
 
             # CNV calling is sex-aware and runs in the second DAG
