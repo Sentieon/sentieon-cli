@@ -5,12 +5,11 @@ DNAscope alignment and variant calling
 import argparse
 import copy
 import itertools
-import multiprocessing as mp
 import os
 import pathlib
 import shutil
 import sys
-from typing import Any, List, Optional, Set, Tuple
+from typing import List, Optional, Set, Tuple
 
 import packaging.version
 
@@ -21,8 +20,6 @@ from .dag import DAG
 from .driver import (
     AlignmentStat,
     BaseDistributionByCycle,
-    CNVscope,
-    CNVModelApply,
     CoverageMetrics,
     Dedup,
     DNAModelApply,
@@ -42,9 +39,7 @@ from .job import Job
 from .pipeline import BasePipeline
 from .shell_pipeline import Command, Pipeline
 from .util import (
-    SampleSex,
     check_version,
-    cnvscope_sex_args,
     library_preloaded,
     parse_rg_line,
     path_arg,
@@ -63,11 +58,6 @@ FQ_MIN_VERSIONS = {
 
 VARIANTS_MIN_VERSIONS = {
     "sentieon driver": packaging.version.Version("202308"),
-}
-
-CNV_MIN_VERSIONS = {
-    # 202503.04 adds the CNVscope `--sex` and `--par` arguments
-    "sentieon driver": packaging.version.Version("202503.04"),
 }
 
 
@@ -986,71 +976,3 @@ class DNAscopePipeline(BasePipeline):
             svsolver_job,
             sv_rm_job,
         )
-
-
-def call_cnvs(
-    tmp_dir: pathlib.Path,
-    output_vcf: pathlib.Path,
-    reference: pathlib.Path,
-    sample_input: List[pathlib.Path],
-    model_bundle: pathlib.Path,
-    bed: Optional[pathlib.Path] = None,
-    cores: int = mp.cpu_count(),
-    skip_version_check: bool = False,
-    replace_rg: Optional[List[List[str]]] = None,
-    sample_sex: Optional[SampleSex] = None,
-    par_bed: Optional[pathlib.Path] = None,
-    **_kwargs: Any,
-) -> Tuple[Job, Job]:
-    """
-    Call CNVs using CNVscope
-    """
-    if not skip_version_check:
-        for cmd, min_version in CNV_MIN_VERSIONS.items():
-            if not check_version(cmd, min_version):
-                sys.exit(2)
-
-    sex, par = cnvscope_sex_args(sample_sex, par_bed)
-    cnvscope_vcf = tmp_dir.joinpath("cnvscope.vcf.gz")
-    cnv_vcf = pathlib.Path(str(output_vcf).replace(".vcf.gz", ".cnv.vcf.gz"))
-    driver = Driver(
-        reference=reference,
-        thread_count=cores,
-        replace_rg=replace_rg,
-        input=sample_input,
-        interval=bed,
-    )
-    driver.add_algo(
-        CNVscope(
-            cnvscope_vcf,
-            model_bundle.joinpath("cnv.model"),
-            sex=sex,
-            par=par,
-        )
-    )
-    cnvscope_job = Job(
-        Pipeline(Command(*driver.build_cmd())),
-        "CNVscope",
-        cores,
-        task_name="cnv",
-    )
-
-    driver = Driver(
-        reference=reference,
-        thread_count=cores,
-    )
-    driver.add_algo(
-        CNVModelApply(
-            cnv_vcf,
-            model_bundle.joinpath("cnv.model"),
-            vcf=cnvscope_vcf,
-        )
-    )
-    cnvmodelapply_job = Job(
-        Pipeline(Command(*driver.build_cmd())),
-        "CNVModelApply",
-        cores,
-        task_name="cnv",
-    )
-
-    return (cnvscope_job, cnvmodelapply_job)

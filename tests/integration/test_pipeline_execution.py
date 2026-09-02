@@ -160,7 +160,7 @@ class TestPipelineDryRunExecution:
             second_jobs = list(second_dag.waiting_jobs.keys()) + list(second_dag.ready_jobs.keys())
 
             # should use replace_rg in CNV calling
-            cnv_job = [job for job in second_jobs if job.name == "CNVscope"][0]
+            cnv_job = [job for job in second_jobs if job.name == "cnvscope"][0]
             assert "--replace_rg" in cnv_job.shell.nodes[0].args
 
             # should use replace_rg in SV calling

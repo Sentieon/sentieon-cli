@@ -12,10 +12,11 @@ from typing import List
 import pytest
 
 from sentieon_cli import shard
-from sentieon_cli.dnascope import call_cnvs
 from sentieon_cli.driver import CNVscope
 from sentieon_cli.pipeline import BasePipeline
 from sentieon_cli.dag import DAG
+from sentieon_cli.stages.base import StageContext
+from sentieon_cli.stages.cnv import CNVscopeStage
 from sentieon_cli.shard import (
     BUILD_SIGNATURES,
     detect_reference_build,
@@ -335,22 +336,31 @@ def test_resolve_cnv_par_bed_skips_the_lookup_without_cnv_calling(messages):
     assert not any("PAR" in msg for msg in messages)
 
 
-# `call_cnvs` passes the sample sex through to CNVscope
+# `CNVscopeStage` passes the sample sex through to CNVscope
 
 
 def _cnvscope_cmd(**kwargs) -> str:
-    cnvscope_job, _ = call_cnvs(
-        pathlib.Path("/tmp/cnv"),
-        pathlib.Path("/out/sample.vcf.gz"),
-        pathlib.Path("/ref/reference.fa"),
-        [pathlib.Path("/in/sample.cram")],
-        pathlib.Path("/bundle/model.bundle"),
-        None,
-        mp.cpu_count(),
-        True,  # skip_version_check
-        **kwargs,
+    tmp_dir = pathlib.Path("/tmp/cnv")
+    output_vcf = pathlib.Path("/out/sample.vcf.gz")
+    ctx = StageContext(
+        reference=pathlib.Path("/ref/reference.fa"),
+        output_vcf=output_vcf,
+        tmp_dir=tmp_dir,
+        cores=mp.cpu_count(),
+        dry_run=True,
+        skip_version_check=True,
     )
-    return str(cnvscope_job.shell)
+    result = CNVscopeStage(
+        ctx=ctx,
+        inputs=[pathlib.Path("/in/sample.cram")],
+        model=pathlib.Path("/bundle/model.bundle/cnv.model"),
+        cnvscope_vcf=tmp_dir.joinpath("cnvscope.vcf.gz"),
+        cnv_vcf=pathlib.Path(
+            str(output_vcf).replace(".vcf.gz", ".cnv.vcf.gz")
+        ),
+        **kwargs,
+    ).add_to(DAG())
+    return str(result.cnvscope_job.shell)
 
 
 def test_call_cnvs_passes_the_sex_of_a_male_sample():

@@ -19,10 +19,7 @@ from . import command_strings as cmds
 from .archive import ar_load
 from .base_pangenome import BasePangenome
 from .dag import DAG
-from .dnascope import CNV_MIN_VERSIONS
 from .driver import (
-    CNVModelApply,
-    CNVscope,
     DNAModelApply,
     DNAscope,
     Driver,
@@ -33,6 +30,8 @@ from .driver import (
 from .job import Job
 from .logging import get_logger
 from .shell_pipeline import Command, Pipeline
+from .stages.cnv import CNV_MIN_VERSIONS, CNVscopeStage
+from .stages.ploidy import PloidyStage
 from .util import (
     SampleSex,
     __version__,
@@ -49,7 +48,6 @@ from .shard import (
     GRCH38_CONTIGS,
     determine_shards_from_fai,
     parse_fai,
-    ploidy_contigs_for_build,
     vcf_contigs,
 )
 from .transfer import build_transfer_jobs
@@ -679,6 +677,8 @@ class SentieonPangenome(BasePangenome):
             self.logger.error("output_vcf is required")
             sys.exit(2)
 
+        ctx = self.stage_context()
+
         self.logger.info("Building the Sentieon pangenome DAG")
         dag = DAG()
 
@@ -689,9 +689,6 @@ class SentieonPangenome(BasePangenome):
         )
         out_mm2_aln = pathlib.Path(
             str(self.output_vcf).replace(".vcf.gz", f"_mm2_deduped.{suffix}")
-        )
-        self.ploidy_json = pathlib.Path(
-            str(self.output_vcf).replace(".vcf.gz", "_ploidy.json")
         )
         out_gvcf = pathlib.Path(
             str(self.output_vcf).replace(".vcf.gz", ".g.vcf.gz")
@@ -853,12 +850,12 @@ class SentieonPangenome(BasePangenome):
         # Estimate the sample ploidy and sex. The JSON output is always
         # written; `--sample_sex` takes precedence for the sex used by
         # the sex-aware callers.
-        ploidy_job = self.build_ploidy_job(
-            self.ploidy_json,
-            [cnv_input_bams[0]],
-            ploidy_contigs_for_build(self.reference_build),
-        )
-        dag.add_job(ploidy_job, cnvscope_deps)
+        ploidy_result = PloidyStage(
+            ctx=ctx,
+            inputs=[cnv_input_bams[0]],
+            reference_build=self.reference_build,
+        ).add_to(dag, cnvscope_deps)
+        self.ploidy_json = ploidy_result.ploidy_json
 
         # T1K HLA/KIR calling
         if self.t1k_hla_seq and self.t1k_hla_coord:
@@ -1431,6 +1428,7 @@ class SentieonPangenome(BasePangenome):
             self.logger.error("output_vcf is required")
             sys.exit(2)
 
+        ctx = self.stage_context()
         cnvscope_vcf = self.tmp_dir.joinpath("sample-cnvscope.vcf.gz")
         cnv_apply_vcf = self.tmp_dir.joinpath("sample-cnv_model_apply.vcf.gz")
         indel2cnv_vcf = self.tmp_dir.joinpath("sample-sv_cnv.vcf.gz")
@@ -1438,16 +1436,18 @@ class SentieonPangenome(BasePangenome):
             str(self.output_vcf).replace(".vcf.gz", "_cnv.vcf.gz")
         )
 
-        # CNVscope on BWA deduped BAM. The alignment and the PangenomeSV
-        # output were both written by the first DAG.
-        cnvscope_job = self._build_cnvscope_job(cnvscope_vcf, cnv_input_bams)
-        dag.add_job(cnvscope_job)
-
-        # CNVModelApply on CNVscope output
-        cnv_model_apply_job = self._build_cnv_model_apply_job(
-            cnv_apply_vcf, cnvscope_vcf
-        )
-        dag.add_job(cnv_model_apply_job, {cnvscope_job})
+        # CNVscope on BWA deduped BAM, then CNVModelApply. The alignment
+        # and the PangenomeSV output were both written by the first DAG.
+        cnv_result = CNVscopeStage(
+            ctx=ctx,
+            inputs=cnv_input_bams,
+            model=self.model_bundle.joinpath("cnv.model"),
+            cnvscope_vcf=cnvscope_vcf,
+            cnv_vcf=cnv_apply_vcf,
+            sample_sex=self.sample_sex,
+            par_bed=self.cnv_par_bed,
+            interval=self.bed,
+        ).add_to(dag)
 
         # Convert PangenomeSV output to CNVs
         indel2cnv_job = self._build_indel2cnv_job(indel2cnv_vcf, sv_vcf)
@@ -1457,61 +1457,7 @@ class SentieonPangenome(BasePangenome):
         combine_job = self._build_combine_cnv_job(
             cnv_vcf, cnv_apply_vcf, indel2cnv_vcf
         )
-        dag.add_job(combine_job, {cnv_model_apply_job, indel2cnv_job})
-
-    def _build_cnvscope_job(
-        self,
-        output_vcf: pathlib.Path,
-        input_bams: List[pathlib.Path],
-    ) -> Job:
-        """Build a CNVscope job"""
-        assert self.model_bundle is not None
-        sex, par = self.cnv_sex_args()
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-            input=input_bams,
-            interval=self.bed,
-        )
-        driver.add_algo(
-            CNVscope(
-                output=output_vcf,
-                model=self.model_bundle.joinpath("cnv.model"),
-                sex=sex,
-                par=par,
-            )
-        )
-        return Job(
-            Pipeline(Command(*driver.build_cmd())),
-            "cnvscope",
-            self.cores,
-            task_name="cnv",
-        )
-
-    def _build_cnv_model_apply_job(
-        self,
-        output_vcf: pathlib.Path,
-        input_vcf: pathlib.Path,
-    ) -> Job:
-        """Build a CNVModelApply job"""
-        assert self.model_bundle is not None
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-        )
-        driver.add_algo(
-            CNVModelApply(
-                output=output_vcf,
-                model=self.model_bundle.joinpath("cnv.model"),
-                vcf=input_vcf,
-            )
-        )
-        return Job(
-            Pipeline(Command(*driver.build_cmd())),
-            "cnv-model-apply",
-            self.cores,
-            task_name="cnv",
-        )
+        dag.add_job(combine_job, {cnv_result.apply_job, indel2cnv_job})
 
     def _build_indel2cnv_job(
         self,

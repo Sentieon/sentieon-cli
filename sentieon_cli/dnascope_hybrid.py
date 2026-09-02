@@ -26,11 +26,13 @@ from .driver import (
     HybridStage2,
     HybridStage3,
 )
-from .dnascope import call_cnvs, CNV_MIN_VERSIONS, DNAscopePipeline
+from .dnascope import DNAscopePipeline
 from .dnascope_longread import DNAscopeLRPipeline
 from .job import Job
 from .pipeline import BasePipeline
 from .shell_pipeline import Command, Pipeline
+from .stages.cnv import CNV_MIN_VERSIONS, CNVscopeStage
+from .stages.ploidy import PloidyStage
 from .util import (
     __version__,
     check_version,
@@ -44,7 +46,6 @@ from .util import (
 from .shard import (
     determine_shards_from_fai,
     parse_fai,
-    ploidy_contigs_for_build,
     vcf_contigs,
 )
 from .transfer import build_transfer_jobs
@@ -579,6 +580,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         if not self.model_bundle:
             self.logger.error("model_bundle is required")
             sys.exit(2)
+        ctx = self.stage_context()
 
         rg_info = RgInfo(
             self.lr_aln_readgroups,
@@ -662,15 +664,12 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         # Estimate the sample ploidy and sex. The JSON output is always
         # written; `--sample_sex` takes precedence for the sex used by
         # sex-aware CNV calling.
-        self.ploidy_json = pathlib.Path(
-            str(self.output_vcf).replace(".vcf.gz", "_ploidy.json")
-        )
-        ploidy_job = self.build_ploidy_job(
-            self.ploidy_json,
-            sr_aln,
-            ploidy_contigs_for_build(self.reference_build),
-        )
-        dag.add_job(ploidy_job, sr_preprocessing_jobs)
+        ploidy_result = PloidyStage(
+            ctx=ctx,
+            inputs=sr_aln,
+            reference_build=self.reference_build,
+        ).add_to(dag, sr_preprocessing_jobs)
+        self.ploidy_json = ploidy_result.ploidy_json
 
         if not self.skip_cnv:
             # CNV calling is sex-aware and runs in the second DAG
@@ -758,26 +757,25 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             self.logger.error("model_bundle is required")
             sys.exit(2)
         assert self.ploidy_json is not None
+        ctx = self.stage_context()
 
         self.get_sex(self.ploidy_json)
 
         self.logger.info("Building the DNAscope Hybrid CNV DAG")
         dag = DAG()
-        cnvscope_job, cnvmodelapply_job = call_cnvs(
-            self.tmp_dir,
-            self.output_vcf,
-            self.reference,
-            self.cnv_sr_aln,
-            self.model_bundle,
-            self.bed,
-            self.cores,
-            self.skip_version_check,
-            replace_rg=self.cnv_replace_rg,
+        CNVscopeStage(
+            ctx=ctx,
+            inputs=self.cnv_sr_aln,
+            model=self.model_bundle.joinpath("cnv.model"),
+            cnvscope_vcf=ctx.tmp_dir.joinpath("cnvscope.vcf.gz"),
+            cnv_vcf=pathlib.Path(
+                str(ctx.output_vcf).replace(".vcf.gz", ".cnv.vcf.gz")
+            ),
             sample_sex=self.sample_sex,
             par_bed=self.cnv_par_bed,
-        )
-        dag.add_job(cnvscope_job)
-        dag.add_job(cnvmodelapply_job, {cnvscope_job})
+            interval=self.bed,
+            replace_rg=self.cnv_replace_rg,
+        ).add_to(dag)
         return dag
 
     def call_variants(

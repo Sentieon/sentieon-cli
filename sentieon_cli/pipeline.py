@@ -15,8 +15,6 @@ from typing import Any, Dict, List, Optional, Tuple, TypeVar
 
 import packaging.version
 
-from importlib.resources import files
-
 from . import command_strings as cmds
 from .dag import DAG
 from .exceptions import DagExecutionError
@@ -26,7 +24,6 @@ from .logging import get_logger, set_console_level
 from .run_logs import RunLogs
 from .scheduler import ThreadScheduler
 from .shard import (
-    PloidyContigs,
     detect_reference_build,
     par_bed_for_build,
 )
@@ -355,33 +352,6 @@ class BasePipeline(ABC):
         hook. Returning `None` runs a single DAG.
         """
         return None
-
-    def build_ploidy_job(
-        self,
-        ploidy_json: pathlib.Path,
-        deduped_bam: List[pathlib.Path],
-        ploidy_contigs: Optional[PloidyContigs] = None,
-    ) -> Job:
-        """Estimate sample ploidy and sex"""
-        estimate_ploidy = pathlib.Path(
-            str(files("sentieon_cli.scripts").joinpath("estimate_ploidy.py"))
-        ).resolve()
-        ploidy_contigs = ploidy_contigs or PloidyContigs()
-        ploidy_job = Job(
-            cmds.cmd_estimate_ploidy(
-                ploidy_json,
-                deduped_bam,
-                estimate_ploidy,
-                contigs=ploidy_contigs.contigs,
-                autosomes=ploidy_contigs.autosomes,
-                x_contig=ploidy_contigs.x_contig,
-                y_contig=ploidy_contigs.y_contig,
-            ),
-            "estimate-ploidy",
-            0,
-            task_name="ploidy",
-        )
-        return ploidy_job
 
     def get_sex(self, ploidy_json: pathlib.Path) -> None:
         """Retrieve the sample sex"""
