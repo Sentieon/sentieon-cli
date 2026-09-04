@@ -4,7 +4,6 @@ DNAscope alignment and variant calling
 
 import argparse
 import copy
-from dataclasses import dataclass, field
 import itertools
 import os
 import pathlib
@@ -16,30 +15,25 @@ import packaging.version
 
 from .dag import DAG
 from .driver import (
-    AlignmentStat,
     BaseAlgo,
-    BaseDistributionByCycle,
-    CoverageMetrics,
     DNAscope,
-    GCBias,
-    HsMetricAlgo,
-    InsertSizeMetricAlgo,
-    MeanQualityByCycle,
-    QualDistribution,
     SVSolver,
-    WgsMetricsAlgo,
 )
 from .job import Job
 from .pipeline import BasePipeline
 from .stages.alignment import (
+    BWA_FASTQ_MIN_VERSIONS,
+    BWA_REALIGN_MIN_VERSIONS,
     AlignResult,
     BwaFastqStage,
     BwaRealignStage,
     find_unzip,
 )
 from .stages.base import StageContext, driver_job, rm_job
-from .stages.dedup import DedupStage
-from .stages.metrics import MetricsPaths, MetricsStage
+from .stages.preprocessing import (
+    ShortReadPreprocessingStage,
+    SrPreprocessingResult,
+)
 from .stages.small_variants import (
     ApplySpec,
     DNAscopeStage,
@@ -55,33 +49,9 @@ from .util import (
     total_memory,
 )
 
-ALN_MIN_VERSIONS = {
-    "sentieon driver": packaging.version.Version("202308"),
-    "samtools": packaging.version.Version("1.16"),
-}
-
-FQ_MIN_VERSIONS = {
-    "sentieon driver": packaging.version.Version("202308"),
-}
-
 VARIANTS_MIN_VERSIONS = {
     "sentieon driver": packaging.version.Version("202308"),
 }
-
-
-@dataclass
-class SrPreprocessing:
-    """The short-read dedup and metrics jobs added to a DAG.
-
-    * ``deduped`` -- the alignment to call variants from; the input files
-      unchanged when duplicate marking is off.
-    * ``dedup_job`` -- the Dedup job, absent when duplicate marking is off.
-    * ``qc_jobs`` -- every metrics-producing job, for MultiQC to wait on.
-    """
-
-    deduped: List[pathlib.Path]
-    dedup_job: Optional[Job] = None
-    qc_jobs: List[Job] = field(default_factory=list)
 
 
 class DNAscopePipeline(BasePipeline):
@@ -463,7 +433,9 @@ class DNAscopePipeline(BasePipeline):
         """Align input BAM/CRAM/uBAM/uCRAM files with bwa"""
         bundle = self.required(self.model_bundle, "model_bundle")
 
-        require_versions(ALN_MIN_VERSIONS, skip=self.skip_version_check)
+        require_versions(
+            BWA_REALIGN_MIN_VERSIONS, skip=self.skip_version_check
+        )
 
         return BwaRealignStage(
             ctx=ctx,
@@ -489,7 +461,7 @@ class DNAscopePipeline(BasePipeline):
                 jobs=[], terminal=set(), outputs=[], cleanup_paths=[]
             )
 
-        require_versions(FQ_MIN_VERSIONS, skip=self.skip_version_check)
+        require_versions(BWA_FASTQ_MIN_VERSIONS, skip=self.skip_version_check)
 
         return BwaFastqStage(
             ctx=ctx,
@@ -506,113 +478,24 @@ class DNAscopePipeline(BasePipeline):
             util_sort_args=self.util_sort_args,
         ).add_to(dag)
 
-    def sr_metrics_algos(self, paths: MetricsPaths) -> List[BaseAlgo]:
-        """The metrics that do not need duplicate-marked reads"""
-        algos: List[BaseAlgo] = [
-            MeanQualityByCycle(paths.mean_qual_by_cycle),
-            BaseDistributionByCycle(paths.base_distribution_by_cycle),
-            QualDistribution(paths.qual_distribution),
-            AlignmentStat(paths.alignment_stat),
-        ]
-        if self.assay == "WGS":
-            algos.append(GCBias(paths.gc_bias, summary=paths.gc_bias_summary))
-        return algos
-
     def add_sr_preprocessing(
         self,
         dag: DAG,
         ctx: StageContext,
         sample_input: List[pathlib.Path],
         upstream: Set[Job],
-    ) -> SrPreprocessing:
+    ) -> SrPreprocessingResult:
         """Mark duplicates and collect metrics from the short reads"""
-        suffix = "bam" if self.bam_format else "cram"
-
-        paths = MetricsPaths.from_output_vcf(ctx.output_vcf)
-        paths.ensure_dir(self.dry_run)
-
-        if self.sr_duplicate_marking == "none":
-            # Without duplicate marking there is nothing to collect after
-            # the fact, so every metric comes from one pass over the input
-            if self.skip_metrics:
-                return SrPreprocessing(
-                    deduped=sample_input, dedup_job=None, qc_jobs=[]
-                )
-            metrics_result = MetricsStage(
-                ctx=ctx,
-                inputs=sample_input,
-                algos=[
-                    InsertSizeMetricAlgo(paths.insert_size),
-                    *self.sr_metrics_algos(paths),
-                ],
-                name="metrics",
-                task_name="metrics",
-                threads=ctx.cores,
-            ).add_to(dag, upstream)
-            return SrPreprocessing(
-                deduped=sample_input,
-                dedup_job=None,
-                qc_jobs=list(metrics_result.jobs),
-            )
-
-        # Metrics that ride along on the LocusCollector pass
-        lc_extra_algos: List[BaseAlgo] = []
-        if not self.skip_metrics:
-            # Prefer to run InsertSizeMetricAlgo after duplicate marking
-            if self.assay == "WES" and not self.bed:
-                lc_extra_algos.append(InsertSizeMetricAlgo(paths.insert_size))
-            lc_extra_algos.extend(self.sr_metrics_algos(paths))
-
-        deduped = pathlib.Path(
-            str(ctx.output_vcf).replace(".vcf.gz", f"_deduped.{suffix}")
-        )
-        dedup_result = DedupStage(
+        return ShortReadPreprocessingStage(
             ctx=ctx,
             inputs=sample_input,
-            output=deduped,
-            score_file=paths.score,
+            duplicate_marking=self.sr_duplicate_marking,
             consensus=self.consensus,
-            rmdup=(self.sr_duplicate_marking == "rmdup"),
-            cram_write_options="version=3.0,compressor=rans",
-            dedup_metrics=paths.dedup_metrics,
-            lc_extra_algos=lc_extra_algos,
+            skip_metrics=self.skip_metrics,
+            assay=self.assay,
+            bed=self.bed,
+            bam_format=self.bam_format,
         ).add_to(dag, upstream)
-        qc_jobs: List[Job] = [dedup_result.lc_job]
-
-        # HsMetricAlgo and WgsMetricsAlgo run after duplicate marking to
-        # account for duplicate reads
-        post_algos: List[BaseAlgo] = []
-        rehead_metrics: Optional[pathlib.Path] = None
-        if not self.skip_metrics:
-            if self.assay == "WES" and self.bed:
-                post_algos = [
-                    HsMetricAlgo(paths.hybrid_selection, self.bed, self.bed),
-                    InsertSizeMetricAlgo(paths.insert_size),
-                ]
-            elif self.assay == "WGS":
-                post_algos = [
-                    InsertSizeMetricAlgo(paths.insert_size),
-                    WgsMetricsAlgo(paths.wgs, include_unpaired="true"),
-                    CoverageMetrics(paths.coverage),
-                ]
-                # Rehead WGS metrics so they are recognized by MultiQC
-                rehead_metrics = paths.wgs
-        if post_algos:
-            metrics_result = MetricsStage(
-                ctx=ctx,
-                inputs=[deduped],
-                algos=post_algos,
-                interval=self.bed,
-                rehead_metrics=rehead_metrics,
-                threads=0,  # Run metrics in the background
-            ).add_to(dag, {dedup_result.dedup_job})
-            qc_jobs.extend(metrics_result.jobs)
-
-        return SrPreprocessing(
-            deduped=[deduped],
-            dedup_job=dedup_result.dedup_job,
-            qc_jobs=qc_jobs,
-        )
 
     def add_small_variant_calling(
         self,

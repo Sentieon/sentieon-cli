@@ -12,7 +12,11 @@ from sentieon_cli.driver import (
     WgsMetricsAlgo,
 )
 from sentieon_cli.stages.base import StageContext, rm_job
-from sentieon_cli.stages.metrics import MetricsPaths, MetricsStage
+from sentieon_cli.stages.metrics import (
+    MetricsPaths,
+    MetricsStage,
+    MosdepthStage,
+)
 
 
 def make_ctx(tmp_path: pathlib.Path, cores: int = 4) -> StageContext:
@@ -242,3 +246,87 @@ class TestDagWiring:
         result = make_stage(tmp_path).add_to(dag)
 
         assert result.metrics_job in dag.ready_jobs
+
+
+class TestMosdepth:
+    """Coverage QC, one job per input file"""
+
+    def test_mosdepth_command(self, tmp_path):
+        result = MosdepthStage(
+            ctx=make_ctx(tmp_path),
+            inputs=[tmp_path / "sample.bam"],
+        ).add_to(DAG())
+
+        (job,) = result.jobs
+        assert str(job.shell) == (
+            f"mosdepth --fasta {tmp_path}/ref.fa --threads 4 "
+            "--by 500 --no-per-base --use-median "
+            "-T 1,3,5,10,15,20,30,40,50 "
+            f"{tmp_path}/output_mosdepth_0 {tmp_path}/sample.bam"
+        )
+
+    def test_one_job_per_input(self, tmp_path):
+        result = MosdepthStage(
+            ctx=make_ctx(tmp_path),
+            inputs=[tmp_path / "one.bam", tmp_path / "two.bam"],
+        ).add_to(DAG())
+
+        assert [job.name for job in result.jobs] == [
+            "mosdepth-0",
+            "mosdepth-1",
+        ]
+        assert f"{tmp_path}/output_mosdepth_0" in str(result.jobs[0].shell)
+        assert f"{tmp_path}/output_mosdepth_1" in str(result.jobs[1].shell)
+
+    def test_job_metadata(self, tmp_path):
+        result = MosdepthStage(
+            ctx=make_ctx(tmp_path),
+            inputs=[tmp_path / "sample.bam"],
+        ).add_to(DAG())
+
+        (job,) = result.jobs
+        assert job.task_name == "metrics"
+        # mosdepth runs in the background
+        assert job.threads == 0
+
+    def test_no_inputs_adds_nothing(self, tmp_path):
+        dag = DAG()
+        result = MosdepthStage(ctx=make_ctx(tmp_path), inputs=[]).add_to(dag)
+
+        assert result.jobs == []
+        assert result.terminal == set()
+        assert not dag.ready_jobs
+        assert not dag.waiting_jobs
+
+    def test_build_inserts_nothing(self, tmp_path):
+        dag = DAG()
+        result = MosdepthStage(
+            ctx=make_ctx(tmp_path),
+            inputs=[tmp_path / "sample.bam"],
+        ).build()
+
+        assert result.terminal == set(result.jobs)
+        assert not dag.ready_jobs
+        assert not dag.waiting_jobs
+
+    def test_upstream_lands_on_every_job(self, tmp_path):
+        dag = DAG()
+        upstream = rm_job([tmp_path / "upstream"], "upstream")
+        dag.add_job(upstream)
+
+        result = MosdepthStage(
+            ctx=make_ctx(tmp_path),
+            inputs=[tmp_path / "one.bam", tmp_path / "two.bam"],
+        ).add_to(dag, [upstream])
+
+        for job in result.jobs:
+            assert dag.waiting_jobs[job] == {upstream}
+
+    def test_roots_without_upstream(self, tmp_path):
+        dag = DAG()
+        result = MosdepthStage(
+            ctx=make_ctx(tmp_path),
+            inputs=[tmp_path / "sample.bam"],
+        ).add_to(dag)
+
+        assert result.jobs[0] in dag.ready_jobs

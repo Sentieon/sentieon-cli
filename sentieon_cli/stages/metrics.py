@@ -8,11 +8,18 @@ import pathlib
 import sys
 from typing import Iterable, List, Optional
 
+import packaging.version
+
+from .. import command_strings as cmds
 from ..dag import DAG
 from ..driver import BaseAlgo
 from ..job import Job
 from ..shell_pipeline import Command, Pipeline
 from .base import Stage, StageResult, driver_job
+
+MOSDEPTH_MIN_VERSIONS = {
+    "mosdepth": packaging.version.Version("0.2.6"),
+}
 
 
 @dataclass(frozen=True)
@@ -179,3 +186,48 @@ class MetricsStage(Stage):
             metrics_job=metrics,
             rehead_job=rehead,
         )
+
+
+@dataclass(kw_only=True)
+class MosdepthResult(StageResult):
+    """The jobs of `MosdepthStage`"""
+
+
+@dataclass(kw_only=True)
+class MosdepthStage(Stage):
+    """Coverage QC with mosdepth, one job per input file.
+
+    The jobs are independent of each other, so ``build`` constructs them
+    all and ``add_to`` inserts each with the same dependencies.
+    """
+
+    inputs: List[pathlib.Path]
+
+    def build(self) -> MosdepthResult:
+        """Construct this stage's jobs without touching a DAG"""
+        jobs: List[Job] = []
+        for i, input_file in enumerate(self.inputs):
+            mosdepth_dir = pathlib.Path(
+                str(self.ctx.output_vcf).replace(".vcf.gz", f"_mosdepth_{i}")
+            )
+            jobs.append(
+                Job(
+                    cmds.cmd_mosdepth(
+                        input_file,
+                        mosdepth_dir,
+                        fasta=self.ctx.reference,
+                        threads=self.ctx.cores,
+                    ),
+                    f"mosdepth-{i}",
+                    0,  # Run in background
+                    task_name="metrics",
+                )
+            )
+        return MosdepthResult(jobs=jobs, terminal=set(jobs))
+
+    def add_to(self, dag: DAG, upstream: Iterable[Job] = ()) -> MosdepthResult:
+        deps = set(upstream)
+        result = self.build()
+        for job in result.jobs:
+            dag.add_job(job, deps)
+        return result

@@ -18,10 +18,8 @@ from .archive import ar_load
 from .dag import DAG
 from .driver import (
     BaseAlgo,
-    Driver,
     DNAscope,
     DNAscopeHP,
-    LongReadSV,
     RepeatModel,
     VariantPhaser,
 )
@@ -34,18 +32,22 @@ from .shard import (
 )
 from .shell_pipeline import Command, Pipeline
 from .stages.alignment import (
+    MINIMAP2_FASTQ_MIN_VERSIONS,
+    MINIMAP2_REALIGN_MIN_VERSIONS,
     Minimap2FastqStage,
     Minimap2RealignStage,
     ReadWriterStage,
     find_unzip,
 )
 from .stages.base import StageContext, driver_job
+from .stages.metrics import MOSDEPTH_MIN_VERSIONS, MosdepthStage
 from .stages.small_variants import (
     ApplySpec,
     DNAscopeStage,
     TransferApplyStage,
     TransferSpec,
 )
+from .stages.sv import LONGREADSV_MIN_VERSIONS, LongReadSVStage
 from .stages.transfer import TransferConfig
 from .util import (
     __version__,
@@ -61,23 +63,6 @@ TOOL_MIN_VERSIONS = {
     "sentieon driver": packaging.version.Version("202308.01"),
     "bcftools": packaging.version.Version("1.22"),
     "bedtools": None,
-}
-
-SV_MIN_VERSIONS = {
-    "sentieon driver": packaging.version.Version("202308"),
-}
-
-ALN_MIN_VERSIONS = {
-    "sentieon driver": packaging.version.Version("202308"),
-    "samtools": packaging.version.Version("1.16"),
-}
-
-FQ_MIN_VERSIONS = {
-    "sentieon driver": packaging.version.Version("202308"),
-}
-
-MOSDEPTH_MIN_VERSIONS = {
-    "mosdepth": packaging.version.Version("0.2.6"),
 }
 
 MERGE_MIN_VERSIONS = {
@@ -495,7 +480,9 @@ class DNAscopeLRPipeline(BasePipeline):
         """
         output_vcf = self.required(self.output_vcf, "output_vcf")
         bundle = self.required(self.model_bundle, "model_bundle")
-        require_versions(ALN_MIN_VERSIONS, skip=self.skip_version_check)
+        require_versions(
+            MINIMAP2_REALIGN_MIN_VERSIONS, skip=self.skip_version_check
+        )
 
         result = Minimap2RealignStage(
             ctx=self.stage_context(),
@@ -518,7 +505,9 @@ class DNAscopeLRPipeline(BasePipeline):
         if self.fastq is None and self.readgroups is None:
             return ([], set())
 
-        require_versions(FQ_MIN_VERSIONS, skip=self.skip_version_check)
+        require_versions(
+            MINIMAP2_FASTQ_MIN_VERSIONS, skip=self.skip_version_check
+        )
 
         result = Minimap2FastqStage(
             ctx=self.stage_context(),
@@ -544,25 +533,14 @@ class DNAscopeLRPipeline(BasePipeline):
             )
             return set()
 
-        mosdepth_jobs = set()
-        for i, input_file in enumerate(sample_input):
-            mosdepth_dir = pathlib.Path(
-                str(self.output_vcf).replace(".vcf.gz", f"_mosdepth_{i}")
+        return set(
+            MosdepthStage(
+                ctx=self.stage_context(),
+                inputs=sample_input,
             )
-            mosdepth_jobs.add(
-                Job(
-                    cmds.cmd_mosdepth(
-                        input_file,
-                        mosdepth_dir,
-                        fasta=self.reference,
-                        threads=self.cores,
-                    ),
-                    f"mosdepth-{i}",
-                    0,  # Run in background
-                    task_name="metrics",
-                )
-            )
-        return mosdepth_jobs
+            .build()
+            .jobs
+        )
 
     def merge_input_files(
         self, sample_input: List[pathlib.Path]
@@ -1185,28 +1163,16 @@ class DNAscopeLRPipeline(BasePipeline):
         Call SVs using Sentieon LongReadSV
         """
         bundle = self.required(self.model_bundle, "model_bundle")
-        require_versions(SV_MIN_VERSIONS, skip=self.skip_version_check)
+        require_versions(LONGREADSV_MIN_VERSIONS, skip=self.skip_version_check)
 
-        sv_vcf = pathlib.Path(
-            str(self.output_vcf).replace(".vcf.gz", ".sv.vcf.gz")
-        )
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-            replace_rg=replace_rg,
-            input=sample_input,
-            interval=self.bed,
-        )
-        driver.add_algo(
-            LongReadSV(
-                sv_vcf,
-                bundle.joinpath("longreadsv.model"),
+        return (
+            LongReadSVStage(
+                ctx=self.stage_context(),
+                inputs=sample_input,
+                model=bundle.joinpath("longreadsv.model"),
+                interval=self.bed,
+                replace_rg=replace_rg,
             )
+            .build()
+            .job
         )
-        longreadsv_job = Job(
-            Pipeline(Command(*driver.build_cmd())),
-            "LongReadSV",
-            self.cores,
-            task_name="sv-calling",
-        )
-        return longreadsv_job

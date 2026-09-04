@@ -15,6 +15,8 @@ import pathlib
 import shutil
 from typing import Iterable, List, Optional, Union
 
+import packaging.version
+
 from .. import command_strings as cmds
 from ..dag import DAG
 from ..driver import ReadWriter
@@ -23,6 +25,24 @@ from .base import Stage, StageResult, driver_job
 
 # The `sentieon util sort` arguments every aligner defaults to
 DEFAULT_UTIL_SORT_ARGS = "--cram_write_options version=3.0,compressor=rans"
+
+BWA_REALIGN_MIN_VERSIONS = {
+    "sentieon driver": packaging.version.Version("202308"),
+    "samtools": packaging.version.Version("1.16"),
+}
+
+BWA_FASTQ_MIN_VERSIONS = {
+    "sentieon driver": packaging.version.Version("202308"),
+}
+
+MINIMAP2_REALIGN_MIN_VERSIONS = {
+    "sentieon driver": packaging.version.Version("202308"),
+    "samtools": packaging.version.Version("1.16"),
+}
+
+MINIMAP2_FASTQ_MIN_VERSIONS = {
+    "sentieon driver": packaging.version.Version("202308"),
+}
 
 
 def aln_suffix(bam_format: bool) -> str:
