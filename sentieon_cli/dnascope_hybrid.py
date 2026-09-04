@@ -306,7 +306,7 @@ class DNAscopeHybridPipeline(BasePipeline):
             "minimap2_args": {
                 # help="Extra arguments for sentieon minimap2",
                 "help": argparse.SUPPRESS,
-                "default": "-Y",
+                "default": "-YL",
             },
             "no_split_alignment": {
                 "help": argparse.SUPPRESS,
@@ -362,7 +362,7 @@ class DNAscopeHybridPipeline(BasePipeline):
         self.bwt_max_mem: Optional[str] = None
         self.lr_fastq_taglist = "*"
         self.lr_read_filter: Optional[str] = None
-        self.minimap2_args = "-Y"
+        self.minimap2_args = "-YL"
         self.no_split_alignment = False
         self.skip_model_apply = False
         self.skip_pop_vcf_id_check = False

@@ -99,14 +99,25 @@ class TestDNAscopeHybridLongRead:
         return {dep.name for dep in dag.waiting_jobs.get(job, set())}
 
     def test_minimap2_args_default(self):
-        """The hybrid pipeline aligns with `-Y`, not the long-read `-YL`"""
+        """The hybrid pipeline aligns with `-YL`, like the long-read one
+
+        `-L` moves CIGAR strings longer than 65535 operations - which ONT
+        reads can produce and BAM cannot store - into the `CG` tag, so
+        every minimap2 call that may see ONT input needs it.
+        """
         pipeline = self.create_pipeline()
         _dag, jobs = self.build_dag(pipeline)
 
         assert "bam-realign-0" in jobs
         cmd_str = str(jobs["bam-realign-0"].shell)
-        assert " -Y " in cmd_str
-        assert "-YL" not in cmd_str
+        assert " -YL " in cmd_str
+
+    def test_minimap2_args_match_the_long_read_pipeline(self):
+        """The hybrid and long-read defaults agree"""
+        assert (
+            DNAscopeHybridPipeline().minimap2_args
+            == DNAscopeLRPipeline().minimap2_args
+        )
 
     def test_lr_fastq_taglist_is_used(self):
         """`--lr_fastq_taglist` reaches the minimap2 command"""
