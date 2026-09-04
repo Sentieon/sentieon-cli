@@ -45,6 +45,7 @@ from .util import (
     parse_rg_line,
     path_arg,
     require_versions,
+    set_bwt_max_mem,
     split_alignment,
     total_memory,
 )
@@ -319,8 +320,10 @@ class DNAscopePipeline(BasePipeline):
             if shm_ok:
                 os.environ["SENTIEON_TMPDIR"] = "/dev/shm"
 
-        self.set_bwt_max_mem(
-            total_input_size if shm_ok else 0, n_alignment_jobs
+        set_bwt_max_mem(
+            total_input_size if shm_ok else 0,
+            n_alignment_jobs,
+            override=self.bwt_max_mem,
         )
 
     def total_input_size(self) -> int:
@@ -349,27 +352,6 @@ class DNAscopePipeline(BasePipeline):
             self.logger.debug("Using /dev/shm for temporary files")
             return True
         return False
-
-    def set_bwt_max_mem(
-        self,
-        total_input_size: int,
-        n_alignment_jobs: int = 1,
-    ):
-        """Set the bwt_max_mem environment variable"""
-        if self.bwt_max_mem:
-            os.environ["bwt_max_mem"] = self.bwt_max_mem
-            return
-
-        total_mem = total_memory()
-        total_mem_gb = total_mem / (1024.0**3)
-        align_mem_gb = (
-            total_mem_gb - 4 - total_input_size / (1024.0**3) * 2.3
-        )  # some memory for other system processes
-        bwa_mem_gb = max(
-            int((align_mem_gb / n_alignment_jobs) - 6), 0
-        )  # some memory for other alignment processes
-        self.logger.debug("Setting bwt_max_mem to: %sG", bwa_mem_gb)
-        os.environ["bwt_max_mem"] = f"{bwa_mem_gb}G"
 
     def build_dag(self) -> DAG:
         """Build the DAG for the pipeline"""

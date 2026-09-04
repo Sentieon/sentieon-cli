@@ -24,20 +24,32 @@ from .driver import (
     HybridStage2,
     HybridStage3,
 )
-from .dnascope import DNAscopePipeline
-from .dnascope_longread import DNAscopeLRPipeline
 from .job import Job
 from .pipeline import BasePipeline
 from .shell_pipeline import Command, Pipeline
+from .stages.alignment import (
+    BWA_FASTQ_MIN_VERSIONS,
+    MINIMAP2_REALIGN_MIN_VERSIONS,
+    AlignResult,
+    BwaFastqStage,
+    Minimap2RealignStage,
+    find_unzip,
+)
 from .stages.base import StageContext, driver_job, rm_job
 from .stages.cnv import CNV_MIN_VERSIONS, CNVscopeStage
+from .stages.metrics import MOSDEPTH_MIN_VERSIONS, MosdepthStage
 from .stages.ploidy import PloidyStage
+from .stages.preprocessing import (
+    ShortReadPreprocessingStage,
+    SrPreprocessingResult,
+)
 from .stages.small_variants import (
     ApplySpec,
     DNAscopeStage,
     TransferApplyStage,
     TransferSpec,
 )
+from .stages.sv import LONGREADSV_MIN_VERSIONS, LongReadSVStage
 from .stages.transfer import TransferConfig
 from .util import (
     __version__,
@@ -46,8 +58,10 @@ from .util import (
     path_arg,
     require_versions,
     sample_sex_arg,
+    set_bwt_max_mem,
     split_alignment,
     vcf_id,
+    versions_available,
 )
 from .shard import (
     determine_shards_from_fai,
@@ -126,7 +140,7 @@ class RgInfo:
                     )
 
 
-class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
+class DNAscopeHybridPipeline(BasePipeline):
     """The DNAscope Hybrid pipeline"""
 
     params = copy.deepcopy(BasePipeline.params)
@@ -319,24 +333,43 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
 
     def __init__(self) -> None:
         super().__init__()
+        # Required arguments
+        self.lr_aln: List[pathlib.Path] = []
+        self.model_bundle: Optional[pathlib.Path] = None
+        self.sr_aln: List[pathlib.Path] = []
         self.sr_r1_fastq: List[pathlib.Path] = []
         self.sr_r2_fastq: List[pathlib.Path] = []
         self.sr_readgroups: List[str] = []
-        self.sr_aln: List[pathlib.Path] = []
-        self.sr_duplicate_marking = "markdup"
-        self.lr_aln: List[pathlib.Path] = []
+        # Additional arguments
+        self.bam_format = False
+        self.bed: Optional[pathlib.Path] = None
+        self.dbsnp: Optional[pathlib.Path] = None
+        self.gvcf = False
         self.lr_align_input = False
         self.lr_input_ref: Optional[pathlib.Path] = None
         self.par_bed: Optional[pathlib.Path] = None
         self.pop_vcf: Optional[pathlib.Path] = None
-        self.bam_format = False
         self.rgsm: Optional[str] = None
+        self.skip_cnv = False
+        self.skip_metrics = False
+        self.skip_mosdepth = False
+        self.skip_multiqc = False
+        self.skip_svs = False
+        self.sr_duplicate_marking = "markdup"
+        # Hidden arguments
+        self.bwa_args = ""
+        self.bwa_k = 100000000
+        self.bwt_max_mem: Optional[str] = None
         self.lr_fastq_taglist = "*"
-        self.sr_read_filter: Optional[str] = None
         self.lr_read_filter: Optional[str] = None
-        self.assay = "WGS"
+        self.minimap2_args = "-Y"
+        self.no_split_alignment = False
         self.skip_model_apply = False
         self.skip_pop_vcf_id_check = False
+        self.sr_read_filter: Optional[str] = None
+        self.util_sort_args = (
+            "--cram_write_options version=3.0,compressor=rans"
+        )
         # Stashed by `build_dag` for the second, sex-aware DAG
         self.ploidy_json: Optional[pathlib.Path] = None
         self.cnv_sr_aln: List[pathlib.Path] = []
@@ -549,7 +582,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             self.numa_nodes = split_alignment(self.cores)
         n_alignment_jobs = max(1, len(self.numa_nodes))
 
-        self.set_bwt_max_mem(0, n_alignment_jobs)
+        set_bwt_max_mem(0, n_alignment_jobs, override=self.bwt_max_mem)
 
     def configure_readgroups(self) -> None:
         self.lr_aln_readgroups = self.all_readgroups[0]
@@ -610,14 +643,12 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         realign_jobs: Set[Job] = set()
         lr_aln = self.lr_aln
         if self.lr_align_input:
-            lr_aln, realign_jobs = self.lr_align_inputs()
-            for job in realign_jobs:
-                dag.add_job(job)
+            realign_result = self.add_lr_realignment(dag, ctx)
+            lr_aln = realign_result.outputs
+            realign_jobs = set(realign_result.jobs)
 
         if not self.skip_mosdepth:
-            mosdepth_jobs = self.mosdepth(sample_input=lr_aln)
-            for job in mosdepth_jobs:
-                dag.add_job(job, realign_jobs)
+            self.add_mosdepth(dag, ctx, lr_aln, realign_jobs)
 
         if not self.skip_multiqc:
             multiqc_job = self.multiqc()
@@ -625,10 +656,13 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
                 dag.add_job(multiqc_job, set(preprocessing.qc_jobs))
 
         if not self.skip_svs:
-            longreadsv_job = self.call_svs(
-                lr_aln, replace_rg=rg_info.replace_rg_args[0]
+            self.add_sv_calling(
+                dag,
+                ctx,
+                lr_aln,
+                rg_info.replace_rg_args[0],
+                realign_jobs,
             )
-            dag.add_job(longreadsv_job, realign_jobs)
 
         sr_preprocessing_jobs: Set[Job] = set()
         sr_preprocessing_jobs.update(align_fastq_jobs)
@@ -663,6 +697,111 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         )
 
         return dag
+
+    def add_sr_fastq_alignment(
+        self, dag: DAG, ctx: StageContext
+    ) -> AlignResult:
+        """Align the short-read fastq files with bwa"""
+        bundle = self.required(self.model_bundle, "model_bundle")
+
+        if not self.sr_r1_fastq and not self.sr_readgroups:
+            return AlignResult(
+                jobs=[], terminal=set(), outputs=[], cleanup_paths=[]
+            )
+
+        require_versions(BWA_FASTQ_MIN_VERSIONS, skip=self.skip_version_check)
+
+        return BwaFastqStage(
+            ctx=ctx,
+            r1_fastq=self.sr_r1_fastq,
+            r2_fastq=self.sr_r2_fastq,
+            readgroups=self.sr_readgroups,
+            model_bundle=bundle,
+            numa_nodes=self.numa_nodes,
+            bam_format=self.bam_format,
+            duplicate_marking=self.sr_duplicate_marking,
+            unzip=find_unzip(self.logger),
+            bwa_args=self.bwa_args,
+            bwa_k=str(self.bwa_k),
+            util_sort_args=self.util_sort_args,
+        ).add_to(dag)
+
+    def add_sr_preprocessing(
+        self,
+        dag: DAG,
+        ctx: StageContext,
+        sr_aln: List[pathlib.Path],
+        upstream: Set[Job],
+    ) -> SrPreprocessingResult:
+        """Mark duplicates and collect metrics from the short reads"""
+        return ShortReadPreprocessingStage(
+            ctx=ctx,
+            inputs=sr_aln,
+            duplicate_marking=self.sr_duplicate_marking,
+            consensus=False,
+            skip_metrics=self.skip_metrics,
+            assay="WGS",
+            bed=self.bed,
+            bam_format=self.bam_format,
+        ).add_to(dag, upstream)
+
+    def add_lr_realignment(self, dag: DAG, ctx: StageContext) -> AlignResult:
+        """Re-align the long-read input files with minimap2"""
+        bundle = self.required(self.model_bundle, "model_bundle")
+        require_versions(
+            MINIMAP2_REALIGN_MIN_VERSIONS, skip=self.skip_version_check
+        )
+
+        return Minimap2RealignStage(
+            ctx=ctx,
+            inputs=self.lr_aln,
+            model_bundle=bundle,
+            sample_name=ctx.output_vcf.name.replace(".vcf.gz", ""),
+            bam_format=self.bam_format,
+            input_ref=self.lr_input_ref,
+            fastq_taglist=self.lr_fastq_taglist,
+            minimap2_args=self.minimap2_args,
+            util_sort_args=self.util_sort_args,
+        ).add_to(dag)
+
+    def add_mosdepth(
+        self,
+        dag: DAG,
+        ctx: StageContext,
+        inputs: List[pathlib.Path],
+        upstream: Set[Job],
+    ) -> None:
+        """Run mosdepth for QC, when it is available"""
+        if not versions_available(
+            MOSDEPTH_MIN_VERSIONS, skip=self.skip_version_check
+        ):
+            self.logger.warning(
+                "Skipping mosdepth. mosdepth version %s or later not found",
+                MOSDEPTH_MIN_VERSIONS["mosdepth"],
+            )
+            return
+
+        MosdepthStage(ctx=ctx, inputs=inputs).add_to(dag, upstream)
+
+    def add_sv_calling(
+        self,
+        dag: DAG,
+        ctx: StageContext,
+        inputs: List[pathlib.Path],
+        replace_rg: Optional[List[List[str]]],
+        upstream: Set[Job],
+    ) -> None:
+        """Call SVs from the long reads with Sentieon LongReadSV"""
+        bundle = self.required(self.model_bundle, "model_bundle")
+        require_versions(LONGREADSV_MIN_VERSIONS, skip=self.skip_version_check)
+
+        LongReadSVStage(
+            ctx=ctx,
+            inputs=inputs,
+            model=bundle.joinpath("longreadsv.model"),
+            interval=self.bed,
+            replace_rg=replace_rg,
+        ).add_to(dag, upstream)
 
     def build_second_dag(self) -> Optional[DAG]:
         """Build the second DAG, for sex-aware CNV calling"""

@@ -235,6 +235,36 @@ def total_memory() -> int:
     return total_mem
 
 
+def set_bwt_max_mem(
+    total_input_size: int,
+    n_alignment_jobs: int = 1,
+    override: Optional[str] = None,
+) -> str:
+    """Set the `bwt_max_mem` environment variable and return its value.
+
+    `override` short-circuits the calculation, for the hidden
+    `--bwt_max_mem` argument. Otherwise the value is derived from the
+    memory available to the run, the size of the inputs staged in
+    memory, and the number of concurrent alignment jobs.
+    """
+    if override:
+        os.environ["bwt_max_mem"] = override
+        return override
+
+    total_mem = total_memory()
+    total_mem_gb = total_mem / (1024.0**3)
+    align_mem_gb = (
+        total_mem_gb - 4 - total_input_size / (1024.0**3) * 2.3
+    )  # some memory for other system processes
+    bwa_mem_gb = max(
+        int((align_mem_gb / n_alignment_jobs) - 6), 0
+    )  # some memory for other alignment processes
+    logger.debug("Setting bwt_max_mem to: %sG", bwa_mem_gb)
+    bwt_max_mem = f"{bwa_mem_gb}G"
+    os.environ["bwt_max_mem"] = bwt_max_mem
+    return bwt_max_mem
+
+
 def find_numa_nodes() -> List[str]:
     """Find NUMA nodes on the system, if available"""
     numa_nodes = []

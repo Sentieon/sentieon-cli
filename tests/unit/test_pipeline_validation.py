@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 from sentieon_cli.dnascope import DNAscopePipeline
 from sentieon_cli.dnascope_longread import DNAscopeLRPipeline
 from sentieon_cli.dnascope_hybrid import DNAscopeHybridPipeline
+from sentieon_cli.util import set_bwt_max_mem
 from tests.utils.test_helpers import create_mock_args
 
 
@@ -431,20 +432,34 @@ class TestPipelineConfigurationHelpers:
         total_size = pipeline.total_input_size()
         assert total_size == 1500  # 1KB + 0.5KB
 
-    def test_memory_calculation_logic(self):
-        """Test bwt_max_mem calculation logic"""
-        pipeline = DNAscopePipeline()
+    def test_bwt_max_mem_override(self, monkeypatch):
+        """`--bwt_max_mem` short-circuits the calculation"""
+        monkeypatch.delenv("bwt_max_mem", raising=False)
 
-        # Setup logging first
-        args = create_mock_args()
-        pipeline.setup_logging(args)
-
-        # Test with specific memory values
-        pipeline.bwt_max_mem = "10G"
-        pipeline.set_bwt_max_mem(0, 1)
-
-        import os
+        assert set_bwt_max_mem(0, 1, override="10G") == "10G"
         assert os.environ.get("bwt_max_mem") == "10G"
+
+    @pytest.mark.parametrize(
+        "total_input_size,n_alignment_jobs,expected",
+        [
+            (0, 1, "54G"),  # 64 - 4 - 0 = 60; 60 / 1 - 6 = 54
+            (0, 2, "24G"),  # 60 / 2 - 6 = 24
+            (30 * 1024**3, 1, "0G"),  # 60 - 30 * 2.3 < 0, floored at 0
+        ],
+    )
+    def test_bwt_max_mem_calculation(
+        self, monkeypatch, total_input_size, n_alignment_jobs, expected
+    ):
+        """bwt_max_mem is derived from the memory and the input size"""
+        monkeypatch.setenv("bwt_max_mem", "unset")
+
+        with patch(
+            "sentieon_cli.util.total_memory", return_value=64 * 1024**3
+        ):
+            result = set_bwt_max_mem(total_input_size, n_alignment_jobs)
+
+        assert result == expected
+        assert os.environ.get("bwt_max_mem") == expected
 
 
 class TestValidateBwaIndex:

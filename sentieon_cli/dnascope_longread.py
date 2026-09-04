@@ -1154,11 +1154,7 @@ class DNAscopeLRPipeline(BasePipeline):
             {haploid_gvcf_combine_job, gvcf_combine_job},
         )
 
-    def call_svs(
-        self,
-        sample_input: List[pathlib.Path],
-        replace_rg: Optional[List[List[str]]] = None,
-    ) -> Job:
+    def call_svs(self, sample_input: List[pathlib.Path]) -> Job:
         """
         Call SVs using Sentieon LongReadSV
         """
@@ -1171,7 +1167,6 @@ class DNAscopeLRPipeline(BasePipeline):
                 inputs=sample_input,
                 model=bundle.joinpath("longreadsv.model"),
                 interval=self.bed,
-                replace_rg=replace_rg,
             )
             .build()
             .job
