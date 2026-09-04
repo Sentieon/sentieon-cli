@@ -75,7 +75,6 @@ class TestDNAscopeLRPopVcf:
 
         # Mock sample inputs
         pipeline.sample_input = self.mock_aln
-        pipeline.lr_aln = self.mock_aln
         
         return pipeline
 

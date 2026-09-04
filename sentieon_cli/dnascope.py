@@ -245,20 +245,8 @@ class DNAscopePipeline(BasePipeline):
     def validate(self) -> None:
         self.required(self.output_vcf, "output_vcf")
 
-        # uniquify pipeline attributes
-        self.sr_r1_fastq = self.r1_fastq
-        self.sr_r2_fastq = self.r2_fastq
-        self.sr_readgroups = self.readgroups
-        self.sr_duplicate_marking = self.duplicate_marking
-        del self.r1_fastq
-        del self.r2_fastq
-        del self.readgroups
-        del self.duplicate_marking
-
         # validate
-        if not self.sample_input and not (
-            self.sr_r1_fastq and self.sr_readgroups
-        ):
+        if not self.sample_input and not (self.r1_fastq and self.readgroups):
             self.logger.error(
                 "Please supply either the `--sample_input` or `--r1_fastq` "
                 "and `--readgroups` arguments"
@@ -285,21 +273,21 @@ class DNAscopePipeline(BasePipeline):
                     "across decoy and unplaced contigs."
                 )
 
-        if len(self.sr_r1_fastq) != len(self.sr_readgroups):
+        if len(self.r1_fastq) != len(self.readgroups):
             self.logger.error(
                 "The number of readgroups does not equal the number of fastq "
                 "files"
             )
             sys.exit(2)
 
-        for rg in self.sr_readgroups:
+        for rg in self.readgroups:
             try:
                 parse_rg_line(rg.replace(r"\t", "\t"))
             except ValueError as e:
                 self.logger.error("Invalid --readgroups value '%s': %s", rg, e)
                 sys.exit(2)
 
-        if self.sr_r1_fastq or self.align or self.collate_align:
+        if self.r1_fastq or self.align or self.collate_align:
             self.validate_bwa_index()
 
     def configure(self) -> None:
@@ -329,9 +317,7 @@ class DNAscopePipeline(BasePipeline):
     def total_input_size(self) -> int:
         """Find the total size of all inputs"""
         total_input_size = sum([x.stat().st_size for x in self.sample_input])
-        for r1, r2 in itertools.zip_longest(
-            self.sr_r1_fastq, self.sr_r2_fastq
-        ):
+        for r1, r2 in itertools.zip_longest(self.r1_fastq, self.r2_fastq):
             for fq in (r1, r2):
                 if isinstance(fq, pathlib.Path):
                     total_input_size += fq.stat().st_size
@@ -424,7 +410,7 @@ class DNAscopePipeline(BasePipeline):
             inputs=self.sample_input,
             model_bundle=bundle,
             bam_format=self.bam_format,
-            duplicate_marking=self.sr_duplicate_marking,
+            duplicate_marking=self.duplicate_marking,
             input_ref=self.input_ref,
             collate=self.collate_align,
             bwa_args=self.bwa_args,
@@ -438,7 +424,7 @@ class DNAscopePipeline(BasePipeline):
         """Align fastq files to the reference genome using bwa"""
         bundle = self.required(self.model_bundle, "model_bundle")
 
-        if not self.sr_r1_fastq and not self.sr_readgroups:
+        if not self.r1_fastq and not self.readgroups:
             return AlignResult(
                 jobs=[], terminal=set(), outputs=[], cleanup_paths=[]
             )
@@ -447,13 +433,13 @@ class DNAscopePipeline(BasePipeline):
 
         return BwaFastqStage(
             ctx=ctx,
-            r1_fastq=self.sr_r1_fastq,
-            r2_fastq=self.sr_r2_fastq,
-            readgroups=self.sr_readgroups,
+            r1_fastq=self.r1_fastq,
+            r2_fastq=self.r2_fastq,
+            readgroups=self.readgroups,
             model_bundle=bundle,
             numa_nodes=self.numa_nodes,
             bam_format=self.bam_format,
-            duplicate_marking=self.sr_duplicate_marking,
+            duplicate_marking=self.duplicate_marking,
             unzip=find_unzip(self.logger),
             bwa_args=self.bwa_args,
             bwa_k=str(self.bwa_k),
@@ -471,7 +457,7 @@ class DNAscopePipeline(BasePipeline):
         return ShortReadPreprocessingStage(
             ctx=ctx,
             inputs=sample_input,
-            duplicate_marking=self.sr_duplicate_marking,
+            duplicate_marking=self.duplicate_marking,
             consensus=self.consensus,
             skip_metrics=self.skip_metrics,
             assay=self.assay,

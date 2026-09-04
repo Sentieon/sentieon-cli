@@ -253,13 +253,8 @@ class DNAscopeLRPipeline(BasePipeline):
         self.use_pbsv = False
 
     def validate(self) -> None:
-        # uniquify pipeline attributes
-        self.lr_aln = self.sample_input
-        self.lr_input_ref = self.input_ref
-        del self.sample_input
-
         # validate
-        if not (self.lr_aln or self.fastq):
+        if not (self.sample_input or self.fastq):
             self.logger.error(
                 "Please supply either the `--sample_input` or `--fastq` and "
                 "`--readgroups` arguments"
@@ -433,7 +428,7 @@ class DNAscopeLRPipeline(BasePipeline):
         dag = DAG()
         ctx = self.stage_context()
 
-        sample_input = self.lr_aln
+        sample_input = self.sample_input
         realign_jobs: Set[Job] = set()
         if self.align:
             sample_input, realign_jobs = self.lr_align_inputs()
@@ -486,11 +481,11 @@ class DNAscopeLRPipeline(BasePipeline):
 
         result = Minimap2RealignStage(
             ctx=self.stage_context(),
-            inputs=self.lr_aln,
+            inputs=self.sample_input,
             model_bundle=bundle,
             sample_name=output_vcf.name.replace(".vcf.gz", ""),
             bam_format=self.bam_format,
-            input_ref=self.lr_input_ref,
+            input_ref=self.input_ref,
             fastq_taglist=self.fastq_taglist,
             minimap2_args=self.minimap2_args,
             util_sort_args=self.util_sort_args,

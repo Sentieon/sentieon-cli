@@ -66,10 +66,10 @@ class TestDAGConstruction:
         pipeline.reference = self.mock_ref
         pipeline.model_bundle = self.mock_bundle
         pipeline.sample_input = [self.mock_bam]
-        pipeline.sr_r1_fastq = []
-        pipeline.sr_r2_fastq = []
-        pipeline.sr_readgroups = []
-        pipeline.sr_duplicate_marking = "markdup"
+        pipeline.r1_fastq = []
+        pipeline.r2_fastq = []
+        pipeline.readgroups = []
+        pipeline.duplicate_marking = "markdup"
         pipeline.cores = 2
         pipeline.dry_run = True  # Important: use dry run to avoid actual execution
         pipeline.skip_version_check = True

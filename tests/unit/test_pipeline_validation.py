@@ -54,8 +54,8 @@ class TestDNAscopePipelineValidation:
         self.pipeline.reference = self.mock_ref
         self.pipeline.model_bundle = self.mock_bundle
         self.pipeline.sample_input = [self.mock_bam]
-        self.pipeline.sr_r1_fastq = []
-        self.pipeline.sr_readgroups = []
+        self.pipeline.r1_fastq = []
+        self.pipeline.readgroups = []
 
         # Should not raise any exceptions
         try:
@@ -84,8 +84,8 @@ class TestDNAscopePipelineValidation:
         self.pipeline.reference = self.mock_ref
         self.pipeline.model_bundle = self.mock_bundle
         self.pipeline.sample_input = []
-        self.pipeline.sr_r1_fastq = []
-        self.pipeline.sr_readgroups = []
+        self.pipeline.r1_fastq = []
+        self.pipeline.readgroups = []
 
         with pytest.raises(SystemExit):
             self.pipeline.validate()
@@ -97,8 +97,8 @@ class TestDNAscopePipelineValidation:
         self.pipeline.reference = self.mock_ref
         self.pipeline.model_bundle = self.mock_bundle
         self.pipeline.sample_input = [self.mock_bam]
-        self.pipeline.sr_r1_fastq = []
-        self.pipeline.sr_readgroups = []
+        self.pipeline.r1_fastq = []
+        self.pipeline.readgroups = []
 
         with pytest.raises(SystemExit):
             self.pipeline.validate()
@@ -109,11 +109,19 @@ class TestDNAscopePipelineValidation:
         self.pipeline.reference = self.mock_ref
         self.pipeline.model_bundle = self.mock_bundle
         self.pipeline.sample_input = []
-        self.pipeline.sr_r1_fastq = [self.mock_fastq]
-        self.pipeline.sr_readgroups = []  # Empty readgroups with non-empty fastq
+        # Two fastq files, but only one readgroup. Both must be non-empty to
+        # get past the "supply --sample_input or --r1_fastq" guard.
+        self.pipeline.r1_fastq = [self.mock_fastq, self.mock_fastq]
+        self.pipeline.readgroups = ["@RG\\tID:a\\tSM:s"]
 
-        with pytest.raises(SystemExit):
-            self.pipeline.validate()
+        with patch.object(self.pipeline.logger, "error") as mock_error:
+            with pytest.raises(SystemExit) as excinfo:
+                self.pipeline.validate()
+
+        assert excinfo.value.code == 2
+        mock_error.assert_any_call(
+            "The number of readgroups does not equal the number of fastq files"
+        )
 
     def test_skip_multiqc_when_skip_metrics(self):
         """Test that skip_multiqc is set when skip_metrics is True"""
@@ -121,8 +129,8 @@ class TestDNAscopePipelineValidation:
         self.pipeline.reference = self.mock_ref
         self.pipeline.model_bundle = self.mock_bundle
         self.pipeline.sample_input = [self.mock_bam]
-        self.pipeline.sr_r1_fastq = []
-        self.pipeline.sr_readgroups = []
+        self.pipeline.r1_fastq = []
+        self.pipeline.readgroups = []
         self.pipeline.skip_metrics = True
         self.pipeline.skip_multiqc = False
 
@@ -198,7 +206,7 @@ class TestDNAscopeLRPipelineValidation:
         self.pipeline.output_vcf = self.mock_vcf
         self.pipeline.reference = self.mock_ref
         self.pipeline.model_bundle = self.mock_bundle
-        self.pipeline.lr_aln = []
+        self.pipeline.sample_input = []
         self.pipeline.fastq = [self.mock_fastq]
         self.pipeline.readgroups = ["@RG\\tID:test\\tSM:sample"]
 
@@ -272,22 +280,29 @@ class TestDNAscopeLRPipelineValidation:
         self.pipeline.output_vcf = self.mock_vcf
         self.pipeline.reference = self.mock_ref
         self.pipeline.model_bundle = self.mock_bundle
-        self.pipeline.lr_aln = [self.mock_bam]
+        self.pipeline.sample_input = [self.mock_bam]
         self.pipeline.fastq = []
         self.pipeline.readgroups = []
         self.pipeline.haploid_bed = self.mock_bed
         self.pipeline.bed = None  # No diploid bed
         self.pipeline.skip_small_variants = False
 
-        with pytest.raises(SystemExit):
-            self.pipeline.validate()
+        with patch.object(self.pipeline.logger, "error") as mock_error:
+            with pytest.raises(SystemExit) as excinfo:
+                self.pipeline.validate()
+
+        assert excinfo.value.code == 2
+        mock_error.assert_any_call(
+            "Please supply a BED file of diploid regions to distinguish "
+            "haploid and diploid regions of the genome."
+        )
 
     def test_mismatched_fastq_readgroups_raises_error(self):
         """Test that mismatched FASTQ and readgroup counts raise an error"""
         self.pipeline.output_vcf = self.mock_vcf
         self.pipeline.reference = self.mock_ref
         self.pipeline.model_bundle = self.mock_bundle
-        self.pipeline.lr_aln = []
+        self.pipeline.sample_input = []
         self.pipeline.fastq = [self.mock_fastq]
         self.pipeline.readgroups = []  # Empty readgroups with non-empty fastq
 
@@ -426,8 +441,8 @@ class TestPipelineConfigurationHelpers:
         fastq_file.write_bytes(b"y" * 500)  # 0.5KB
 
         pipeline.sample_input = [bam_file]
-        pipeline.sr_r1_fastq = [fastq_file]
-        pipeline.sr_r2_fastq = []
+        pipeline.r1_fastq = [fastq_file]
+        pipeline.r2_fastq = []
 
         total_size = pipeline.total_input_size()
         assert total_size == 1500  # 1KB + 0.5KB
