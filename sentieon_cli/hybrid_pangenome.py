@@ -21,7 +21,6 @@ from .dag import DAG
 from .driver import (
     DNAscope,
     Driver,
-    LongReadSV,
     PangenomeSV,
     PGHapUpdateAlgo,
 )
@@ -48,6 +47,7 @@ from .stages.small_variants import (
     TransferApplyStage,
     TransferSpec,
 )
+from .stages.sv import LongReadSVStage
 from .stages.transfer import TransferConfig
 from .util import (
     __version__,
@@ -703,15 +703,22 @@ class HybridPangenome(BasePangenome):
         dag.add_job(update_raw_job, {gfa_job} | realign_jobs)
 
         # Call SVs from the long reads and collect graph update regions
-        longreadsv_job = self.build_longreadsv_job(longread_sv_vcf, calling_lr)
-        dag.add_job(longreadsv_job, realign_jobs)
+        longreadsv_result = LongReadSVStage(
+            ctx=ctx,
+            inputs=list(calling_lr),
+            model=bundle.joinpath("longreadsv.model"),
+            output=longread_sv_vcf,
+            min_sv_size=LONGREADSV_MIN_SV_SIZE,
+            name="longreadsv",
+            task_name="pangenome-update",
+        ).add_to(dag, realign_jobs)
         sv_bed_job = Job(
             cmds.cmd_longread_sv_bed(sv_bed, longread_sv_vcf, ref_fai),
             "longread-sv-bed",
             0,
             task_name="pangenome-update",
         )
-        dag.add_job(sv_bed_job, {longreadsv_job})
+        dag.add_job(sv_bed_job, {longreadsv_result.job})
 
         # Graph update with the SV BED
         update_job = self.build_graph_update_job(
@@ -1036,32 +1043,6 @@ class HybridPangenome(BasePangenome):
         return Job(
             Pipeline(Command(*driver.build_cmd())),
             name,
-            self.cores,
-            task_name="pangenome-update",
-        )
-
-    def build_longreadsv_job(
-        self,
-        out_vcf: pathlib.Path,
-        lr_aln: List[pathlib.Path],
-    ) -> Job:
-        """Call SVs from the long reads for the graph update"""
-        assert self.model_bundle is not None
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-            input=list(lr_aln),
-        )
-        driver.add_algo(
-            LongReadSV(
-                out_vcf,
-                model=self.model_bundle.joinpath("longreadsv.model"),
-                min_sv_size=LONGREADSV_MIN_SV_SIZE,
-            )
-        )
-        return Job(
-            Pipeline(Command(*driver.build_cmd())),
-            "longreadsv",
             self.cores,
             task_name="pangenome-update",
         )

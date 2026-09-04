@@ -87,6 +87,49 @@ class TestCommand:
         assert "--replace_rg" not in str(result.job.shell)
 
 
+class TestAlgoOptions:
+    """The optional LongReadSV algo arguments"""
+
+    def test_min_sv_size(self, tmp_path):
+        result = make_stage(tmp_path, min_sv_size=20).add_to(DAG())
+
+        assert str(result.job.shell) == (
+            f"sentieon driver --input {tmp_path}/sample.bam "
+            f"--reference {tmp_path}/ref.fa --thread_count 4 "
+            f"--algo LongReadSV "
+            f"--model {tmp_path}/bundle/longreadsv.model "
+            f"--min_sv_size 20 "
+            f"{tmp_path}/output.sv.vcf.gz"
+        )
+
+    def test_min_map_qual(self, tmp_path):
+        result = make_stage(tmp_path, min_map_qual=30).add_to(DAG())
+
+        assert (
+            f"--model {tmp_path}/bundle/longreadsv.model --min_map_qual 30 "
+            f"{tmp_path}/output.sv.vcf.gz"
+        ) in str(result.job.shell)
+
+    def test_all_options(self, tmp_path):
+        result = make_stage(
+            tmp_path,
+            min_map_qual=30,
+            min_sv_size=20,
+            min_dp=5,
+            min_af=0.1,
+        ).add_to(DAG())
+
+        assert (
+            "--min_map_qual 30 --min_sv_size 20 --min_dp 5 --min_af 0.1"
+        ) in str(result.job.shell)
+
+    def test_options_default_to_absent(self, tmp_path):
+        shell = str(make_stage(tmp_path).add_to(DAG()).job.shell)
+
+        for flag in ("min_map_qual", "min_sv_size", "min_dp", "min_af"):
+            assert f"--{flag}" not in shell
+
+
 class TestOutput:
     """The SV VCF is derived from the run's output VCF"""
 
@@ -95,6 +138,14 @@ class TestOutput:
 
         assert result.sv_vcf == tmp_path / "output.sv.vcf.gz"
         assert str(result.sv_vcf) in str(result.job.shell)
+
+    def test_an_explicit_output(self, tmp_path):
+        out_vcf = tmp_path / "tmp" / "sample-longread-sv.vcf.gz"
+        result = make_stage(tmp_path, output=out_vcf).add_to(DAG())
+
+        assert result.sv_vcf == out_vcf
+        assert str(result.job.shell).endswith(f" {out_vcf}")
+        assert "output.sv.vcf.gz" not in str(result.job.shell)
 
 
 class TestJobMetadata:
