@@ -830,20 +830,6 @@ class DNAscopeHybridPipeline(BasePipeline):
         ).add_to(dag)
         return dag
 
-    def transfer_config(self) -> TransferConfig:
-        """The inputs the annotation-transfer stage needs.
-
-        Only valid once `--pop_vcf` is known to be set; the calling code
-        checks it first.
-        """
-        assert self.pop_vcf is not None
-        return TransferConfig(
-            pop_vcf=self.pop_vcf,
-            shards=self.shards,
-            pop_vcf_contigs=self.pop_vcf_contigs,
-            fai_data=self.fai_data,
-        )
-
     def add_cleanup(
         self,
         dag: DAG,
@@ -1218,7 +1204,7 @@ class DNAscopeHybridPipeline(BasePipeline):
             if self.skip_model_apply:
                 transfer_target = ctx.output_vcf
             transfer_spec = TransferSpec(
-                self.transfer_config(), transfer_target
+                TransferConfig.from_pipeline(self), transfer_target
             )
 
         apply_spec: Optional[ApplySpec] = None

@@ -909,7 +909,7 @@ class SentieonPangenome(BasePangenome):
         transfer: Optional[TransferSpec] = None
         if self.pop_vcf:
             transfer = TransferSpec(
-                config=self.transfer_config(),
+                config=TransferConfig.from_pipeline(self),
                 out_vcf=(
                     transfer_vcf
                     if not self.skip_model_apply
@@ -944,20 +944,6 @@ class SentieonPangenome(BasePangenome):
         # CNV calling is sex-aware and runs in the second DAG
 
         return dag
-
-    def transfer_config(self) -> TransferConfig:
-        """The inputs the annotation-transfer stage needs.
-
-        Only valid once `--pop_vcf` is known to be set; `validate_bundle`
-        requires it.
-        """
-        assert self.pop_vcf is not None
-        return TransferConfig(
-            pop_vcf=self.pop_vcf,
-            shards=self.shards,
-            pop_vcf_contigs=self.pop_vcf_contigs,
-            fai_data=self.fai_data,
-        )
 
     def bwa_extract_stage(
         self,

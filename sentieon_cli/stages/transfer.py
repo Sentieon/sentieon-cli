@@ -7,7 +7,7 @@ import pathlib
 import re
 import subprocess as sp
 import tempfile
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from typing import Dict, Iterable, List, Optional, Protocol, Set, Tuple
 
 from importlib.resources import files
 
@@ -155,6 +155,20 @@ def build_transfer_jobs(
     return (sharded_merge_jobs, concat_job)
 
 
+class TransferInputs(Protocol):
+    """A pipeline that carries the annotation transfer's inputs.
+
+    Every pipeline that transfers annotations holds these four values under
+    these names, so `TransferConfig.from_pipeline` can collect them
+    structurally instead of each pipeline repeating the same helper.
+    """
+
+    pop_vcf: Optional[pathlib.Path]
+    shards: List[Shard]
+    pop_vcf_contigs: Dict[str, Optional[int]]
+    fai_data: Dict[str, Dict[str, int]]
+
+
 @dataclass(frozen=True)
 class TransferConfig:
     """The run-wide inputs the annotation transfer needs.
@@ -168,6 +182,24 @@ class TransferConfig:
     shards: List[Shard]
     pop_vcf_contigs: Dict[str, Optional[int]]
     fai_data: Dict[str, Dict[str, int]]
+
+    @classmethod
+    def from_pipeline(cls, pipeline: TransferInputs) -> "TransferConfig":
+        """Collect the transfer's inputs from a pipeline.
+
+        The four values are set together while the pipeline validates its
+        arguments, so they are read back together here. Callers check
+        `pop_vcf` before asking for a transfer at all.
+        """
+        pop_vcf = pipeline.pop_vcf
+        if pop_vcf is None:
+            raise ValueError("The annotation transfer needs a population VCF")
+        return cls(
+            pop_vcf=pop_vcf,
+            shards=pipeline.shards,
+            pop_vcf_contigs=pipeline.pop_vcf_contigs,
+            fai_data=pipeline.fai_data,
+        )
 
 
 @dataclass(kw_only=True)

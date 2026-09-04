@@ -643,20 +643,6 @@ class DNAscopeLRPipeline(BasePipeline):
         )
         return hificnv_job
 
-    def transfer_config(self) -> TransferConfig:
-        """The inputs the annotation-transfer stage needs.
-
-        Only valid once `--pop_vcf` is known to be set; the calling code
-        checks it first.
-        """
-        assert self.pop_vcf is not None
-        return TransferConfig(
-            pop_vcf=self.pop_vcf,
-            shards=self.shards,
-            pop_vcf_contigs=self.pop_vcf_contigs,
-            fai_data=self.fai_data,
-        )
-
     def add_small_variant_calling(
         self,
         dag: DAG,
@@ -709,7 +695,7 @@ class DNAscopeLRPipeline(BasePipeline):
         diploid_transfer: Optional[TransferSpec] = None
         if self.pop_vcf:
             diploid_transfer = TransferSpec(
-                config=self.transfer_config(),
+                config=TransferConfig.from_pipeline(self),
                 out_vcf=self.tmp_dir.joinpath("out_diploid_tmp_anno.vcf.gz"),
                 tag="diploid",
             )
@@ -925,7 +911,7 @@ class DNAscopeLRPipeline(BasePipeline):
             patch_transfer: Optional[TransferSpec] = None
             if self.pop_vcf:
                 patch_transfer = TransferSpec(
-                    config=self.transfer_config(),
+                    config=TransferConfig.from_pipeline(self),
                     out_vcf=self.tmp_dir.joinpath(
                         f"out_hap{i}_patch_anno.vcf.gz"
                     ),
@@ -988,7 +974,7 @@ class DNAscopeLRPipeline(BasePipeline):
         unphased_transfer: Optional[TransferSpec] = None
         if self.pop_vcf:
             unphased_transfer = TransferSpec(
-                config=self.transfer_config(),
+                config=TransferConfig.from_pipeline(self),
                 out_vcf=self.tmp_dir.joinpath(
                     "out_diploid_unphased_patch_anno.vcf.gz"
                 ),

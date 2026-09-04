@@ -3,6 +3,9 @@ Unit tests for the annotation-transfer stage
 """
 
 import pathlib
+from types import SimpleNamespace
+
+import pytest
 
 from sentieon_cli.dag import DAG
 from sentieon_cli.shard import Shard
@@ -131,3 +134,36 @@ class TestDagWiring:
 
         assert result.jobs == [*result.shard_jobs, result.concat_job]
         assert result.terminal == {result.concat_job}
+
+
+class TestFromPipeline:
+    """`TransferConfig.from_pipeline` collecting a pipeline's attributes"""
+
+    @staticmethod
+    def make_pipeline(tmp_path: pathlib.Path, **kwargs) -> SimpleNamespace:
+        """A stand-in carrying the four `TransferInputs` attributes"""
+        config = make_config(tmp_path)
+        defaults = dict(
+            pop_vcf=config.pop_vcf,
+            shards=config.shards,
+            pop_vcf_contigs=config.pop_vcf_contigs,
+            fai_data=config.fai_data,
+        )
+        defaults.update(kwargs)
+        return SimpleNamespace(**defaults)
+
+    def test_collects_the_four_values(self, tmp_path):
+        pipeline = self.make_pipeline(tmp_path)
+
+        config = TransferConfig.from_pipeline(pipeline)
+
+        assert config.pop_vcf == pipeline.pop_vcf
+        assert config.shards == pipeline.shards
+        assert config.pop_vcf_contigs == pipeline.pop_vcf_contigs
+        assert config.fai_data == pipeline.fai_data
+
+    def test_without_a_pop_vcf(self, tmp_path):
+        pipeline = self.make_pipeline(tmp_path, pop_vcf=None)
+
+        with pytest.raises(ValueError, match="population VCF"):
+            TransferConfig.from_pipeline(pipeline)

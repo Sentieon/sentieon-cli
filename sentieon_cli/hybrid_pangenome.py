@@ -839,7 +839,9 @@ class HybridPangenome(BasePangenome):
         TransferApplyStage(
             ctx=ctx,
             raw_vcf=raw_vcf,
-            transfer=TransferSpec(self.transfer_config(), transfer_target),
+            transfer=TransferSpec(
+                TransferConfig.from_pipeline(self), transfer_target
+            ),
             apply=(
                 ApplySpec(model, ctx.output_vcf)
                 if not self.skip_model_apply
@@ -848,19 +850,6 @@ class HybridPangenome(BasePangenome):
         ).add_to(dag, call.terminal)
 
         return dag
-
-    def transfer_config(self) -> TransferConfig:
-        """The inputs the annotation-transfer stage needs.
-
-        `build_dag` requires `--pop_vcf` before it calls this.
-        """
-        assert self.pop_vcf is not None
-        return TransferConfig(
-            pop_vcf=self.pop_vcf,
-            shards=self.shards,
-            pop_vcf_contigs=self.pop_vcf_contigs,
-            fai_data=self.fai_data,
-        )
 
     def lr_kmc_pairs(self) -> List[Tuple[pathlib.Path, pathlib.Path]]:
         """`(alignment, decode reference)` pairs for the long-read k-mer
