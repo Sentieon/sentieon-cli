@@ -69,15 +69,6 @@ class TestHelpers:
         assert "igzip is recommended" in caplog.text
         assert caplog.records[0].levelno == logging.WARNING
 
-    def test_find_unzip_takes_the_log_level(self, caplog):
-        logger = logging.getLogger("test-unzip-level")
-        with patch(
-            "sentieon_cli.stages.alignment.shutil.which", return_value=None
-        ):
-            with caplog.at_level(logging.INFO, logger=logger.name):
-                assert find_unzip(logger, logging.INFO) == "gzip"
-        assert caplog.records[0].levelno == logging.INFO
-
 
 class TestBwaRealignStage:
     """Re-aligning BAM/CRAM input with bwa"""
@@ -143,7 +134,7 @@ class TestBwaRealignStage:
             tmp_path / "output_bwa_sorted_1.bam",
         ]
 
-    def test_bam_cleanup_paths(self, tmp_path, rg_lines):
+    def test_intermediate_cleanup_paths(self, tmp_path, rg_lines):
         result = self.make(tmp_path).build()
 
         assert result.cleanup_paths == [
@@ -153,15 +144,10 @@ class TestBwaRealignStage:
             pathlib.Path(str(tmp_path / "bwa_sorted_1.bam") + ".bai"),
         ]
 
-    def test_cram_cleanup_paths_add_the_crai(self, tmp_path, rg_lines):
+    def test_final_outputs_have_no_cleanup_paths(self, tmp_path, rg_lines):
         result = self.make(tmp_path, duplicate_marking="none").build()
 
-        out = str(tmp_path / "output_bwa_sorted_0.cram")
-        assert result.cleanup_paths[:3] == [
-            pathlib.Path(out),
-            pathlib.Path(out + ".bai"),
-            pathlib.Path(out + ".crai"),
-        ]
+        assert result.cleanup_paths == []
 
     def test_collate_and_input_ref(self, tmp_path, rg_lines):
         result = self.make(
@@ -254,16 +240,23 @@ class TestBwaFastqStage:
 
         assert "igzip -dc" in str(result.jobs[0].shell)
 
-    def test_outputs_and_cleanup_paths(self, tmp_path):
-        result = self.make(tmp_path, duplicate_marking="none").build()
+    def test_intermediate_outputs_and_cleanup_paths(self, tmp_path):
+        result = self.make(tmp_path).build()
 
-        out = tmp_path / "output_bwa_sorted_fq_0_0.cram"
+        out = tmp_path / "bwa_sorted_fq_0_0.bam"
         assert result.outputs == [out]
         assert result.cleanup_paths == [
             out,
             pathlib.Path(str(out) + ".bai"),
-            pathlib.Path(str(out) + ".crai"),
         ]
+
+    def test_final_outputs_have_no_cleanup_paths(self, tmp_path):
+        result = self.make(tmp_path, duplicate_marking="none").build()
+
+        assert result.outputs == [
+            tmp_path / "output_bwa_sorted_fq_0_0.cram"
+        ]
+        assert result.cleanup_paths == []
 
 
 class TestMinimap2RealignStage:

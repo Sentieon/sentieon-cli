@@ -345,9 +345,9 @@ class TestTransferApplyStage:
         assert f"--vcf {tmp_path}/transfer.vcf.gz" in str(
             result.apply_job.shell
         )
-        # ... and waits on both the transfer and the raw-VCF producer
+        # ... and waits on the transfer alone; the concat already depends
+        # on the raw-VCF producer
         assert dag.waiting_jobs[result.apply_job] == {
-            upstream,
             result.transfer.concat_job,
         }
         assert result.terminal == {result.apply_job}

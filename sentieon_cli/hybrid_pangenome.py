@@ -8,7 +8,6 @@ for highly accurate variant calling.
 import argparse
 import copy
 import json
-import logging
 import pathlib
 import sys
 from typing import Dict, List, Optional, Set, Tuple
@@ -43,8 +42,13 @@ from .stages.alignment import (
 from .stages.base import StageContext
 from .stages.dedup import DedupStage
 from .stages.metrics import MetricsPaths, MetricsStage
-from .stages.small_variants import DNAscopeStage, ModelApplyStage
-from .stages.transfer import TransferConfig, TransferStage
+from .stages.small_variants import (
+    ApplySpec,
+    DNAscopeStage,
+    TransferApplyStage,
+    TransferSpec,
+)
+from .stages.transfer import TransferConfig
 from .util import (
     __version__,
     check_kmc_patch,
@@ -828,24 +832,20 @@ class HybridPangenome(BasePangenome):
             replace_rg=replace_rg,
         ).add_to(dag, calling_dependencies)
 
-        # transfer annotations from the pop_vcf
+        # transfer annotations from the pop_vcf, then apply the model
         transfer_target = (
             transfer_vcf if not self.skip_model_apply else ctx.output_vcf
         )
-        transfer = TransferStage(
+        TransferApplyStage(
             ctx=ctx,
-            config=self.transfer_config(),
             raw_vcf=raw_vcf,
-            out_vcf=transfer_target,
+            transfer=TransferSpec(self.transfer_config(), transfer_target),
+            apply=(
+                ApplySpec(model, ctx.output_vcf)
+                if not self.skip_model_apply
+                else None
+            ),
         ).add_to(dag, call.terminal)
-
-        if not self.skip_model_apply:
-            ModelApplyStage(
-                ctx=ctx,
-                model=model,
-                vcf=transfer_vcf,
-                output=ctx.output_vcf,
-            ).add_to(dag, transfer.terminal)
 
         return dag
 
@@ -886,7 +886,7 @@ class HybridPangenome(BasePangenome):
                 self.tmp_dir,
                 memory=self.kmer_memory,
                 threads=self.cores,
-                unzip=find_unzip(self.logger, logging.INFO),
+                unzip=find_unzip(self.logger),
             ),
             "kmc",
             0,  # run in the background
@@ -975,7 +975,7 @@ class HybridPangenome(BasePangenome):
             ),
             extract_model=self.model_bundle.joinpath(self.extract_model_name),
             bwa_model=self.model_bundle.joinpath("bwa.model"),
-            unzip=find_unzip(self.logger, logging.INFO),
+            unzip=find_unzip(self.logger),
         )
 
     def build_haplotypes_job(

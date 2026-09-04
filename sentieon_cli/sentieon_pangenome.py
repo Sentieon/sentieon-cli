@@ -5,7 +5,6 @@ Sentieon's pangenome alignment and variant calling pipeline
 import argparse
 import copy
 import json
-import logging
 import pathlib
 import shutil
 import sys
@@ -1023,7 +1022,7 @@ class SentieonPangenome(BasePangenome):
             ),
             extract_model=bundle.joinpath(self.extract_model_name),
             bwa_model=bundle.joinpath("bwa.model"),
-            unzip=find_unzip(self.logger, logging.INFO),
+            unzip=find_unzip(self.logger),
         )
 
     def build_haplotypes_job(

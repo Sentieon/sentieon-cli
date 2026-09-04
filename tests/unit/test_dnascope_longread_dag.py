@@ -129,19 +129,25 @@ class TestSmallVariantEdges:
             "model-apply-unphased",
         ]
 
-    def test_both_haplotype_applies_wait_on_both_transfers(self, tmp_path):
+    def test_each_haplotype_apply_waits_on_its_own_transfer(self, tmp_path):
         pop_vcf = tmp_path / "population.vcf.gz"
         pop_vcf.touch()
         dag = build_dag(tmp_path, pop_vcf=pop_vcf)
 
-        # Each model-apply reads only its own haplotype's transfer, but
-        # both wait on both concat jobs, as the hand-wired DAG did
-        for hap in ("model-apply-hap1", "model-apply-hap2"):
-            assert deps_of(dag, hap) == [
-                "merge-trim-hap1-concat",
-                "merge-trim-hap2-concat",
-                "patch",
+        # A model-apply reads only its own haplotype's transfer, so it
+        # waits on that haplotype's concat alone
+        for i in (1, 2):
+            assert deps_of(dag, f"model-apply-hap{i}") == [
+                f"merge-trim-hap{i}-concat",
             ]
+
+    def test_the_haplotype_applies_wait_on_the_patch_without_a_pop_vcf(
+        self, tmp_path
+    ):
+        dag = build_dag(tmp_path)
+
+        for hap in ("model-apply-hap1", "model-apply-hap2"):
+            assert deps_of(dag, hap) == ["patch"]
 
     def test_each_transfer_is_tagged(self, tmp_path):
         pop_vcf = tmp_path / "population.vcf.gz"
@@ -157,12 +163,12 @@ class TestSmallVariantEdges:
             "merge-trim-hap2-concat",
             "merge-trim-unphased-concat",
         }
+        # With a transfer, the apply waits on the concat alone -- the
+        # concat already depends on the raw-VCF producer
         assert deps_of(dag, "model-apply-diploid") == [
-            "dnascope-diploid",
             "merge-trim-diploid-concat",
         ]
         assert deps_of(dag, "model-apply-unphased") == [
-            "diploid-patch",
             "merge-trim-unphased-concat",
         ]
 

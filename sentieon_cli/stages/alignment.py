@@ -30,17 +30,15 @@ def aln_suffix(bam_format: bool) -> str:
     return "bam" if bam_format else "cram"
 
 
-def find_unzip(logger: logging.Logger, level: int = logging.WARNING) -> str:
+def find_unzip(logger: logging.Logger) -> str:
     """The decompression tool to read gzipped fastq with.
 
     ``igzip`` is considerably faster but is not always installed, so fall
-    back to ``gzip``. Callers differ on how loudly that is worth
-    reporting, hence ``level``.
+    back to ``gzip``.
     """
     unzip = "igzip"
     if not shutil.which(unzip):
-        logger.log(
-            level,
+        logger.warning(
             "igzip is recommended for decompression, but is not "
             "available. Falling back to gzip.",
         )
@@ -151,10 +149,9 @@ class BwaRealignStage(AlignmentStage):
                 )
             )
             outputs.append(out_aln)
-            cleanup_paths.append(out_aln)
-            cleanup_paths.append(pathlib.Path(str(out_aln) + ".bai"))
-            if suffix == "cram":
-                cleanup_paths.append(pathlib.Path(str(out_aln) + ".crai"))
+            if dedup_follows:
+                cleanup_paths.append(out_aln)
+                cleanup_paths.append(pathlib.Path(str(out_aln) + ".bai"))
 
         return AlignResult(
             jobs=jobs,
@@ -241,10 +238,9 @@ class BwaFastqStage(AlignmentStage):
                     )
                 )
                 outputs.append(out_aln)
-                cleanup_paths.append(out_aln)
-                cleanup_paths.append(pathlib.Path(str(out_aln) + ".bai"))
-                if suffix == "cram":
-                    cleanup_paths.append(pathlib.Path(str(out_aln) + ".crai"))
+                if dedup_follows:
+                    cleanup_paths.append(out_aln)
+                    cleanup_paths.append(pathlib.Path(str(out_aln) + ".bai"))
 
         return AlignResult(
             jobs=jobs,

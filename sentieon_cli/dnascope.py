@@ -410,19 +410,14 @@ class DNAscopePipeline(BasePipeline):
         # Alignment
         align_jobs: Set[Job] = set()
         sample_input = copy.deepcopy(self.sample_input)
-        bam_rm_job = None
+        bam_cleanup: List[pathlib.Path] = []
         if self.align or self.collate_align:
             aln_result = self.add_sr_input_alignment(dag, ctx)
             sample_input = aln_result.outputs
             align_jobs = set(aln_result.jobs)
-            bam_rm_job = rm_job(aln_result.cleanup_paths, "rm-bam-aln")
+            bam_cleanup = aln_result.cleanup_paths
         fq_result = self.add_sr_fastq_alignment(dag, ctx)
         align_fastq_jobs = set(fq_result.jobs)
-        fq_rm_job = (
-            rm_job(fq_result.cleanup_paths, "rm-fq-aln")
-            if fq_result.cleanup_paths
-            else None
-        )
         sample_input += fq_result.outputs
 
         # Dedup and metrics
@@ -431,11 +426,17 @@ class DNAscopePipeline(BasePipeline):
         )
         deduped = preprocessing.deduped
         dedup_job = preprocessing.dedup_job
+        # An alignment has cleanup paths only when it is an intermediate,
+        # which is exactly when duplicate marking -- and so `dedup_job` --
+        # follows it
         if dedup_job:
-            if bam_rm_job:
-                dag.add_job(bam_rm_job, {dedup_job})
-            if fq_rm_job:
-                dag.add_job(fq_rm_job, {dedup_job})
+            if bam_cleanup:
+                dag.add_job(rm_job(bam_cleanup, "rm-bam-aln"), {dedup_job})
+            if fq_result.cleanup_paths:
+                dag.add_job(
+                    rm_job(fq_result.cleanup_paths, "rm-fq-aln"),
+                    {dedup_job},
+                )
 
         # Small variants
         if not self.skip_small_variants:

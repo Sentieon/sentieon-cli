@@ -32,8 +32,13 @@ from .shell_pipeline import Command, Pipeline
 from .stages.base import StageContext, driver_job, rm_job
 from .stages.cnv import CNV_MIN_VERSIONS, CNVscopeStage
 from .stages.ploidy import PloidyStage
-from .stages.small_variants import DNAscopeStage, ModelApplyStage
-from .stages.transfer import TransferConfig, TransferStage
+from .stages.small_variants import (
+    ApplySpec,
+    DNAscopeStage,
+    TransferApplyStage,
+    TransferSpec,
+)
+from .stages.transfer import TransferConfig
 from .util import (
     __version__,
     library_preloaded,
@@ -585,11 +590,6 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         sr_aln = self.sr_aln
         fq_result = self.add_sr_fastq_alignment(dag, ctx)
         align_fastq_jobs = set(fq_result.jobs)
-        fq_rm_job = (
-            rm_job(fq_result.cleanup_paths, "rm-fq-aln")
-            if fq_result.cleanup_paths
-            else None
-        )
         sr_aln.extend(fq_result.outputs)
 
         # Short-read dedup
@@ -598,8 +598,13 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         )
         sr_aln = preprocessing.deduped
         dedup_job = preprocessing.dedup_job
-        if dedup_job and fq_rm_job:
-            dag.add_job(fq_rm_job, {dedup_job})
+        # The fastq alignment has cleanup paths only when it is an
+        # intermediate, which is exactly when duplicate marking -- and so
+        # `dedup_job` -- follows it
+        if dedup_job and fq_result.cleanup_paths:
+            dag.add_job(
+                rm_job(fq_result.cleanup_paths, "rm-fq-aln"), {dedup_job}
+            )
 
         # Long-read alignment
         realign_jobs: Set[Job] = set()
@@ -1061,35 +1066,36 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         )
         dag.add_job(anno_job, {concat_job})
 
-        input_to_apply = anno_target
-        apply_dependencies: Set[Job] = {anno_job}
+        if not self.pop_vcf and self.skip_model_apply:
+            # `anno_target` is already the output VCF
+            return
+
+        # Transfer annotations and apply the model
+        transfer_spec: Optional[TransferSpec] = None
         if self.pop_vcf:
             transfer_target = self.tmp_dir.joinpath(
                 "combined_tmp_transfer.vcf.gz"
             )
             if self.skip_model_apply:
                 transfer_target = ctx.output_vcf
+            transfer_spec = TransferSpec(
+                self.transfer_config(), transfer_target
+            )
 
-            transfer = TransferStage(
-                ctx=ctx,
-                config=self.transfer_config(),
-                raw_vcf=anno_target,
-                out_vcf=transfer_target,
-            ).add_to(dag, {anno_job})
-            input_to_apply = transfer_target
-            apply_dependencies = transfer.terminal
+        apply_spec: Optional[ApplySpec] = None
+        apply_vcf = self.tmp_dir.joinpath("combined_apply.vcf.gz")
+        if not self.skip_model_apply:
+            apply_spec = ApplySpec(hybrid_model, apply_vcf)
+
+        transfer_apply = TransferApplyStage(
+            ctx=ctx,
+            raw_vcf=anno_target,
+            transfer=transfer_spec,
+            apply=apply_spec,
+        ).add_to(dag, {anno_job})
 
         if self.skip_model_apply:
             return
-
-        # Model Apply
-        apply_vcf = self.tmp_dir.joinpath("combined_apply.vcf.gz")
-        apply = ModelApplyStage(
-            ctx=ctx,
-            model=hybrid_model,
-            vcf=input_to_apply,
-            output=apply_vcf,
-        ).add_to(dag, apply_dependencies)
 
         # Final normalize
         norm_job = Job(
@@ -1103,4 +1109,4 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             0,
             task_name="vcf-norm",
         )
-        dag.add_job(norm_job, apply.terminal)
+        dag.add_job(norm_job, transfer_apply.terminal)

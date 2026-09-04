@@ -43,11 +43,10 @@ from .stages.base import StageContext, driver_job
 from .stages.small_variants import (
     ApplySpec,
     DNAscopeStage,
-    ModelApplyStage,
     TransferApplyStage,
     TransferSpec,
 )
-from .stages.transfer import TransferConfig, TransferStage
+from .stages.transfer import TransferConfig
 from .util import (
     __version__,
     library_preloaded,
@@ -940,28 +939,9 @@ class DNAscopeLRPipeline(BasePipeline):
         )
         dag.add_job(haploid_patch_job, haploid_patch_deps)
 
-        # Transfer annotations to the patched VCFs. Both model-apply jobs
-        # wait on both transfers, as they did when the DAG was wired by hand.
-        second_ma_deps: Set[Job] = {haploid_patch_job}
-        if self.pop_vcf:
-            patch_unanno_vcfs = patch_vcfs.copy()
-            patch_vcfs = [
-                self.tmp_dir.joinpath(f"out_hap{i}_patch_anno.vcf.gz")
-                for i in (1, 2)
-            ]
-            for i, (patch_unanno_vcf, patch_vcf) in enumerate(
-                zip(patch_unanno_vcfs, patch_vcfs), start=1
-            ):
-                patch_transfer = TransferStage(
-                    ctx=ctx,
-                    config=self.transfer_config(),
-                    raw_vcf=patch_unanno_vcf,
-                    out_vcf=patch_vcf,
-                    tag=f"hap{i}",
-                ).add_to(dag, {haploid_patch_job})
-                second_ma_deps.update(patch_transfer.terminal)
-
-        # apply trained model to the patched vcfs.
+        # Transfer annotations to each patched VCF, then apply the trained
+        # model. A haplotype's model-apply reads only that haplotype's
+        # VCF, so it waits on that haplotype's transfer alone.
         hap_vcfs = [
             self.tmp_dir.joinpath(f"out_hap{i}.vcf.gz") for i in (1, 2)
         ]
@@ -969,13 +949,25 @@ class DNAscopeLRPipeline(BasePipeline):
         for i, (patch_vcf, hap_vcf) in enumerate(
             zip(patch_vcfs, hap_vcfs), start=1
         ):
-            hap_apply = ModelApplyStage(
+            patch_transfer: Optional[TransferSpec] = None
+            if self.pop_vcf:
+                patch_transfer = TransferSpec(
+                    config=self.transfer_config(),
+                    out_vcf=self.tmp_dir.joinpath(
+                        f"out_hap{i}_patch_anno.vcf.gz"
+                    ),
+                    tag=f"hap{i}",
+                )
+            hap_apply = TransferApplyStage(
                 ctx=ctx,
-                model=haploid_model,
-                vcf=patch_vcf,
-                output=hap_vcf,
-                name=f"model-apply-hap{i}",
-            ).add_to(dag, second_ma_deps)
+                raw_vcf=patch_vcf,
+                transfer=patch_transfer,
+                apply=ApplySpec(
+                    model=haploid_model,
+                    output=hap_vcf,
+                    name=f"model-apply-hap{i}",
+                ),
+            ).add_to(dag, {haploid_patch_job})
             merge_deps.update(hap_apply.terminal)
 
         # Second pass - unphased regions

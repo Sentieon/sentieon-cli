@@ -174,9 +174,9 @@ class TransferApplyStage(Stage):
     """Post-process a raw VCF: transfer annotations, then apply the model.
 
     Either half may be omitted. When both run, DNAModelApply reads the
-    transfer output and waits on the transfer *and* on ``upstream`` --
-    the raw-VCF producer stays a direct dependency, matching the DAGs the
-    pipelines built by hand.
+    transfer output and waits on the transfer alone -- the transfer's
+    concat job already depends on the raw-VCF producer. Without a
+    transfer, DNAModelApply waits on ``upstream``.
     """
 
     raw_vcf: pathlib.Path
@@ -206,7 +206,7 @@ class TransferApplyStage(Stage):
             ).add_to(dag, deps)
             jobs.extend(transfer_result.jobs)
             apply_in = self.transfer.out_vcf
-            apply_deps = deps | transfer_result.terminal
+            apply_deps = transfer_result.terminal
 
         apply_job: Optional[Job] = None
         if self.apply is not None:
