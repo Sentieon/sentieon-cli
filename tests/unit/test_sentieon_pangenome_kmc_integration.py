@@ -21,10 +21,9 @@ class TestSentieonPangenomeKMCIntegration(unittest.TestCase):
         pipeline.reference = "ref"
         pipeline.pop_vcf = "pop"
         pipeline.gbz = "ref.grch38.gbz"
-        pipeline.fai_data = {}
-        pipeline.pop_vcf_contigs = {}
-        
+
         # Mock dependencies
+        pipeline.logger = MagicMock()
         pipeline.handle_arguments = MagicMock()
         pipeline.setup_logging = MagicMock()
         pipeline.validate_bundle = MagicMock()
@@ -34,6 +33,9 @@ class TestSentieonPangenomeKMCIntegration(unittest.TestCase):
         pipeline.collect_readgroups = MagicMock()
         
         with patch("sentieon_cli.util.check_version", return_value=True), \
+             patch("sentieon_cli.sentieon_pangenome.parse_fai", return_value={}), \
+             patch("sentieon_cli.sentieon_pangenome.determine_shards_from_fai", return_value=[]), \
+             patch("sentieon_cli.sentieon_pangenome.vcf_contigs", return_value={}), \
              patch("sentieon_cli.sentieon_pangenome.check_kmc_patch", return_value=True) as mock_check, \
              patch("sys.exit") as mock_exit:
             
@@ -54,12 +56,13 @@ class TestSentieonPangenomeKMCIntegration(unittest.TestCase):
         pipeline.validate_ref = MagicMock()
         pipeline.collect_readgroups = MagicMock()
         pipeline.bed = "bed"
-        pipeline.fai_data = {}
-        pipeline.pop_vcf_contigs = {}
 
         pipeline.logger = MagicMock()
 
         with patch("sentieon_cli.util.check_version", return_value=True), \
+             patch("sentieon_cli.sentieon_pangenome.parse_fai", return_value={}), \
+             patch("sentieon_cli.sentieon_pangenome.determine_shards_from_fai", return_value=[]), \
+             patch("sentieon_cli.sentieon_pangenome.vcf_contigs", return_value={}), \
              patch("sentieon_cli.sentieon_pangenome.check_kmc_patch", return_value=False) as mock_check, \
              patch("sys.exit") as mock_exit:
             

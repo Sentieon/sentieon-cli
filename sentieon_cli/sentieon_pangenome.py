@@ -6,9 +6,7 @@ import argparse
 import copy
 import json
 import pathlib
-import shutil
 import sys
-import time
 from typing import Dict, List, Optional, Set, Tuple, Union
 
 import packaging.version
@@ -53,7 +51,6 @@ from .util import (
     path_arg,
     require_versions,
     sample_sex_arg,
-    tmp,
     total_memory,
     vcf_id,
 )
@@ -269,7 +266,6 @@ class SentieonPangenome(BasePangenome):
         self.call_svs = False
         self.gvcf = False
         self.par_bed: Optional[pathlib.Path] = None
-        self.cnv_input_bams: List[pathlib.Path] = []
         self.pangenome_ref_name = "GRCh38"
         self.extract_model_name = "extract.model"
         self.pangenome_contig_prefix = "GRCh38#0#"
@@ -288,6 +284,10 @@ class SentieonPangenome(BasePangenome):
         self.skip_pop_vcf_id_check: bool = False
         self.skip_model_apply = False
         self.skip_small_variants = False
+        # Stashed by `build_dag` for the second, sex-aware DAG
+        self.ploidy_json: Optional[pathlib.Path] = None
+        self.sr_alignment: Optional[pathlib.Path] = None
+        self.cnv_input_bams: List[pathlib.Path] = []
 
     def _cnv_in_second_dag(self) -> bool:
         """CNV calling runs in the second, sex-aware DAG"""
@@ -301,55 +301,21 @@ class SentieonPangenome(BasePangenome):
             or self._cnv_in_second_dag()
         )
 
-    def main(self, args: argparse.Namespace) -> None:
-        """Run the pipeline"""
-        self.handle_arguments(args)
-        self.setup_logging(args)
-        start_time = time.monotonic()
-        success = False
-        try:
-            self.validate_ref()
-
-            self.fai_data = parse_fai(
-                pathlib.Path(str(self.reference) + ".fai")
-            )
-            self.pop_vcf_contigs: Dict[str, Optional[int]] = {}
-            if self.pop_vcf:
-                self.pop_vcf_contigs = vcf_contigs(self.pop_vcf, self.dry_run)
-                self.logger.debug("VCF contigs are: %s", self.pop_vcf_contigs)
-
-            self.validate()
-            self.start_run_logs()
-            self.shards = determine_shards_from_fai(
-                self.fai_data, 10 * 1000 * 1000
-            )
-
-            tmp_dir_str = tmp()
-            self.tmp_dir = pathlib.Path(tmp_dir_str)
-
-            try:
-                dag = self.build_first_dag()
-                executor = self.run(dag)
-                self.check_execution(dag, executor)
-
-                if self._needs_second_dag():
-                    self.get_sex(self.ploidy_json)
-                    dag = self.build_second_dag()
-                    executor = self.run(dag)
-                    self.check_execution(dag, executor)
-            finally:
-                if not self.retain_tmpdir:
-                    shutil.rmtree(tmp_dir_str)
-            success = True
-        finally:
-            self.log_completion(success, start_time)
-
     def validate(self) -> None:
         """Validate pipeline inputs"""
+        self.validate_ref()
+        self.fai_data = parse_fai(pathlib.Path(str(self.reference) + ".fai"))
+        self.shards = determine_shards_from_fai(
+            self.fai_data, 10 * 1000 * 1000
+        )
+        self.pop_vcf_contigs: Dict[str, Optional[int]] = {}
+        if self.pop_vcf:
+            self.pop_vcf_contigs = vcf_contigs(self.pop_vcf, self.dry_run)
+            self.logger.debug("VCF contigs are: %s", self.pop_vcf_contigs)
+
         self.validate_bundle()
         self.validate_fastq_rg()
         self.validate_output_vcf()
-        self.validate_ref()
         self.collect_readgroups()
 
         if not self.sample_input and not self.r1_fastq:
@@ -658,10 +624,7 @@ class SentieonPangenome(BasePangenome):
         pass
 
     def build_dag(self) -> DAG:
-        return DAG()
-
-    def build_first_dag(self) -> DAG:
-        """Build the main DAG for the Sentieon pangenome pipeline"""
+        """Build the first DAG for the Sentieon pangenome pipeline"""
         bundle = self.required(self.model_bundle, "model_bundle")
 
         ctx = self.stage_context()
@@ -1185,8 +1148,14 @@ class SentieonPangenome(BasePangenome):
             task_name="segdup",
         )
 
-    def build_second_dag(self) -> DAG:
+    def build_second_dag(self) -> Optional[DAG]:
         """Build the second DAG for sex-aware downstream tools"""
+        if not self._needs_second_dag():
+            return None
+
+        assert self.ploidy_json is not None
+        self.get_sex(self.ploidy_json)
+
         self.logger.info("Building the second pangenome DAG")
         dag = DAG()
 
