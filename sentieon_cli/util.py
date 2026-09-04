@@ -146,7 +146,7 @@ def require_versions(
     `check_version` has already logged the reason, so the exit is silent.
     Pass `skip=True` (the pipelines' `--skip_version_check`) to do nothing.
 
-    A `Mapping` rather than a `Dict`, so the pipelines' module-level
+    A `Mapping` rather than a `Dict`, so the module-level
     `*_MIN_VERSIONS` constants -- some of which mypy infers as
     `Dict[str, Version]`, with no `None` entry -- are accepted.
     """
