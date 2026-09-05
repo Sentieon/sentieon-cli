@@ -823,6 +823,9 @@ class DNAscopeHybridPipeline(BasePipeline):
             ),
             sample_sex=self.sample_sex,
             par_bed=self.cnv_par_bed,
+            dump_probes=pathlib.Path(
+                str(ctx.output_vcf).replace(".vcf.gz", ".cnv.probes")
+            ),
             interval=self.bed,
             replace_rg=self.cnv_replace_rg,
         ).add_to(dag)

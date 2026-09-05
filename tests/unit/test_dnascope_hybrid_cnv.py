@@ -173,6 +173,16 @@ class TestDNAscopeHybridCnv:
         assert "--sex M" in cmd_str
         assert f"--par {self.mock_par_bed}" in cmd_str
 
+    def test_cnvscope_dumps_the_probes_next_to_the_cnv_vcf(self):
+        pipeline = self.create_pipeline()
+        pipeline.sample_sex = SampleSex.FEMALE
+        self.build_dag(pipeline)
+        _dag, jobs = self.build_second_dag(pipeline)
+
+        probes = self.mock_dir / "output.cnv.probes"
+        assert f"--dump_probes {probes}" in str(jobs["cnvscope"].shell)
+        assert "--dump_probes" not in str(jobs["cnv-model-apply"].shell)
+
     def test_a_dry_run_assumes_a_male_sample(self):
         # Validation has already confirmed a PAR BED file is available
         pipeline = self.create_pipeline()

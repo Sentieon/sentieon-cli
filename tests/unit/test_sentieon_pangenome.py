@@ -651,6 +651,9 @@ class TestSentieonPangenome:
         # Sex-aware calling of a female sample needs no PAR BED file
         assert "--sex F" in cmd_str
         assert "--par" not in cmd_str
+        # Per-probe debugging output lands next to the CNV VCF
+        probes = str(self.mock_vcf).replace(".vcf.gz", "_cnv.probes")
+        assert f"--dump_probes {probes}" in cmd_str
         # Input should be the sample BAM (BAM input mode)
         assert str(pipeline.sample_input[0]) in cmd_str
 

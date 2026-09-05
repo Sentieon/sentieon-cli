@@ -1260,6 +1260,9 @@ class SentieonPangenome(BasePangenome):
         cnv_vcf = pathlib.Path(
             str(ctx.output_vcf).replace(".vcf.gz", "_cnv.vcf.gz")
         )
+        cnv_probes = pathlib.Path(
+            str(ctx.output_vcf).replace(".vcf.gz", "_cnv.probes")
+        )
 
         # CNVscope on BWA deduped BAM, then CNVModelApply. The alignment
         # and the PangenomeSV output were both written by the first DAG.
@@ -1271,6 +1274,7 @@ class SentieonPangenome(BasePangenome):
             cnv_vcf=cnv_apply_vcf,
             sample_sex=self.sample_sex,
             par_bed=self.cnv_par_bed,
+            dump_probes=cnv_probes,
             interval=self.bed,
         ).add_to(dag)
 

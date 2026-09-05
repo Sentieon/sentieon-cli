@@ -35,7 +35,8 @@ class CNVscopeStage(Stage):
 
     The sample sex has to be known before the jobs are built, so callers
     run this stage after ploidy estimation. Version checks stay with the
-    pipelines, which run them during validation.
+    pipelines, which run them during validation. ``dump_probes`` is the
+    path CNVscope writes its per-probe debugging output to.
     """
 
     inputs: List[pathlib.Path]
@@ -44,6 +45,7 @@ class CNVscopeStage(Stage):
     cnv_vcf: pathlib.Path
     sample_sex: Optional[SampleSex] = None
     par_bed: Optional[pathlib.Path] = None
+    dump_probes: Optional[pathlib.Path] = None
     interval: Optional[pathlib.Path] = None
     replace_rg: Optional[List[List[str]]] = None
     name: str = "cnvscope"
@@ -62,6 +64,7 @@ class CNVscopeStage(Stage):
                     self.model,
                     sex=sex,
                     par=par,
+                    dump_probes=self.dump_probes,
                 )
             ],
             inputs=self.inputs,

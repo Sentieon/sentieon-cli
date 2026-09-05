@@ -117,6 +117,13 @@ class TestCommands:
         )
         assert "--replace_rg" not in str(result.apply_job.shell)
 
+    def test_dump_probes_is_passed_to_cnvscope_only(self, tmp_path):
+        probes = tmp_path / "output.cnv.probes"
+        result = make_stage(tmp_path, dump_probes=probes).add_to(DAG())
+
+        assert f"--dump_probes {probes}" in str(result.cnvscope_job.shell)
+        assert "--dump_probes" not in str(result.apply_job.shell)
+
     def test_multiple_inputs(self, tmp_path):
         result = make_stage(
             tmp_path,

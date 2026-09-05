@@ -239,7 +239,29 @@ def test_cnvscope_algo_omits_the_sex_arguments_by_default():
 
     assert "--sex" not in cmd
     assert "--par" not in cmd
+    assert "--dump_probes" not in cmd
     assert cmd[-1] == "out.vcf.gz"
+
+
+def test_cnvscope_algo_emits_dump_probes():
+    cmd = CNVscope(
+        pathlib.Path("out.vcf.gz"),
+        pathlib.Path("bundle/cnv.model"),
+        sex="F",
+        dump_probes=pathlib.Path("out.cnv.probes"),
+    ).build_cmd()
+
+    assert cmd == [
+        "--algo",
+        "CNVscope",
+        "--model",
+        "bundle/cnv.model",
+        "--sex",
+        "F",
+        "--dump_probes",
+        "out.cnv.probes",
+        "out.vcf.gz",
+    ]
 
 
 # The shared fail-fast helpers
