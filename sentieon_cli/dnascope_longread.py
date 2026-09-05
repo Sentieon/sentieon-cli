@@ -218,7 +218,7 @@ class DNAscopeLRPipeline(BasePipeline):
             "util_sort_args": {
                 # "help": "Extra arguments for sentieon util sort.",
                 "help": argparse.SUPPRESS,
-                "default": "--cram_write_options version=3.0,compressor=rans",
+                "default": "",
             },
         }
     )
@@ -245,9 +245,7 @@ class DNAscopeLRPipeline(BasePipeline):
         self.fastq_taglist = "*"
         self.bam_format = False
         self.minimap2_args = "-YL"
-        self.util_sort_args = (
-            "--cram_write_options version=3.0,compressor=rans"
-        )
+        self.util_sort_args = ""
         self.repeat_model: Optional[pathlib.Path] = None
         self.skip_pop_vcf_id_check = False
         self.use_pbsv = False

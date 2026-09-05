@@ -205,7 +205,7 @@ class DNAscopePipeline(BasePipeline):
             "util_sort_args": {
                 # "help": "Extra arguments for sentieon util sort",
                 "help": argparse.SUPPRESS,
-                "default": "--cram_write_options version=3.0,compressor=rans",
+                "default": "",
             },
         }
     )
@@ -235,9 +235,7 @@ class DNAscopePipeline(BasePipeline):
         self.bam_format = False
         self.bwa_args = ""
         self.bwa_k = 100000000
-        self.util_sort_args = (
-            "--cram_write_options version=3.0,compressor=rans"
-        )
+        self.util_sort_args = ""
         self.bwt_max_mem: Optional[str] = None
         self.no_ramdisk = False
         self.no_split_alignment = False

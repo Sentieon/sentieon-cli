@@ -23,9 +23,6 @@ from ..driver import ReadWriter
 from ..job import Job
 from .base import Stage, StageResult, driver_job
 
-# The `sentieon util sort` arguments every aligner defaults to
-DEFAULT_UTIL_SORT_ARGS = "--cram_write_options version=3.0,compressor=rans"
-
 BWA_REALIGN_MIN_VERSIONS = {
     "sentieon driver": packaging.version.Version("202308"),
     "samtools": packaging.version.Version("1.16"),
@@ -122,7 +119,7 @@ class BwaRealignStage(AlignmentStage):
     collate: bool = False
     bwa_args: str = ""
     bwa_k: str = "20000000"
-    util_sort_args: str = DEFAULT_UTIL_SORT_ARGS
+    util_sort_args: str = ""
 
     def build(self) -> AlignResult:
         suffix = aln_suffix(self.bam_format)
@@ -201,7 +198,7 @@ class BwaFastqStage(AlignmentStage):
     unzip: str = "gzip"
     bwa_args: str = ""
     bwa_k: str = "20000000"
-    util_sort_args: str = DEFAULT_UTIL_SORT_ARGS
+    util_sort_args: str = ""
 
     def build(self) -> AlignResult:
         n_alignment_jobs = max(1, len(self.numa_nodes))
@@ -285,7 +282,7 @@ class Minimap2RealignStage(AlignmentStage):
     input_ref: Optional[pathlib.Path] = None
     fastq_taglist: str = "*"
     minimap2_args: str = "-YL"
-    util_sort_args: str = DEFAULT_UTIL_SORT_ARGS
+    util_sort_args: str = ""
     minimap2_model: Optional[Union[pathlib.Path, str]] = None
 
     def build(self) -> AlignResult:
@@ -340,7 +337,7 @@ class Minimap2FastqStage(AlignmentStage):
     bam_format: bool = False
     unzip: str = "gzip"
     minimap2_args: str = "-YL"
-    util_sort_args: str = DEFAULT_UTIL_SORT_ARGS
+    util_sort_args: str = ""
 
     def build(self) -> AlignResult:
         suffix = aln_suffix(self.bam_format)

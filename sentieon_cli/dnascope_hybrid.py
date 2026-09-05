@@ -326,7 +326,7 @@ class DNAscopeHybridPipeline(BasePipeline):
             "util_sort_args": {
                 # help="Extra arguments for sentieon util sort",
                 "help": argparse.SUPPRESS,
-                "default": "--cram_write_options version=3.0,compressor=rans",
+                "default": "",
             },
         }
     )
@@ -367,9 +367,7 @@ class DNAscopeHybridPipeline(BasePipeline):
         self.skip_model_apply = False
         self.skip_pop_vcf_id_check = False
         self.sr_read_filter: Optional[str] = None
-        self.util_sort_args = (
-            "--cram_write_options version=3.0,compressor=rans"
-        )
+        self.util_sort_args = ""
         # Stashed by `build_dag` for the second, sex-aware DAG
         self.ploidy_json: Optional[pathlib.Path] = None
         self.cnv_sr_aln: List[pathlib.Path] = []

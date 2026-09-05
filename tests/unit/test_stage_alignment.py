@@ -122,7 +122,20 @@ class TestBwaRealignStage:
             tmp_path / "output_bwa_sorted_0.cram",
             tmp_path / "output_bwa_sorted_1.cram",
         ]
-        assert "--bam_compression 1" not in str(result.jobs[0].shell)
+        # CRAM is written with the `util sort` defaults
+        shell = str(result.jobs[0].shell)
+        assert "--bam_compression 1" not in shell
+        assert "--cram_write_options" not in shell
+
+    def test_util_sort_args_reach_the_command(self, tmp_path, rg_lines):
+        result = self.make(
+            tmp_path,
+            duplicate_marking="none",
+            util_sort_args="--cram_write_options version=3.1",
+        ).build()
+
+        shell = str(result.jobs[0].shell)
+        assert "--sam2bam --cram_write_options version=3.1" in shell
 
     def test_bam_format_without_duplicate_marking(self, tmp_path, rg_lines):
         result = self.make(
@@ -257,6 +270,7 @@ class TestBwaFastqStage:
             tmp_path / "output_bwa_sorted_fq_0_0.cram"
         ]
         assert result.cleanup_paths == []
+        assert "--cram_write_options" not in str(result.jobs[0].shell)
 
 
 class TestMinimap2RealignStage:
@@ -280,6 +294,7 @@ class TestMinimap2RealignStage:
         assert result.jobs[0].task_name == "alignment"
         assert result.outputs == [tmp_path / "output_mm2_sorted_0.cram"]
         assert result.cleanup_paths == []
+        assert "--cram_write_options" not in str(result.jobs[0].shell)
 
     def test_default_model_comes_from_the_bundle(self, tmp_path, rg_lines):
         result = self.make(tmp_path).build()
@@ -323,6 +338,7 @@ class TestMinimap2FastqStage:
             tmp_path / "output_mm2_sorted_fq_1.cram",
         ]
         assert "igzip -dc" in str(result.jobs[0].shell)
+        assert "--cram_write_options" not in str(result.jobs[0].shell)
         assert result.jobs[0].task_name == "alignment"
 
     def test_no_fastq_builds_nothing(self, tmp_path):

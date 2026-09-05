@@ -133,7 +133,6 @@ class ShortReadPreprocessingStage(Stage):
             score_file=paths.score,
             consensus=self.consensus,
             rmdup=(self.duplicate_marking == "rmdup"),
-            cram_write_options="version=3.0,compressor=rans",
             dedup_metrics=paths.dedup_metrics,
             lc_extra_algos=lc_extra_algos,
         ).add_to(dag, upstream)

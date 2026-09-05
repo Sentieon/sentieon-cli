@@ -182,13 +182,16 @@ class TestMarkdupWgs:
             ["LocusCollector"] + PRE_DEDUP_ALGOS + ["GCBias"]
         )
 
-    def test_dedup_writes_metrics_and_cram_options(self, tmp_path):
+    def test_dedup_writes_metrics_with_default_cram_options(
+        self, tmp_path
+    ):
         paths = MetricsPaths.from_output_vcf(tmp_path / "output.vcf.gz")
         result = make_stage(tmp_path).add_to(DAG())
 
+        # The default pipeline writes CRAM with the driver defaults
         shell = str(result.dedup_job.shell)
         assert f"--metrics {paths.dedup_metrics}" in shell
-        assert "--cram_write_options version=3.0,compressor=rans" in shell
+        assert "--cram_write_options" not in shell
         assert "--rmdup" not in shell
 
     def test_post_dedup_metrics(self, tmp_path):

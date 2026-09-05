@@ -536,7 +536,7 @@ def cmd_samtools_fastq_minimap2(
     input_ref: Optional[pathlib.Path] = None,
     fastq_taglist: str = "*",
     minimap2_args: str = "-YL",
-    util_sort_args: str = "--cram_write_options version=3.0,compressor=rans",
+    util_sort_args: str = "",
     minimap2_model: Optional[Union[pathlib.Path, str]] = None,
 ) -> Pipeline:
     """Re-align an input BAM/CRAM/uBAM/uCRAM file with minimap2"""
@@ -625,7 +625,7 @@ def cmd_samtools_fastq_bwa(
     bwa_args: str = "",
     bwa_k: str = "20000000",
     fastq_taglist: str = "RG",
-    util_sort_args: str = "--cram_write_options version=3.0,compressor=rans",
+    util_sort_args: str = "",
 ) -> Pipeline:
     """Re-align an input BAM/CRAM/uBAM/uCRAM file with bwa"""
     # `input_ref` decodes the input file, which may use a different
@@ -726,7 +726,7 @@ def cmd_fastq_minimap2(
     cores: int,
     unzip: str = "gzip",
     minimap2_args: str = "-YL",
-    util_sort_args: str = "--cram_write_options version=3.0,compressor=rans",
+    util_sort_args: str = "",
 ) -> Pipeline:
     """Align an input fastq file with minimap2"""
 
@@ -774,7 +774,7 @@ def cmd_fastq_bwa(
     unzip: str = "gzip",
     bwa_args: str = "",
     bwa_k: str = "20000000",
-    util_sort_args: str = "--cram_write_options version=3.0,compressor=rans",
+    util_sort_args: str = "",
     numa: Optional[str] = None,
     split: Optional[str] = None,
 ) -> Pipeline:
