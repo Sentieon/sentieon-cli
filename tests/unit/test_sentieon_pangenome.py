@@ -96,7 +96,7 @@ class TestSentieonPangenome:
         """Create a fastq-input SentieonPangenome pipeline for testing.
 
         The default fixture uses BAM/CRAM input, which does not exercise the
-        dedup/metrics branch of ``build_first_dag``. This variant provides
+        dedup/metrics branch of ``build_dag``. This variant provides
         FASTQ input so the bwa/mm2 dedup jobs are created.
         """
         mock_r1 = self.mock_dir / "sample_R1.fastq.gz"
@@ -117,7 +117,7 @@ class TestSentieonPangenome:
         """Dedup on the primary (bwa) alignment emits a --metrics file that
         lands in the metrics directory scanned by MultiQC."""
         pipeline = self.create_fastq_pipeline()
-        dag = pipeline.build_first_dag()
+        dag = pipeline.build_dag()
 
         job_names, all_jobs = self._get_all_job_names(dag)
         assert "dedup-bwa" in job_names
@@ -137,7 +137,7 @@ class TestSentieonPangenome:
         """The metrics job reads only the bwa alignment; including the mm2
         alignment would count the extracted reads it re-aligns twice."""
         pipeline = self.create_fastq_pipeline()
-        dag = pipeline.build_first_dag()
+        dag = pipeline.build_dag()
 
         _, all_jobs = self._get_all_job_names(dag)
         metrics_job = next(j for j in all_jobs if j.name == "metrics")
@@ -149,7 +149,7 @@ class TestSentieonPangenome:
         """No Dedup --metrics output when metrics collection is skipped."""
         pipeline = self.create_fastq_pipeline()
         pipeline.skip_metrics = True
-        dag = pipeline.build_first_dag()
+        dag = pipeline.build_dag()
 
         _, all_jobs = self._get_all_job_names(dag)
         bwa_dedup = next(j for j in all_jobs if j.name == "dedup-bwa")
@@ -159,7 +159,7 @@ class TestSentieonPangenome:
         """Model apply runs by default and writes the
         intermediate, not the final output VCF."""
         pipeline = self.create_pipeline()
-        dag = pipeline.build_first_dag()
+        dag = pipeline.build_dag()
 
         # Verify DAG is created
         assert isinstance(dag, DAG)
@@ -180,7 +180,7 @@ class TestSentieonPangenome:
         """Test that model apply job is skipped when requested"""
         pipeline = self.create_pipeline()
         pipeline.skip_model_apply = True
-        dag = pipeline.build_first_dag()
+        dag = pipeline.build_dag()
 
         # Verify DAG is created
         assert isinstance(dag, DAG)
@@ -221,7 +221,7 @@ class TestSentieonPangenome:
         updated gVCF to produce the final VCF at output_vcf."""
         pipeline = self.create_pipeline()
         pipeline.gvcf = True
-        dag = pipeline.build_first_dag()
+        dag = pipeline.build_dag()
 
         all_jobs = list(dag.waiting_jobs.keys()) + list(dag.ready_jobs.keys())
         job_names = [job.name for job in all_jobs]
@@ -236,10 +236,10 @@ class TestSentieonPangenome:
         assert apply_gvcf.endswith("sample-snv_apply.g.vcf.gz")
 
         # DNAscope emits gVCF; model-apply writes gVCF
-        for name in ("dnascope-raw", "model-apply"):
+        for name in ("dnascope", "model-apply"):
             job = next(j for j in all_jobs if j.name == name)
             cmd_str = str(job.shell)
-            if name == "dnascope-raw":
+            if name == "dnascope":
                 assert "--emit_mode gvcf" in cmd_str
             else:
                 assert apply_gvcf in cmd_str
@@ -277,7 +277,7 @@ class TestSentieonPangenome:
         """A single AD-update job reads the model-apply
         intermediate and writes the final output VCF."""
         pipeline = self.create_pipeline()
-        dag = pipeline.build_first_dag()
+        dag = pipeline.build_dag()
 
         job_names, all_jobs = self._get_all_job_names(dag)
         assert job_names.count("sad-lad-update") == 1
@@ -303,7 +303,7 @@ class TestSentieonPangenome:
         """No AD-update job when small variants are skipped"""
         pipeline = self.create_pipeline()
         pipeline.skip_small_variants = True
-        dag = pipeline.build_first_dag()
+        dag = pipeline.build_dag()
 
         job_names, _ = self._get_all_job_names(dag)
         assert "sad-lad-update" not in job_names
@@ -311,7 +311,7 @@ class TestSentieonPangenome:
     def test_no_gvcftyper_without_gvcf(self):
         """Without --gvcf, no GVCFtyper job is added"""
         pipeline = self.create_pipeline()
-        dag = pipeline.build_first_dag()
+        dag = pipeline.build_dag()
 
         all_jobs = list(dag.waiting_jobs.keys()) + list(dag.ready_jobs.keys())
         job_names = [job.name for job in all_jobs]
@@ -342,22 +342,22 @@ class TestSentieonPangenome:
         """Test that PangenomeSV is added when --call_svs is enabled"""
         pipeline = self.create_pipeline()
         pipeline.call_svs = True
-        dag = pipeline.build_first_dag()
+        dag = pipeline.build_dag()
 
         assert isinstance(dag, DAG)
 
-        # The dnascope-raw job should exist
+        # The dnascope job should exist
         all_jobs = list(dag.waiting_jobs.keys()) + list(
             dag.ready_jobs.keys()
         )
         job_names = [job.name for job in all_jobs]
-        assert "dnascope-raw" in job_names
+        assert "dnascope" in job_names
 
-        # Find the dnascope-raw job and check its command includes
+        # Find the dnascope job and check its command includes
         # both DNAscope and PangenomeSV
         dnascope_job = None
         for job in all_jobs:
-            if job.name == "dnascope-raw":
+            if job.name == "dnascope":
                 dnascope_job = job
                 break
         assert dnascope_job is not None
@@ -375,14 +375,14 @@ class TestSentieonPangenome:
     def test_call_svs_disabled_by_default(self):
         """Test that PangenomeSV is not added by default"""
         pipeline = self.create_pipeline()
-        dag = pipeline.build_first_dag()
+        dag = pipeline.build_dag()
 
         all_jobs = list(dag.waiting_jobs.keys()) + list(
             dag.ready_jobs.keys()
         )
         dnascope_job = None
         for job in all_jobs:
-            if job.name == "dnascope-raw":
+            if job.name == "dnascope":
                 dnascope_job = job
                 break
         assert dnascope_job is not None
@@ -394,7 +394,7 @@ class TestSentieonPangenome:
         """Test that DNAscope, transfer, and model-apply are skipped"""
         pipeline = self.create_pipeline()
         pipeline.skip_small_variants = True
-        dag = pipeline.build_first_dag()
+        dag = pipeline.build_dag()
 
         assert isinstance(dag, DAG)
 
@@ -402,7 +402,7 @@ class TestSentieonPangenome:
             dag.ready_jobs.keys()
         )
         job_names = [job.name for job in all_jobs]
-        assert "dnascope-raw" not in job_names
+        assert "dnascope" not in job_names
         assert "model-apply" not in job_names
         assert "merge-trim-concat" not in job_names
 
@@ -411,7 +411,7 @@ class TestSentieonPangenome:
         pipeline = self.create_pipeline()
         pipeline.skip_small_variants = True
         pipeline.call_svs = True
-        dag = pipeline.build_first_dag()
+        dag = pipeline.build_dag()
 
         assert isinstance(dag, DAG)
 
@@ -421,7 +421,7 @@ class TestSentieonPangenome:
         job_names = [job.name for job in all_jobs]
 
         # The driver job should still run for SV calling
-        assert "dnascope-raw" in job_names
+        assert "dnascope" in job_names
 
         # Transfer and model-apply should be skipped
         assert "model-apply" not in job_names
@@ -430,7 +430,7 @@ class TestSentieonPangenome:
         # The driver command should have PangenomeSV but NOT DNAscope
         dnascope_job = None
         for job in all_jobs:
-            if job.name == "dnascope-raw":
+            if job.name == "dnascope":
                 dnascope_job = job
                 break
         assert dnascope_job is not None
@@ -451,7 +451,7 @@ class TestSentieonPangenome:
         The first DAG has to be built first so that the CNV input
         alignments are stashed for the second DAG.
         """
-        pipeline.build_first_dag()
+        pipeline.build_dag()
         pipeline.sample_sex = sample_sex
         return pipeline.build_second_dag()
 
@@ -505,7 +505,7 @@ class TestSentieonPangenome:
         """CNV jobs run in the second DAG when --call_svs is enabled"""
         pipeline = self.create_pipeline()
         pipeline.call_svs = True
-        first_dag = pipeline.build_first_dag()
+        first_dag = pipeline.build_dag()
 
         # CNV calling is sex-aware, so it is not in the first DAG
         first_job_names, _ = self._get_all_job_names(first_dag)
@@ -525,7 +525,7 @@ class TestSentieonPangenome:
     def test_cnv_jobs_not_present_without_call_svs(self):
         """Test that CNV jobs are not added by default"""
         pipeline = self.create_pipeline()
-        dag = pipeline.build_first_dag()
+        dag = pipeline.build_dag()
 
         job_names, _ = self._get_all_job_names(dag)
         assert "cnvscope" not in job_names
@@ -533,13 +533,9 @@ class TestSentieonPangenome:
         assert "indel2cnv" not in job_names
         assert "combine-cnv" not in job_names
 
-        # Nor to the second DAG
+        # And no second DAG at all, as nothing consumes the sample sex
         pipeline.sample_sex = SampleSex.FEMALE
-        second_job_names, _ = self._get_all_job_names(
-            pipeline.build_second_dag()
-        )
-        assert "cnvscope" not in second_job_names
-        assert "combine-cnv" not in second_job_names
+        assert pipeline.build_second_dag() is None
 
     def test_second_dag_needed_for_cnv_only(self):
         """CNV calling alone triggers the second DAG"""
@@ -562,7 +558,7 @@ class TestSentieonPangenome:
         pipeline.call_svs = True
         pipeline.sample_sex = SampleSex.FEMALE
 
-        job_names, _ = self._get_all_job_names(pipeline.build_first_dag())
+        job_names, _ = self._get_all_job_names(pipeline.build_dag())
         assert "estimate-ploidy" in job_names
 
     def test_ploidy_estimation_runs_without_sex_aware_callers(self):
@@ -571,7 +567,7 @@ class TestSentieonPangenome:
 
         assert pipeline._needs_second_dag() is False
         job_names, all_jobs = self._get_all_job_names(
-            pipeline.build_first_dag()
+            pipeline.build_dag()
         )
         assert "estimate-ploidy" in job_names
 
@@ -586,7 +582,7 @@ class TestSentieonPangenome:
         pipeline = self.create_pipeline()
         pipeline.skip_small_variants = True
 
-        job_names, _ = self._get_all_job_names(pipeline.build_first_dag())
+        job_names, _ = self._get_all_job_names(pipeline.build_dag())
         assert "estimate-ploidy" in job_names
 
     def test_cnv_jobs_with_skip_small_variants(self):
@@ -607,13 +603,13 @@ class TestSentieonPangenome:
         pipeline = self.create_pipeline()
         pipeline.call_svs = True
         pipeline.has_cnv_model = False
-        dag = pipeline.build_first_dag()
+        dag = pipeline.build_dag()
 
         job_names, all_jobs = self._get_all_job_names(dag)
 
         # PangenomeSV still runs
-        assert "dnascope-raw" in job_names
-        dnascope_job = next(j for j in all_jobs if j.name == "dnascope-raw")
+        assert "dnascope" in job_names
+        dnascope_job = next(j for j in all_jobs if j.name == "dnascope")
         cmd_str = str(dnascope_job.shell)
         assert "--algo PangenomeSV" in cmd_str
 
@@ -623,13 +619,9 @@ class TestSentieonPangenome:
         assert "indel2cnv" not in job_names
         assert "combine-cnv" not in job_names
 
-        # And they are not in the second DAG either
+        # And there is no second DAG either
         pipeline.sample_sex = SampleSex.FEMALE
-        second_job_names, _ = self._get_all_job_names(
-            pipeline.build_second_dag()
-        )
-        assert "cnvscope" not in second_job_names
-        assert "combine-cnv" not in second_job_names
+        assert pipeline.build_second_dag() is None
 
     def test_call_svs_without_cnv_model_skip_small_variants(self):
         """SV-only mode: SVs run but CNV jobs are skipped without cnv.model"""
@@ -637,13 +629,8 @@ class TestSentieonPangenome:
         pipeline.skip_small_variants = True
         pipeline.call_svs = True
         pipeline.has_cnv_model = False
-        dag = self._build_cnv_dag(pipeline)
 
-        job_names, _ = self._get_all_job_names(dag)
-        assert "cnvscope" not in job_names
-        assert "cnv-model-apply" not in job_names
-        assert "indel2cnv" not in job_names
-        assert "combine-cnv" not in job_names
+        assert self._build_cnv_dag(pipeline) is None
 
     def test_cnvscope_command(self):
         """Test CNVscope driver command has correct algo and model"""
@@ -746,7 +733,7 @@ class TestSentieonPangenome:
         pipeline.call_svs = True
         pipeline.skip_model_apply = True
         first_job_names, _ = self._get_all_job_names(
-            pipeline.build_first_dag()
+            pipeline.build_dag()
         )
         assert "model-apply" not in first_job_names
 

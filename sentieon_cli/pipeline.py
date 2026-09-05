@@ -11,11 +11,9 @@ import pathlib
 import shutil
 import sys
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, TypeVar
 
 import packaging.version
-
-from importlib.resources import files
 
 from . import command_strings as cmds
 from .dag import DAG
@@ -26,17 +24,17 @@ from .logging import get_logger, set_console_level
 from .run_logs import RunLogs
 from .scheduler import ThreadScheduler
 from .shard import (
-    PloidyContigs,
     detect_reference_build,
     par_bed_for_build,
 )
+from .stages.base import StageContext
+from .stages.metrics import MetricsPaths
 from .util import (
     SampleSex,
     __version__,
-    check_version,
-    cnvscope_sex_args,
     path_arg,
     tmp,
+    versions_available,
 )
 
 MULTIQC_MIN_VERSION = {
@@ -44,6 +42,8 @@ MULTIQC_MIN_VERSION = {
 }
 
 BWA_INDEX_SUFFIXES = (".amb", ".ann", ".bwt", ".pac", ".sa")
+
+T = TypeVar("T")
 
 
 class BasePipeline(ABC):
@@ -246,6 +246,47 @@ class BasePipeline(ABC):
                 f"Ready jobs: {dag.ready_jobs}\n"
             )
 
+    def required(self, value: Optional[T], name: str) -> T:
+        """Return `value`, ending the run when it was not supplied.
+
+        Narrows an optional pipeline attribute to its value, so callers do
+        not have to repeat the "missing argument" check.
+        """
+        if value is None:
+            self.logger.error("%s is required", name)
+            sys.exit(2)
+        return value
+
+    def stage_context(self) -> StageContext:
+        """The run-wide settings this pipeline's stages need.
+
+        Built fresh on every call, so it always reflects the pipeline's
+        current attributes. Only available once `main` has created the
+        run's temporary directory.
+        """
+        if self.reference is None:
+            self.logger.error("reference is required")
+            sys.exit(2)
+        if self.output_vcf is None:
+            self.logger.error("output_vcf is required")
+            sys.exit(2)
+        tmp_dir: Optional[pathlib.Path] = getattr(self, "tmp_dir", None)
+        if tmp_dir is None:
+            self.logger.error(
+                "The temporary directory has not been created yet; "
+                "`stage_context` is only available after `main` sets "
+                "`tmp_dir`"
+            )
+            sys.exit(2)
+        return StageContext(
+            reference=self.reference,
+            output_vcf=self.output_vcf,
+            tmp_dir=tmp_dir,
+            cores=self.cores,
+            dry_run=self.dry_run,
+            skip_version_check=self.skip_version_check,
+        )
+
     @abstractmethod
     def validate(self) -> None:
         pass
@@ -312,33 +353,6 @@ class BasePipeline(ABC):
         """
         return None
 
-    def build_ploidy_job(
-        self,
-        ploidy_json: pathlib.Path,
-        deduped_bam: List[pathlib.Path],
-        ploidy_contigs: Optional[PloidyContigs] = None,
-    ) -> Job:
-        """Estimate sample ploidy and sex"""
-        estimate_ploidy = pathlib.Path(
-            str(files("sentieon_cli.scripts").joinpath("estimate_ploidy.py"))
-        ).resolve()
-        ploidy_contigs = ploidy_contigs or PloidyContigs()
-        ploidy_job = Job(
-            cmds.cmd_estimate_ploidy(
-                ploidy_json,
-                deduped_bam,
-                estimate_ploidy,
-                contigs=ploidy_contigs.contigs,
-                autosomes=ploidy_contigs.autosomes,
-                x_contig=ploidy_contigs.x_contig,
-                y_contig=ploidy_contigs.y_contig,
-            ),
-            "estimate-ploidy",
-            0,
-            task_name="ploidy",
-        )
-        return ploidy_job
-
     def get_sex(self, ploidy_json: pathlib.Path) -> None:
         """Retrieve the sample sex"""
         if self.sample_sex is not None:
@@ -394,29 +408,21 @@ class BasePipeline(ABC):
         )
         sys.exit(2)
 
-    def cnv_sex_args(self) -> Tuple[Optional[str], Optional[pathlib.Path]]:
-        """The CNVscope `--sex` and `--par` arguments for this run"""
-        return cnvscope_sex_args(self.sample_sex, self.cnv_par_bed)
-
     def multiqc(self) -> Optional[Job]:
         """Run MultiQC on the metrics files"""
 
-        if not self.skip_version_check:
-            if not all(
-                [
-                    check_version(cmd, min_version)
-                    for (cmd, min_version) in MULTIQC_MIN_VERSION.items()
-                ]
-            ):
-                self.logger.warning(
-                    "Skipping MultiQC. MultiQC version %s or later not found",
-                    MULTIQC_MIN_VERSION["multiqc"],
-                )
-                return None
+        if not versions_available(
+            MULTIQC_MIN_VERSION, skip=self.skip_version_check
+        ):
+            self.logger.warning(
+                "Skipping MultiQC. MultiQC version %s or later not found",
+                MULTIQC_MIN_VERSION["multiqc"],
+            )
+            return None
 
-        metrics_dir = pathlib.Path(
-            str(self.output_vcf).replace(".vcf.gz", "_metrics")
-        )
+        metrics_dir = MetricsPaths.from_output_vcf(
+            pathlib.Path(str(self.output_vcf))
+        ).metrics_dir
         multiqc_job = Job(
             cmds.cmd_multiqc(
                 metrics_dir,

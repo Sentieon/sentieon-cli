@@ -75,7 +75,6 @@ class TestDNAscopeLRPopVcf:
 
         # Mock sample inputs
         pipeline.sample_input = self.mock_aln
-        pipeline.lr_aln = self.mock_aln
         
         return pipeline
 
@@ -154,8 +153,7 @@ class TestDNAscopeLRPopVcf:
         pipeline.pop_vcf = self.mock_pop_vcf
         
         # Mock methods to avoid real execution/checking
-        with patch("sentieon_cli.dnascope_longread.check_version", return_value=True), \
-             patch("sentieon_cli.dnascope_longread.DNAscopeLRPipeline.lr_align_inputs", return_value=([], set())), \
+        with patch("sentieon_cli.dnascope_longread.DNAscopeLRPipeline.lr_align_inputs", return_value=([], set())), \
              patch("sentieon_cli.dnascope_longread.DNAscopeLRPipeline.lr_align_fastq", return_value=([], set())), \
              patch("sentieon_cli.dnascope_longread.DNAscopeLRPipeline.mosdepth", return_value=set()), \
              patch("sentieon_cli.dnascope_longread.DNAscopeLRPipeline.merge_input_files", return_value=(pathlib.Path("merged.bam"), MagicMock())), \
@@ -170,15 +168,14 @@ class TestDNAscopeLRPopVcf:
         
         # Expect merge-trim jobs
         assert any("merge-trim" in name for name in job_names)
-        assert "merge-trim-concat" in job_names
+        assert "merge-trim-diploid-concat" in job_names
 
     def test_model_apply_dependency(self):
         """Test that model apply uses the transfer output when pop_vcf is present"""
         pipeline = self.create_pipeline()
         pipeline.pop_vcf = self.mock_pop_vcf
         
-        with patch("sentieon_cli.dnascope_longread.check_version", return_value=True), \
-             patch("sentieon_cli.dnascope_longread.DNAscopeLRPipeline.lr_align_inputs", return_value=([], set())), \
+        with patch("sentieon_cli.dnascope_longread.DNAscopeLRPipeline.lr_align_inputs", return_value=([], set())), \
              patch("sentieon_cli.dnascope_longread.DNAscopeLRPipeline.lr_align_fastq", return_value=([], set())), \
              patch("sentieon_cli.dnascope_longread.DNAscopeLRPipeline.mosdepth", return_value=set()), \
              patch("sentieon_cli.dnascope_longread.DNAscopeLRPipeline.merge_input_files", return_value=(pathlib.Path("merged.bam"), MagicMock())), \
@@ -188,16 +185,16 @@ class TestDNAscopeLRPopVcf:
              
              dag = pipeline.build_dag()
         
-        # Find first-modelapply job
+        # Find the diploid model-apply job
         apply_job = None
         for job in dag.waiting_jobs:
-            if job.name == "first-modelapply":
+            if job.name == "model-apply-diploid":
                 apply_job = job
                 break
         
         assert apply_job is not None
         
-        # Check dependency: apply_job should depend on merge-trim-concat (transfer_vcf_job)
+        # Check dependency: apply_job should depend on the transfer concat job
         deps = dag.waiting_jobs[apply_job]
         dep_names = [j.name for j in deps]
-        assert "merge-trim-concat" in dep_names
+        assert "merge-trim-diploid-concat" in dep_names

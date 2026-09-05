@@ -7,6 +7,7 @@ import argparse
 import logging
 import os
 import sys
+from typing import Optional
 
 import pytest
 
@@ -16,9 +17,14 @@ sys.path.insert(
     os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")),
 )
 
-from sentieon_cli import sentieon_pangenome  # noqa: E402
 from sentieon_cli.dag import DAG  # noqa: E402
+from sentieon_cli.dnascope import DNAscopePipeline  # noqa: E402
+from sentieon_cli.dnascope_hybrid import (  # noqa: E402
+    DNAscopeHybridPipeline,
+)
+from sentieon_cli.dnascope_longread import DNAscopeLRPipeline  # noqa: E402
 from sentieon_cli.exceptions import DagExecutionError  # noqa: E402
+from sentieon_cli.hybrid_pangenome import HybridPangenome  # noqa: E402
 from sentieon_cli.job import Job  # noqa: E402
 from sentieon_cli.pipeline import BasePipeline  # noqa: E402
 from sentieon_cli.sentieon_pangenome import SentieonPangenome  # noqa: E402
@@ -231,21 +237,20 @@ class _StubPangenome(SentieonPangenome):
         self.check_calls = 0
         self.dags_built = []
 
-    def validate_ref(self) -> None:
-        pass
-
     def validate(self) -> None:
         pass
 
     def configure(self) -> None:
         pass
 
-    def build_first_dag(self) -> DAG:
+    def build_dag(self) -> DAG:
         self.dags_built.append("first")
         self.ploidy_json = self.tmp_dir.joinpath("ploidy.json")
         return DAG()
 
-    def build_second_dag(self) -> DAG:
+    def build_second_dag(self) -> Optional[DAG]:
+        if not self._needs_second_dag():
+            return None
         self.dags_built.append("second")
         return DAG()
 
@@ -264,18 +269,14 @@ class _StubPangenome(SentieonPangenome):
 def _stub_pangenome(monkeypatch, tmp_path, **kwargs):
     """A stubbed pangenome pipeline writing temp dirs into `tmp_path`"""
     monkeypatch.setenv("SENTIEON_TMPDIR", str(tmp_path))
-    monkeypatch.setattr(sentieon_pangenome, "parse_fai", lambda fai: {})
-    monkeypatch.setattr(
-        sentieon_pangenome, "determine_shards_from_fai", lambda fai, size: []
-    )
     return _StubPangenome(**kwargs)
 
 
 def test_pangenome_main_cleans_up_tmpdir_when_the_first_dag_fails(
     tmp_path, monkeypatch
 ):
-    # SentieonPangenome overrides main() for its two-DAG flow; the temp
-    # directory has to be removed on the failure path too.
+    # SentieonPangenome runs the base two-DAG flow; the temp directory
+    # has to be removed on the failure path too.
     pipeline = _stub_pangenome(monkeypatch, tmp_path, fail_on=1)
 
     with pytest.raises(DagExecutionError):
@@ -344,3 +345,18 @@ def test_check_execution_flags_unexecuted_jobs():
 
     with pytest.raises(DagExecutionError, match=r"Job\(unexecuted-1\)"):
         pipeline.check_execution(dag, _StubExecutor())
+
+
+@pytest.mark.parametrize(
+    "pipeline_cls",
+    [
+        DNAscopePipeline,
+        DNAscopeLRPipeline,
+        DNAscopeHybridPipeline,
+        SentieonPangenome,
+        HybridPangenome,
+    ],
+)
+def test_no_pipeline_overrides_main(pipeline_cls):
+    """Every pipeline runs through `BasePipeline.main`"""
+    assert "main" not in pipeline_cls.__dict__

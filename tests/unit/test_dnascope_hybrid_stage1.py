@@ -86,10 +86,7 @@ class TestDNAscopeHybridStage1:
 
     def build_dag(self, pipeline):
         """Build the DAG and index the jobs by name"""
-        with patch(
-            "sentieon_cli.dnascope_hybrid.check_version", return_value=True
-        ):
-            dag = pipeline.build_dag()
+        dag = pipeline.build_dag()
         jobs = list(dag.waiting_jobs.keys()) + list(dag.ready_jobs.keys())
         return dag, {job.name: job for job in jobs}
 
@@ -169,6 +166,28 @@ class TestDNAscopeHybridStage1:
             "first-stage",
             "first-stage-hap",
         }
+
+    def test_cleanup_jobs(self):
+        """Each cleanup job waits for the jobs writing what it removes"""
+        pipeline = self.create_pipeline()
+        dag, jobs = self.build_dag(pipeline)
+
+        assert self.dep_names(dag, jobs["rm-tmp1"]) == {"concat-merge-bed"}
+        assert self.dep_names(dag, jobs["rm-tmp2"]) == {
+            "first-stage",
+            "first-stage-hap",
+        }
+        assert self.dep_names(dag, jobs["rm-tmp3"]) == {"second-stage"}
+        assert self.dep_names(dag, jobs["rm-tmp4"]) == {"third-stage"}
+        assert self.dep_names(dag, jobs["rm-tmp5"]) == {"concat-calls"}
+
+    def test_retain_tmpdir_skips_cleanup(self):
+        """`--retain_tmpdir` keeps the intermediate files"""
+        pipeline = self.create_pipeline()
+        pipeline.retain_tmpdir = True
+        _dag, jobs = self.build_dag(pipeline)
+
+        assert [name for name in jobs if name.startswith("rm-tmp")] == []
 
     def test_second_stage_inputs(self):
         """The second stage consumes the sorted haplotype BAM"""

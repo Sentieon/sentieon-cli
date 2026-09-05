@@ -308,6 +308,7 @@ jobs:
             --sr_aln "tests/smoke/illumina.cram" \
             --lr_aln "tests/smoke/sam ple.cram" \
             -m "DNAscope hybrid IlmnPB1.1.bundle" \
+            --skip_cnv \
             --sr_duplicate_marking none \
             "output_hybrid1.vcf.gz"
           if [ ! -f "output_hybrid1.vcf.gz" ]; then
@@ -326,6 +327,7 @@ jobs:
             --lr_align_input \
             --lr_input_ref "tests/smoke/r ef.fa" \
             -m "DNAscope hybrid IlmnPB1.1.bundle" \
+            --skip_cnv \
             "output_hybrid2.vcf.gz"
           if [ ! -f "output_hybrid2.vcf.gz" ]; then
             exit 1
@@ -343,6 +345,7 @@ jobs:
             --sr_aln "tests/smoke/illumina.cram" "tests/smoke/illumina_2.bam" \
             --lr_aln "tests/smoke/sam ple.cram" \
             -m "DNAscope hybrid IlmnPB1.1.bundle" \
+            --skip_cnv \
             --sr_duplicate_marking none \
             "output_hybrid3.vcf.gz"
           if [ ! -f "output_hybrid3.vcf.gz" ]; then

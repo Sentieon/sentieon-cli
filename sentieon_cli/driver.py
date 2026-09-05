@@ -575,7 +575,7 @@ class BaseDriver:
         reference: Optional[pathlib.Path] = None,
         thread_count: Optional[int] = None,
         interval: Optional[Union[pathlib.Path, str]] = None,
-        interval_padding: int = 0,
+        interval_padding: Optional[int] = None,
         read_filter: Optional[List[str]] = None,
         replace_rg: Optional[List[List[str]]] = None,
         input: Optional[List[pathlib.Path]] = None,

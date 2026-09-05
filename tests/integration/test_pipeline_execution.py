@@ -152,7 +152,7 @@ class TestPipelineDryRunExecution:
             all_jobs = [job for job in list(dag.waiting_jobs.keys()) + list(dag.ready_jobs.keys())]
 
             # with --rgsm should use replace_rg during first pass
-            first_pass_job = [job for job in all_jobs if job.name == "calling-1"][0]
+            first_pass_job = [job for job in all_jobs if job.name == "dnascope-1"][0]
             assert "--replace_rg" in first_pass_job.shell.nodes[0].args
 
             # CNV calling is sex-aware and runs in the second DAG
@@ -160,7 +160,7 @@ class TestPipelineDryRunExecution:
             second_jobs = list(second_dag.waiting_jobs.keys()) + list(second_dag.ready_jobs.keys())
 
             # should use replace_rg in CNV calling
-            cnv_job = [job for job in second_jobs if job.name == "CNVscope"][0]
+            cnv_job = [job for job in second_jobs if job.name == "cnvscope"][0]
             assert "--replace_rg" in cnv_job.shell.nodes[0].args
 
             # should use replace_rg in SV calling
@@ -192,7 +192,7 @@ class TestPipelineCommandGeneration:
         dag = pipeline.build_dag()
 
         # Find variant calling job
-        variant_job = DAGAnalyzer.get_job_by_name(dag, "variant-calling")
+        variant_job = DAGAnalyzer.get_job_by_name(dag, "dnascope")
         assert variant_job is not None, "Should have variant calling job"
 
         # Check that command includes expected parameters
@@ -364,7 +364,7 @@ class TestDAGDependencyValidation:
         dag = pipeline.build_dag()
 
         # Variant calling should depend on either dedup or input processing
-        variant_jobs = DAGAnalyzer.get_jobs_by_type(dag, "variant")
+        variant_jobs = DAGAnalyzer.get_jobs_by_type(dag, "dnascope")
 
         assert len(variant_jobs) > 0, "Should have variant calling jobs"
 

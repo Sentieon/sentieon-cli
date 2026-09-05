@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 from sentieon_cli.dnascope import DNAscopePipeline
 from sentieon_cli.dnascope_longread import DNAscopeLRPipeline
 from sentieon_cli.dnascope_hybrid import DNAscopeHybridPipeline
+from sentieon_cli.util import set_bwt_max_mem
 from tests.utils.test_helpers import create_mock_args
 
 
@@ -53,8 +54,8 @@ class TestDNAscopePipelineValidation:
         self.pipeline.reference = self.mock_ref
         self.pipeline.model_bundle = self.mock_bundle
         self.pipeline.sample_input = [self.mock_bam]
-        self.pipeline.sr_r1_fastq = []
-        self.pipeline.sr_readgroups = []
+        self.pipeline.r1_fastq = []
+        self.pipeline.readgroups = []
 
         # Should not raise any exceptions
         try:
@@ -83,8 +84,8 @@ class TestDNAscopePipelineValidation:
         self.pipeline.reference = self.mock_ref
         self.pipeline.model_bundle = self.mock_bundle
         self.pipeline.sample_input = []
-        self.pipeline.sr_r1_fastq = []
-        self.pipeline.sr_readgroups = []
+        self.pipeline.r1_fastq = []
+        self.pipeline.readgroups = []
 
         with pytest.raises(SystemExit):
             self.pipeline.validate()
@@ -96,8 +97,8 @@ class TestDNAscopePipelineValidation:
         self.pipeline.reference = self.mock_ref
         self.pipeline.model_bundle = self.mock_bundle
         self.pipeline.sample_input = [self.mock_bam]
-        self.pipeline.sr_r1_fastq = []
-        self.pipeline.sr_readgroups = []
+        self.pipeline.r1_fastq = []
+        self.pipeline.readgroups = []
 
         with pytest.raises(SystemExit):
             self.pipeline.validate()
@@ -108,11 +109,19 @@ class TestDNAscopePipelineValidation:
         self.pipeline.reference = self.mock_ref
         self.pipeline.model_bundle = self.mock_bundle
         self.pipeline.sample_input = []
-        self.pipeline.sr_r1_fastq = [self.mock_fastq]
-        self.pipeline.sr_readgroups = []  # Empty readgroups with non-empty fastq
+        # Two fastq files, but only one readgroup. Both must be non-empty to
+        # get past the "supply --sample_input or --r1_fastq" guard.
+        self.pipeline.r1_fastq = [self.mock_fastq, self.mock_fastq]
+        self.pipeline.readgroups = ["@RG\\tID:a\\tSM:s"]
 
-        with pytest.raises(SystemExit):
-            self.pipeline.validate()
+        with patch.object(self.pipeline.logger, "error") as mock_error:
+            with pytest.raises(SystemExit) as excinfo:
+                self.pipeline.validate()
+
+        assert excinfo.value.code == 2
+        mock_error.assert_any_call(
+            "The number of readgroups does not equal the number of fastq files"
+        )
 
     def test_skip_multiqc_when_skip_metrics(self):
         """Test that skip_multiqc is set when skip_metrics is True"""
@@ -120,8 +129,8 @@ class TestDNAscopePipelineValidation:
         self.pipeline.reference = self.mock_ref
         self.pipeline.model_bundle = self.mock_bundle
         self.pipeline.sample_input = [self.mock_bam]
-        self.pipeline.sr_r1_fastq = []
-        self.pipeline.sr_readgroups = []
+        self.pipeline.r1_fastq = []
+        self.pipeline.readgroups = []
         self.pipeline.skip_metrics = True
         self.pipeline.skip_multiqc = False
 
@@ -197,7 +206,7 @@ class TestDNAscopeLRPipelineValidation:
         self.pipeline.output_vcf = self.mock_vcf
         self.pipeline.reference = self.mock_ref
         self.pipeline.model_bundle = self.mock_bundle
-        self.pipeline.lr_aln = []
+        self.pipeline.sample_input = []
         self.pipeline.fastq = [self.mock_fastq]
         self.pipeline.readgroups = ["@RG\\tID:test\\tSM:sample"]
 
@@ -271,22 +280,29 @@ class TestDNAscopeLRPipelineValidation:
         self.pipeline.output_vcf = self.mock_vcf
         self.pipeline.reference = self.mock_ref
         self.pipeline.model_bundle = self.mock_bundle
-        self.pipeline.lr_aln = [self.mock_bam]
+        self.pipeline.sample_input = [self.mock_bam]
         self.pipeline.fastq = []
         self.pipeline.readgroups = []
         self.pipeline.haploid_bed = self.mock_bed
         self.pipeline.bed = None  # No diploid bed
         self.pipeline.skip_small_variants = False
 
-        with pytest.raises(SystemExit):
-            self.pipeline.validate()
+        with patch.object(self.pipeline.logger, "error") as mock_error:
+            with pytest.raises(SystemExit) as excinfo:
+                self.pipeline.validate()
+
+        assert excinfo.value.code == 2
+        mock_error.assert_any_call(
+            "Please supply a BED file of diploid regions to distinguish "
+            "haploid and diploid regions of the genome."
+        )
 
     def test_mismatched_fastq_readgroups_raises_error(self):
         """Test that mismatched FASTQ and readgroup counts raise an error"""
         self.pipeline.output_vcf = self.mock_vcf
         self.pipeline.reference = self.mock_ref
         self.pipeline.model_bundle = self.mock_bundle
-        self.pipeline.lr_aln = []
+        self.pipeline.sample_input = []
         self.pipeline.fastq = [self.mock_fastq]
         self.pipeline.readgroups = []  # Empty readgroups with non-empty fastq
 
@@ -425,26 +441,40 @@ class TestPipelineConfigurationHelpers:
         fastq_file.write_bytes(b"y" * 500)  # 0.5KB
 
         pipeline.sample_input = [bam_file]
-        pipeline.sr_r1_fastq = [fastq_file]
-        pipeline.sr_r2_fastq = []
+        pipeline.r1_fastq = [fastq_file]
+        pipeline.r2_fastq = []
 
         total_size = pipeline.total_input_size()
         assert total_size == 1500  # 1KB + 0.5KB
 
-    def test_memory_calculation_logic(self):
-        """Test bwt_max_mem calculation logic"""
-        pipeline = DNAscopePipeline()
+    def test_bwt_max_mem_override(self, monkeypatch):
+        """`--bwt_max_mem` short-circuits the calculation"""
+        monkeypatch.delenv("bwt_max_mem", raising=False)
 
-        # Setup logging first
-        args = create_mock_args()
-        pipeline.setup_logging(args)
-
-        # Test with specific memory values
-        pipeline.bwt_max_mem = "10G"
-        pipeline.set_bwt_max_mem(0, 1)
-
-        import os
+        assert set_bwt_max_mem(0, 1, override="10G") == "10G"
         assert os.environ.get("bwt_max_mem") == "10G"
+
+    @pytest.mark.parametrize(
+        "total_input_size,n_alignment_jobs,expected",
+        [
+            (0, 1, "54G"),  # 64 - 4 - 0 = 60; 60 / 1 - 6 = 54
+            (0, 2, "24G"),  # 60 / 2 - 6 = 24
+            (30 * 1024**3, 1, "0G"),  # 60 - 30 * 2.3 < 0, floored at 0
+        ],
+    )
+    def test_bwt_max_mem_calculation(
+        self, monkeypatch, total_input_size, n_alignment_jobs, expected
+    ):
+        """bwt_max_mem is derived from the memory and the input size"""
+        monkeypatch.setenv("bwt_max_mem", "unset")
+
+        with patch(
+            "sentieon_cli.util.total_memory", return_value=64 * 1024**3
+        ):
+            result = set_bwt_max_mem(total_input_size, n_alignment_jobs)
+
+        assert result == expected
+        assert os.environ.get("bwt_max_mem") == expected
 
 
 class TestValidateBwaIndex:

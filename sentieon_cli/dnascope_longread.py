@@ -4,10 +4,8 @@ Functionality for the DNAscope LongRead pipeline
 
 import argparse
 import copy
-from dataclasses import dataclass
 import json
 import pathlib
-import shutil
 import sys
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -19,12 +17,9 @@ from . import command_strings as cmds
 from .archive import ar_load
 from .dag import DAG
 from .driver import (
-    Driver,
+    BaseAlgo,
     DNAscope,
     DNAscopeHP,
-    DNAModelApply,
-    LongReadSV,
-    ReadWriter,
     RepeatModel,
     VariantPhaser,
 )
@@ -36,37 +31,38 @@ from .shard import (
     vcf_contigs,
 )
 from .shell_pipeline import Command, Pipeline
-from .transfer import build_transfer_jobs
+from .stages.alignment import (
+    MINIMAP2_FASTQ_MIN_VERSIONS,
+    MINIMAP2_REALIGN_MIN_VERSIONS,
+    Minimap2FastqStage,
+    Minimap2RealignStage,
+    ReadWriterStage,
+    find_unzip,
+)
+from .stages.base import StageContext, driver_job
+from .stages.metrics import MOSDEPTH_MIN_VERSIONS, MosdepthStage
+from .stages.small_variants import (
+    ApplySpec,
+    DNAscopeStage,
+    TransferApplyStage,
+    TransferSpec,
+)
+from .stages.sv import LONGREADSV_MIN_VERSIONS, LongReadSVStage
+from .stages.transfer import TransferConfig
 from .util import (
     __version__,
-    check_version,
+    library_preloaded,
     parse_rg_line,
     path_arg,
-    library_preloaded,
+    require_versions,
     vcf_id,
+    versions_available,
 )
 
 TOOL_MIN_VERSIONS = {
     "sentieon driver": packaging.version.Version("202308.01"),
     "bcftools": packaging.version.Version("1.22"),
     "bedtools": None,
-}
-
-SV_MIN_VERSIONS = {
-    "sentieon driver": packaging.version.Version("202308"),
-}
-
-ALN_MIN_VERSIONS = {
-    "sentieon driver": packaging.version.Version("202308"),
-    "samtools": packaging.version.Version("1.16"),
-}
-
-FQ_MIN_VERSIONS = {
-    "sentieon driver": packaging.version.Version("202308"),
-}
-
-MOSDEPTH_MIN_VERSIONS = {
-    "mosdepth": packaging.version.Version("0.2.6"),
 }
 
 MERGE_MIN_VERSIONS = {
@@ -80,39 +76,6 @@ PBSV_MIN_VERSIONS = {
 HIFICNV_MIN_VERSIONS = {
     "hificnv": packaging.version.Version("1.0.0"),
 }
-
-
-@dataclass
-class LRCallVariantsResult:
-    """Results from lr_call_variants"""
-
-    first_calling_job: Job
-    diploid_transfer_jobs: List[Job]
-    diploid_concat_job: Optional[Job]
-    first_modelapply_job: Job
-    phaser_job: Job
-    bcftools_subset_phased_job: Optional[Job]
-    fai_to_bed_job: Optional[Job]
-    bcftools_subtract_job: Job
-    repeatmodel_job: Optional[Job]
-    bcftools_subset_unphased_job: Job
-    second_calling_job: Set[Job]
-    haploid_patch_job: Job
-    patch_transfer_jobs: List[List[Job]]
-    patch_concat_jobs: List[Job]
-    second_modelapply_job: Set[Job]
-    calling_unphased_job: Job
-    diploid_patch_job: Job
-    unphased_transfer_jobs: List[Job]
-    unphased_concat_job: Optional[Job]
-    modelapply_unphased_job: Job
-    merge_job: Job
-    gvcf_combine_job: Optional[Job]
-    haploid_calling_job: Optional[Job]
-    haploid_patch2_job: Optional[Job]
-    haploid_concat_job: Optional[Job]
-    haploid_gvcf_combine_job: Optional[Job]
-    haploid_gvcf_concat_job: Optional[Job]
 
 
 class DNAscopeLRPipeline(BasePipeline):
@@ -290,13 +253,8 @@ class DNAscopeLRPipeline(BasePipeline):
         self.use_pbsv = False
 
     def validate(self) -> None:
-        # uniquify pipeline attributes
-        self.lr_aln = self.sample_input
-        self.lr_input_ref = self.input_ref
-        del self.sample_input
-
         # validate
-        if not (self.lr_aln or self.fastq):
+        if not (self.sample_input or self.fastq):
             self.logger.error(
                 "Please supply either the `--sample_input` or `--fastq` and "
                 "`--readgroups` arguments"
@@ -468,8 +426,9 @@ class DNAscopeLRPipeline(BasePipeline):
     def build_dag(self) -> DAG:
         self.logger.info("Building the DAG")
         dag = DAG()
+        ctx = self.stage_context()
 
-        sample_input = self.lr_aln
+        sample_input = self.sample_input
         realign_jobs: Set[Job] = set()
         if self.align:
             sample_input, realign_jobs = self.lr_align_inputs()
@@ -500,121 +459,9 @@ class DNAscopeLRPipeline(BasePipeline):
                     dag.add_job(hificnv_job, {merge_job})
 
         if not self.skip_small_variants:
-            cv = self.lr_call_variants(sample_input)
-            dag.add_job(cv.first_calling_job, realign_jobs.union(align_jobs))
-
-            first_ma_deps = {cv.first_calling_job}
-            if cv.diploid_transfer_jobs and cv.diploid_concat_job:
-                for job in cv.diploid_transfer_jobs:
-                    dag.add_job(job, {cv.first_calling_job})
-                dag.add_job(
-                    cv.diploid_concat_job, set(cv.diploid_transfer_jobs)
-                )
-                first_ma_deps.add(cv.diploid_concat_job)
-
-            dag.add_job(cv.first_modelapply_job, first_ma_deps)
-            dag.add_job(cv.phaser_job, {cv.first_modelapply_job})
-
-            haploid_patch_deps: Set[Job] = set()
-            if cv.bcftools_subset_phased_job:
-                dag.add_job(cv.bcftools_subset_phased_job, {cv.phaser_job})
-                haploid_patch_deps.add(cv.bcftools_subset_phased_job)
-
-            subtract_deps: Set[Job] = {cv.phaser_job}
-            if cv.fai_to_bed_job:
-                dag.add_job(cv.fai_to_bed_job)
-                subtract_deps.add(cv.fai_to_bed_job)
-            dag.add_job(cv.bcftools_subtract_job, subtract_deps)
-            dag.add_job(
-                cv.bcftools_subset_unphased_job,
-                {cv.bcftools_subtract_job},
+            self.add_small_variant_calling(
+                dag, ctx, sample_input, realign_jobs.union(align_jobs)
             )
-
-            second_pass_deps: Set[Job] = {cv.phaser_job}
-            calling_unphased_deps: Set[Job] = {cv.bcftools_subtract_job}
-            haploid_calling_deps: Set[Job] = set()
-            if cv.repeatmodel_job:
-                dag.add_job(cv.repeatmodel_job, {cv.phaser_job})
-                second_pass_deps.add(cv.repeatmodel_job)
-                calling_unphased_deps.add(cv.repeatmodel_job)
-                haploid_calling_deps.add(cv.repeatmodel_job)
-
-            merge_deps: Set[Job] = set()
-            for job in cv.second_calling_job:
-                dag.add_job(job, second_pass_deps)
-                haploid_patch_deps.add(job)
-            dag.add_job(cv.haploid_patch_job, haploid_patch_deps)
-
-            second_ma_deps = {cv.haploid_patch_job}
-            if cv.patch_transfer_jobs:  # pop_vcf
-                for patch_transfer_hap, patch_concat in zip(
-                    cv.patch_transfer_jobs, cv.patch_concat_jobs
-                ):
-                    for job in patch_transfer_hap:
-                        dag.add_job(job, {cv.haploid_patch_job})
-                    dag.add_job(patch_concat, set(patch_transfer_hap))
-                    second_ma_deps.add(patch_concat)
-
-            for job in cv.second_modelapply_job:
-                dag.add_job(job, second_ma_deps)
-                merge_deps.add(job)
-
-            dag.add_job(cv.calling_unphased_job, calling_unphased_deps)
-            dag.add_job(
-                cv.diploid_patch_job,
-                {
-                    cv.bcftools_subset_unphased_job,
-                    cv.calling_unphased_job,
-                },
-            )
-
-            unphased_ma_deps = {cv.diploid_patch_job}
-            if cv.unphased_transfer_jobs and cv.unphased_concat_job:  # pop_vcf
-                for job in cv.unphased_transfer_jobs:
-                    dag.add_job(job, {cv.diploid_patch_job})
-                dag.add_job(
-                    cv.unphased_concat_job, set(cv.unphased_transfer_jobs)
-                )
-                unphased_ma_deps.add(cv.unphased_concat_job)
-
-            dag.add_job(cv.modelapply_unphased_job, unphased_ma_deps)
-            merge_deps.add(cv.modelapply_unphased_job)
-            dag.add_job(cv.merge_job, merge_deps)
-
-            if cv.gvcf_combine_job:
-                dag.add_job(cv.gvcf_combine_job, {cv.merge_job})
-
-            if (
-                cv.haploid_calling_job
-                and cv.haploid_patch2_job
-                and cv.haploid_concat_job
-            ):
-                dag.add_job(cv.haploid_calling_job, haploid_calling_deps)
-                dag.add_job(
-                    cv.haploid_patch2_job,
-                    {cv.haploid_calling_job},
-                )
-                dag.add_job(
-                    cv.haploid_concat_job,
-                    {cv.haploid_patch2_job, cv.merge_job},
-                )
-
-                if (
-                    cv.haploid_gvcf_combine_job
-                    and cv.haploid_gvcf_concat_job
-                    and cv.gvcf_combine_job
-                ):
-                    dag.add_job(
-                        cv.haploid_gvcf_combine_job,
-                        {cv.haploid_patch2_job},
-                    )
-                    dag.add_job(
-                        cv.haploid_gvcf_concat_job,
-                        {
-                            cv.haploid_gvcf_combine_job,
-                            cv.gvcf_combine_job,
-                        },
-                    )
 
         if not self.skip_svs:
             longreadsv_job = self.call_svs(sample_input)
@@ -626,150 +473,69 @@ class DNAscopeLRPipeline(BasePipeline):
         """
         Align reads to the reference genome using minimap2
         """
-        if not self.output_vcf:
-            self.logger.error("output_vcf is required")
-            sys.exit(2)
-        if not self.reference:
-            self.logger.error("reference is required")
-            sys.exit(2)
-        if not self.model_bundle:
-            self.logger.error("model_bundle is required")
-            sys.exit(2)
-        if not self.skip_version_check:
-            for cmd, min_version in ALN_MIN_VERSIONS.items():
-                if not check_version(cmd, min_version):
-                    sys.exit(2)
+        output_vcf = self.required(self.output_vcf, "output_vcf")
+        bundle = self.required(self.model_bundle, "model_bundle")
+        require_versions(
+            MINIMAP2_REALIGN_MIN_VERSIONS, skip=self.skip_version_check
+        )
 
-        res: List[pathlib.Path] = []
-        suffix = "bam" if self.bam_format else "cram"
-        sample_name = self.output_vcf.name.replace(".vcf.gz", "")
-        realign_jobs = set()
-        for i, input_aln in enumerate(self.lr_aln):
-            out_aln = pathlib.Path(
-                str(self.output_vcf).replace(
-                    ".vcf.gz", f"_mm2_sorted_{i}.{suffix}"
-                )
-            )
-            rg_lines = cmds.get_rg_lines(
-                input_aln,
-                self.dry_run,
-            )
-
-            realign_jobs.add(
-                Job(
-                    cmds.cmd_samtools_fastq_minimap2(
-                        out_aln,
-                        input_aln,
-                        self.reference,
-                        self.model_bundle,
-                        self.cores,
-                        rg_lines,
-                        sample_name,
-                        self.lr_input_ref,
-                        self.fastq_taglist,
-                        self.minimap2_args,
-                        self.util_sort_args,
-                    ),
-                    f"bam-realign-{i}",
-                    self.cores,
-                    task_name="alignment",
-                )
-            )
-            res.append(out_aln)
-        return (res, realign_jobs)
+        result = Minimap2RealignStage(
+            ctx=self.stage_context(),
+            inputs=self.sample_input,
+            model_bundle=bundle,
+            sample_name=output_vcf.name.replace(".vcf.gz", ""),
+            bam_format=self.bam_format,
+            input_ref=self.input_ref,
+            fastq_taglist=self.fastq_taglist,
+            minimap2_args=self.minimap2_args,
+            util_sort_args=self.util_sort_args,
+        ).build()
+        return (result.outputs, set(result.jobs))
 
     def lr_align_fastq(self) -> Tuple[List[pathlib.Path], Set[Job]]:
         """
         Align fastq to the reference genome using minimap2
         """
-        if not self.reference:
-            self.logger.error("reference is required")
-            sys.exit(2)
-        if not self.model_bundle:
-            self.logger.error("model_bundle is required")
-            sys.exit(2)
-        res: List[pathlib.Path] = []
+        bundle = self.required(self.model_bundle, "model_bundle")
         if self.fastq is None and self.readgroups is None:
-            return (res, set())
+            return ([], set())
 
-        if not self.skip_version_check:
-            for cmd, min_version in FQ_MIN_VERSIONS.items():
-                if not check_version(cmd, min_version):
-                    sys.exit(2)
+        require_versions(
+            MINIMAP2_FASTQ_MIN_VERSIONS, skip=self.skip_version_check
+        )
 
-        unzip = "igzip"
-        if not shutil.which(unzip):
-            self.logger.warning(
-                "igzip is recommended for decompression, but is not "
-                "available. Falling back to gzip."
-            )
-            unzip = "gzip"
-
-        suffix = "bam" if self.bam_format else "cram"
-        align_jobs = set()
-        for i, (fq, rg) in enumerate(zip(self.fastq, self.readgroups)):
-            out_aln = pathlib.Path(
-                str(self.output_vcf).replace(
-                    ".vcf.gz", f"_mm2_sorted_fq_{i}.{suffix}"
-                )
-            )
-            align_jobs.add(
-                Job(
-                    cmds.cmd_fastq_minimap2(
-                        out_aln,
-                        fq,
-                        rg,
-                        self.reference,
-                        self.model_bundle,
-                        self.cores,
-                        unzip,
-                        self.minimap2_args,
-                        self.util_sort_args,
-                    ),
-                    f"align-{i}",
-                    self.cores,
-                    task_name="alignment",
-                )
-            )
-            res.append(out_aln)
-        return (res, align_jobs)
+        result = Minimap2FastqStage(
+            ctx=self.stage_context(),
+            fastq=self.fastq,
+            readgroups=self.readgroups,
+            model_bundle=bundle,
+            bam_format=self.bam_format,
+            unzip=find_unzip(self.logger),
+            minimap2_args=self.minimap2_args,
+            util_sort_args=self.util_sort_args,
+        ).build()
+        return (result.outputs, set(result.jobs))
 
     def mosdepth(self, sample_input: List[pathlib.Path]) -> Set[Job]:
         """Run mosdepth for QC"""
 
-        if not self.skip_version_check:
-            if not all(
-                [
-                    check_version(cmd, min_version)
-                    for (cmd, min_version) in MOSDEPTH_MIN_VERSIONS.items()
-                ]
-            ):
-                self.logger.warning(
-                    "Skipping mosdepth. mosdepth version %s or later "
-                    "not found",
-                    MOSDEPTH_MIN_VERSIONS["mosdepth"],
-                )
-                return set()
+        if not versions_available(
+            MOSDEPTH_MIN_VERSIONS, skip=self.skip_version_check
+        ):
+            self.logger.warning(
+                "Skipping mosdepth. mosdepth version %s or later not found",
+                MOSDEPTH_MIN_VERSIONS["mosdepth"],
+            )
+            return set()
 
-        mosdepth_jobs = set()
-        for i, input_file in enumerate(sample_input):
-            mosdepth_dir = pathlib.Path(
-                str(self.output_vcf).replace(".vcf.gz", f"_mosdepth_{i}")
+        return set(
+            MosdepthStage(
+                ctx=self.stage_context(),
+                inputs=sample_input,
             )
-            mosdepth_jobs.add(
-                Job(
-                    cmds.cmd_mosdepth(
-                        input_file,
-                        mosdepth_dir,
-                        fasta=self.reference,
-                        threads=self.cores,
-                    ),
-                    f"mosdepth-{i}",
-                    0,  # Run in background
-                    task_name="metrics",
-                )
-            )
-        return mosdepth_jobs
+            .build()
+            .jobs
+        )
 
     def merge_input_files(
         self, sample_input: List[pathlib.Path]
@@ -777,26 +543,19 @@ class DNAscopeLRPipeline(BasePipeline):
         """
         Merge the aligned reads into a single BAM
         """
-        if not self.skip_version_check:
-            for cmd, min_version in MERGE_MIN_VERSIONS.items():
-                if not check_version(cmd, min_version):
-                    sys.exit(2)
+        require_versions(MERGE_MIN_VERSIONS, skip=self.skip_version_check)
 
         # Merge the sample_input into a single BAM
         merged_bam = self.tmp_dir.joinpath("longread_merged.bam")
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-            input=sample_input,
-        )
-        driver.add_algo(ReadWriter(merged_bam))
-        merge_job = Job(
-            Pipeline(Command(*driver.build_cmd())),
-            "merge-bam",
-            0,
+        result = ReadWriterStage(
+            ctx=self.stage_context(),
+            inputs=sample_input,
+            output=merged_bam,
+            name="merge-bam",
             task_name="alignment",
-        )
-        return (merged_bam, merge_job)
+            threads=0,  # Run in the background
+        ).build()
+        return (merged_bam, result.jobs[0])
 
     def pbsv(
         self,
@@ -805,10 +564,7 @@ class DNAscopeLRPipeline(BasePipeline):
         """
         Call SVs with pbsv
         """
-        if not self.skip_version_check:
-            for cmd, min_version in PBSV_MIN_VERSIONS.items():
-                if not check_version(cmd, min_version):
-                    sys.exit(2)
+        require_versions(PBSV_MIN_VERSIONS, skip=self.skip_version_check)
 
         # pbsv discover
         pbsv_discover_fn = str(self.output_vcf).replace(
@@ -856,15 +612,14 @@ class DNAscopeLRPipeline(BasePipeline):
         """
         Call CNVs with HiFiCNV
         """
-        if not self.skip_version_check:
-            for cmd, min_version in HIFICNV_MIN_VERSIONS.items():
-                if not check_version(cmd, min_version):
-                    self.logger.warning(
-                        "Skipping hificnv. hificnv version %s or later not "
-                        "found",
-                        HIFICNV_MIN_VERSIONS["hificnv"],
-                    )
-                    return None
+        if not versions_available(
+            HIFICNV_MIN_VERSIONS, skip=self.skip_version_check
+        ):
+            self.logger.warning(
+                "Skipping hificnv. hificnv version %s or later not found",
+                HIFICNV_MIN_VERSIONS["hificnv"],
+            )
+            return None
 
         hifi_cnv_fn = str(self.output_vcf).replace(".vcf.gz", ".hificnv")
         hificnv_cmd = [
@@ -888,102 +643,72 @@ class DNAscopeLRPipeline(BasePipeline):
         )
         return hificnv_job
 
-    def lr_call_variants(
+    def add_small_variant_calling(
         self,
+        dag: DAG,
+        ctx: StageContext,
         sample_input: List[pathlib.Path],
-    ) -> LRCallVariantsResult:
+        upstream: Set[Job],
+    ) -> None:
         """
         Call SNVs and indels using the DNAscope LongRead pipeline
-        """
-        if not self.model_bundle:
-            self.logger.error("model_bundle is required")
-            sys.exit(2)
-        if not self.reference:
-            self.logger.error("reference is required")
-            sys.exit(2)
-        if not self.output_vcf:
-            self.logger.error("output_vcf is required")
-            sys.exit(2)
-        if not self.skip_version_check:
-            for check_cmd, min_version in TOOL_MIN_VERSIONS.items():
-                if not check_version(check_cmd, min_version):
-                    sys.exit(2)
 
-        transfer_xargs = (
-            self.tmp_dir,
-            self.shards,
-            self.pop_vcf_contigs,
-            self.fai_data,
-            self.dry_run,
-            self.cores,
-        )
+        A diploid first pass phases the reads; the phased regions are then
+        called once per haplotype and the unphased regions are called with
+        the diploid HP model. The three call sets are patched, filtered and
+        merged into the output VCF, with optional haploid calling on top.
+        """
+        bundle = self.required(self.model_bundle, "model_bundle")
+        require_versions(TOOL_MIN_VERSIONS, skip=self.skip_version_check)
 
         # First pass - diploid calling
         diploid_gvcf_fn = self.tmp_dir.joinpath("out_diploid.g.vcf.gz")
         diploid_tmp_vcf = self.tmp_dir.joinpath("out_diploid_tmp.vcf.gz")
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-            input=sample_input,
-            interval=self.bed,
-        )
+        diploid_model = bundle.joinpath("diploid_model")
+        diploid_algos: List[BaseAlgo] = []
         if self.gvcf:
-            driver.add_algo(
+            diploid_algos.append(
                 DNAscope(
                     diploid_gvcf_fn,
                     dbsnp=self.dbsnp,
                     emit_mode="gvcf",
-                    model=self.model_bundle.joinpath("gvcf_model"),
+                    model=bundle.joinpath("gvcf_model"),
                 )
             )
-        driver.add_algo(
+        diploid_algos.append(
             DNAscope(
                 diploid_tmp_vcf,
                 dbsnp=self.dbsnp,
-                model=self.model_bundle.joinpath("diploid_model"),
+                model=diploid_model,
             )
         )
-        first_calling_job = Job(
-            Pipeline(Command(*driver.build_cmd())),
-            "first-pass",
-            self.cores,
-            task_name="variant-calling",
-        )
+        first_call = DNAscopeStage(
+            ctx=ctx,
+            algos=diploid_algos,
+            inputs=sample_input,
+            interval=self.bed,
+            name="dnascope-diploid",
+        ).add_to(dag, upstream)
 
-        # Transfer annotations to the tmp vcf
-        diploid_transfer_jobs: List[Job] = []
-        diploid_concat_job: Optional[Job] = None
-        if self.pop_vcf:
-            diploid_unanno_tmp_vcf = diploid_tmp_vcf
-            diploid_tmp_vcf = self.tmp_dir.joinpath(
-                "out_diploid_tmp_anno.vcf.gz"
-            )
-            diploid_transfer_jobs, diploid_concat_job = build_transfer_jobs(
-                diploid_tmp_vcf,
-                self.pop_vcf,
-                diploid_unanno_tmp_vcf,
-                *transfer_xargs,
-            )
-
-        # DNAModelApply on the diploid VCF
+        # Transfer annotations to the tmp vcf, then apply the diploid model
         diploid_vcf = self.tmp_dir.joinpath("out_diploid.vcf.gz")
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-        )
-        driver.add_algo(
-            DNAModelApply(
-                self.model_bundle.joinpath("diploid_model"),
-                diploid_tmp_vcf,
-                diploid_vcf,
+        diploid_transfer: Optional[TransferSpec] = None
+        if self.pop_vcf:
+            diploid_transfer = TransferSpec(
+                config=TransferConfig.from_pipeline(self),
+                out_vcf=self.tmp_dir.joinpath("out_diploid_tmp_anno.vcf.gz"),
+                tag="diploid",
             )
-        )
-        first_modelapply_job = Job(
-            Pipeline(Command(*driver.build_cmd())),
-            "first-modelapply",
-            self.cores,
-            task_name="model-apply",
-        )
+        first_apply = TransferApplyStage(
+            ctx=ctx,
+            raw_vcf=diploid_tmp_vcf,
+            transfer=diploid_transfer,
+            apply=ApplySpec(
+                model=diploid_model,
+                output=diploid_vcf,
+                name="model-apply-diploid",
+            ),
+        ).add_to(dag, first_call.terminal)
 
         # Phasing and RepeatModel
         phased_bed = self.tmp_dir.joinpath("out_diploid_phased.bed")
@@ -996,28 +721,24 @@ class DNAscopeLRPipeline(BasePipeline):
         phased_phased = self.tmp_dir.joinpath(
             "out_diploid_phased_phased.vcf.gz"
         )
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-            input=sample_input,
+        phaser_job = driver_job(
+            ctx,
+            [
+                VariantPhaser(
+                    diploid_vcf,
+                    phased_vcf,
+                    out_bed=phased_bed,
+                    out_ext=phased_ext,
+                )
+            ],
+            name="variantphaser",
+            task_name="phasing",
+            inputs=sample_input,
             interval=self.bed,
         )
-        driver.add_algo(
-            VariantPhaser(
-                diploid_vcf,
-                phased_vcf,
-                out_bed=phased_bed,
-                out_ext=phased_ext,
-            )
-        )
-        phaser_job = Job(
-            Pipeline(Command(*driver.build_cmd())),
-            "variantphaser",
-            self.cores,
-            task_name="phasing",
-        )
+        dag.add_job(phaser_job, first_apply.terminal)
 
-        bcftools_subset_phased_job = None
+        haploid_patch_deps: Set[Job] = set()
         if self.tech.upper() == "ONT":
             bcftools_subset_phased_job = Job(
                 Pipeline(
@@ -1040,21 +761,25 @@ class DNAscopeLRPipeline(BasePipeline):
                 0,
                 task_name="phasing",
             )
+            dag.add_job(bcftools_subset_phased_job, {phaser_job})
+            haploid_patch_deps.add(bcftools_subset_phased_job)
 
-        fai_to_bed_job = None
+        subtract_deps: Set[Job] = {phaser_job}
         if self.bed:
             bed = self.bed
         else:
             bed = self.tmp_dir.joinpath("reference.bed")
             fai_to_bed_job = Job(
                 cmds.cmd_fai_to_bed(
-                    pathlib.Path(str(self.reference) + ".fai"),
+                    pathlib.Path(str(ctx.reference) + ".fai"),
                     bed,
                 ),
                 "fai-to-bed",
                 0,
                 task_name="phasing",
             )
+            dag.add_job(fai_to_bed_job)
+            subtract_deps.add(fai_to_bed_job)
 
         bcftools_subtract_job = Job(
             cmds.cmd_bedtools_subtract(bed, phased_bed, unphased_bed),
@@ -1062,33 +787,7 @@ class DNAscopeLRPipeline(BasePipeline):
             0,
             task_name="phasing",
         )
-
-        repeatmodel_job = None
-        if not self.repeat_model:
-            self.repeat_model = self.tmp_dir.joinpath("out_repeat.model")
-            driver = Driver(
-                reference=self.reference,
-                thread_count=self.cores,
-                input=sample_input,
-                interval=phased_bed,
-                read_filter=[
-                    f"PhasedReadFilter,phased_vcf={phased_ext},"
-                    "phase_select=tag"
-                ],  # noqa: E501
-            )
-            driver.add_algo(
-                RepeatModel(
-                    self.repeat_model,
-                    phased=True,
-                    read_flag_mask="drop=supplementary",
-                )
-            )
-            repeatmodel_job = Job(
-                Pipeline(Command(*driver.build_cmd())),
-                "repeatmodel",
-                self.cores,
-                task_name="repeat-model",
-            )
+        dag.add_job(bcftools_subtract_job, subtract_deps)
 
         bcftools_subset_unphased_job = Job(
             Pipeline(
@@ -1107,50 +806,70 @@ class DNAscopeLRPipeline(BasePipeline):
             0,
             task_name="phasing",
         )
+        dag.add_job(bcftools_subset_unphased_job, {bcftools_subtract_job})
+
+        repeat_model_deps: Set[Job] = set()
+        if not self.repeat_model:
+            self.repeat_model = self.tmp_dir.joinpath("out_repeat.model")
+            repeatmodel_job = driver_job(
+                ctx,
+                [
+                    RepeatModel(
+                        self.repeat_model,
+                        phased=True,
+                        read_flag_mask="drop=supplementary",
+                    )
+                ],
+                name="repeatmodel",
+                task_name="repeat-model",
+                inputs=sample_input,
+                interval=phased_bed,
+                read_filter=[
+                    f"PhasedReadFilter,phased_vcf={phased_ext},"
+                    "phase_select=tag"
+                ],  # noqa: E501
+            )
+            dag.add_job(repeatmodel_job, {phaser_job})
+            repeat_model_deps.add(repeatmodel_job)
 
         # Second pass - phased variants
-        second_calling_job = set()
+        haploid_model = bundle.joinpath("haploid_model")
+        haploid_hp_model = bundle.joinpath("haploid_hp_model")
         for phase in (1, 2):
             hp_std_vcf = self.tmp_dir.joinpath(
                 f"out_hap{phase}_nohp_tmp.vcf.gz"
             )
             hp_vcf = self.tmp_dir.joinpath(f"out_hap{phase}_tmp.vcf.gz")
-            driver = Driver(
-                reference=self.reference,
-                thread_count=self.cores,
-                input=sample_input,
+            phase_algos: List[BaseAlgo] = []
+            if self.tech.upper() == "HIFI":
+                # ONT doesn't do DNAscope in 2nd pass.
+                phase_algos.append(
+                    DNAscope(
+                        hp_std_vcf,
+                        dbsnp=self.dbsnp,
+                        model=haploid_model,
+                    )
+                )
+            phase_algos.append(
+                DNAscopeHP(
+                    hp_vcf,
+                    dbsnp=self.dbsnp,
+                    model=haploid_hp_model,
+                    pcr_indel_model=self.repeat_model,
+                )
+            )
+            hap_call = DNAscopeStage(
+                ctx=ctx,
+                algos=phase_algos,
+                inputs=sample_input,
                 interval=phased_bed,
                 read_filter=[
                     f"PhasedReadFilter,phased_vcf={phased_ext}"
                     f",phase_select={phase}"
                 ],
-            )
-
-            if self.tech.upper() == "HIFI":
-                # ONT doesn't do DNAscope in 2nd pass.
-                driver.add_algo(
-                    DNAscope(
-                        hp_std_vcf,
-                        dbsnp=self.dbsnp,
-                        model=self.model_bundle.joinpath("haploid_model"),
-                    )
-                )
-            driver.add_algo(
-                DNAscopeHP(
-                    hp_vcf,
-                    dbsnp=self.dbsnp,
-                    model=self.model_bundle.joinpath("haploid_hp_model"),
-                    pcr_indel_model=self.repeat_model,
-                )
-            )
-            second_calling_job.add(
-                Job(
-                    Pipeline(Command(*driver.build_cmd())),
-                    "second-pass",
-                    self.cores,
-                    task_name="variant-calling",
-                )
-            )
+                name=f"dnascope-hap{phase}",
+            ).add_to(dag, {phaser_job} | repeat_model_deps)
+            haploid_patch_deps.update(hap_call.terminal)
 
         kwargs: Dict[str, str] = dict()
         kwargs["gvcf_combine_py"] = str(
@@ -1177,133 +896,106 @@ class DNAscopeLRPipeline(BasePipeline):
             self.cores,
             task_name="variant-patch",
         )
+        dag.add_job(haploid_patch_job, haploid_patch_deps)
 
-        # Transfer annotations to the patched VCFs
-        patch_transfer_jobs = []
-        patch_concat_jobs = []
-        if self.pop_vcf:
-            patch_unanno_vcfs = patch_vcfs.copy()
-            patch_vcfs = [
-                self.tmp_dir.joinpath(f"out_hap{i}_patch_anno.vcf.gz")
-                for i in (1, 2)
-            ]
-            for patch_unanno_vcf, patch_vcf in zip(
-                patch_unanno_vcfs, patch_vcfs
-            ):
-                transfer_jobs, concat_job = build_transfer_jobs(
-                    patch_vcf,
-                    self.pop_vcf,
-                    patch_unanno_vcf,
-                    *transfer_xargs,
-                )
-                patch_transfer_jobs.append(transfer_jobs)
-                patch_concat_jobs.append(concat_job)
-
-        # apply trained model to the patched vcfs.
+        # Transfer annotations to each patched VCF, then apply the trained
+        # model. A haplotype's model-apply reads only that haplotype's
+        # VCF, so it waits on that haplotype's transfer alone.
         hap_vcfs = [
             self.tmp_dir.joinpath(f"out_hap{i}.vcf.gz") for i in (1, 2)
         ]
-        second_modelapply_job = set()
-        for patch_vcf, hap_vcf in zip(patch_vcfs, hap_vcfs):
-            driver = Driver(
-                reference=self.reference,
-                thread_count=self.cores,
-            )
-            driver.add_algo(
-                DNAModelApply(
-                    self.model_bundle.joinpath("haploid_model"),
-                    patch_vcf,
-                    hap_vcf,
+        merge_deps: Set[Job] = set()
+        for i, (patch_vcf, hap_vcf) in enumerate(
+            zip(patch_vcfs, hap_vcfs), start=1
+        ):
+            patch_transfer: Optional[TransferSpec] = None
+            if self.pop_vcf:
+                patch_transfer = TransferSpec(
+                    config=TransferConfig.from_pipeline(self),
+                    out_vcf=self.tmp_dir.joinpath(
+                        f"out_hap{i}_patch_anno.vcf.gz"
+                    ),
+                    tag=f"hap{i}",
                 )
-            )
-            second_modelapply_job.add(
-                Job(
-                    Pipeline(Command(*driver.build_cmd())),
-                    "second-modelapply",
-                    self.cores,
-                    task_name="model-apply",
-                )
-            )
+            hap_apply = TransferApplyStage(
+                ctx=ctx,
+                raw_vcf=patch_vcf,
+                transfer=patch_transfer,
+                apply=ApplySpec(
+                    model=haploid_model,
+                    output=hap_vcf,
+                    name=f"model-apply-hap{i}",
+                ),
+            ).add_to(dag, {haploid_patch_job})
+            merge_deps.update(hap_apply.terminal)
 
         # Second pass - unphased regions
         diploid_unphased_hp = self.tmp_dir.joinpath(
             "out_diploid_phased_unphased_hp.vcf.gz"
         )
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-            input=sample_input,
+        unphased_call = DNAscopeStage(
+            ctx=ctx,
+            algos=[
+                DNAscopeHP(
+                    diploid_unphased_hp,
+                    dbsnp=self.dbsnp,
+                    model=bundle.joinpath("diploid_hp_model"),
+                    pcr_indel_model=self.repeat_model,
+                )
+            ],
+            inputs=sample_input,
             interval=unphased_bed,
-        )
-        driver.add_algo(
-            DNAscopeHP(
-                diploid_unphased_hp,
-                dbsnp=self.dbsnp,
-                model=self.model_bundle.joinpath("diploid_hp_model"),
-                pcr_indel_model=self.repeat_model,
-            )
-        )
-        calling_unphased_job = Job(
-            Pipeline(Command(*driver.build_cmd())),
-            "calling-unphased",
-            self.cores,
-            task_name="variant-calling",
-        )
+            name="dnascope-unphased",
+        ).add_to(dag, {bcftools_subtract_job} | repeat_model_deps)
 
         # Patch DNA and DNAHP variants
         diploid_unphased_patch = self.tmp_dir.joinpath(
             "out_diploid_unphased_patch.vcf.gz"
         )
-        cmd = cmds.cmd_pyexec_vcf_mod_patch(
-            str(diploid_unphased_patch),
-            str(phased_unphased),
-            str(diploid_unphased_hp),
-            self.cores,
-            kwargs,
-        )
         diploid_patch_job = Job(
-            cmd, "diploid-patch", self.cores, task_name="variant-patch"
-        )
-
-        # Transfer annotations to the diploid VCF
-        unphased_transfer_jobs: List[Job] = []
-        unphased_concat_job: Optional[Job] = None
-        if self.pop_vcf:
-            diploid_unphased_unanno = diploid_unphased_patch
-            diploid_unphased_patch = self.tmp_dir.joinpath(
-                "out_diploid_unphased_patch_anno.vcf.gz"
-            )
-            unphased_transfer_jobs, unphased_concat_job = build_transfer_jobs(
-                diploid_unphased_patch,
-                self.pop_vcf,
-                diploid_unphased_unanno,
-                *transfer_xargs,
-            )
-
-        # DNAModelApply on the unphased VCF
-        diploid_unphased = self.tmp_dir.joinpath("out_diploid_unphased.vcf.gz")
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-        )
-        driver.add_algo(
-            DNAModelApply(
-                self.model_bundle.joinpath("diploid_model_unphased"),
-                diploid_unphased_patch,
-                diploid_unphased,
-            )
-        )
-        modelapply_unphased_job = Job(
-            Pipeline(Command(*driver.build_cmd())),
-            "modelapply-unphased",
+            cmds.cmd_pyexec_vcf_mod_patch(
+                str(diploid_unphased_patch),
+                str(phased_unphased),
+                str(diploid_unphased_hp),
+                self.cores,
+                kwargs,
+            ),
+            "diploid-patch",
             self.cores,
-            task_name="model-apply",
+            task_name="variant-patch",
         )
+        dag.add_job(
+            diploid_patch_job,
+            {bcftools_subset_unphased_job} | unphased_call.terminal,
+        )
+
+        # Transfer annotations to the diploid VCF, then apply the model
+        diploid_unphased = self.tmp_dir.joinpath("out_diploid_unphased.vcf.gz")
+        unphased_transfer: Optional[TransferSpec] = None
+        if self.pop_vcf:
+            unphased_transfer = TransferSpec(
+                config=TransferConfig.from_pipeline(self),
+                out_vcf=self.tmp_dir.joinpath(
+                    "out_diploid_unphased_patch_anno.vcf.gz"
+                ),
+                tag="unphased",
+            )
+        unphased_apply = TransferApplyStage(
+            ctx=ctx,
+            raw_vcf=diploid_unphased_patch,
+            transfer=unphased_transfer,
+            apply=ApplySpec(
+                model=bundle.joinpath("diploid_model_unphased"),
+                output=diploid_unphased,
+                name="model-apply-unphased",
+            ),
+        ).add_to(dag, {diploid_patch_job})
+        merge_deps.update(unphased_apply.terminal)
 
         # merge calls to create the output
         diploid_merged_vcf = self.tmp_dir.joinpath("out_diploid_merged.vcf.gz")
         merge_out_vcf = (
-            diploid_merged_vcf if self.haploid_bed else self.output_vcf
+            diploid_merged_vcf if self.haploid_bed else ctx.output_vcf
         )
         merge_job = Job(
             cmds.cmd_pyexec_vcf_mod_merge(
@@ -1320,12 +1012,13 @@ class DNAscopeLRPipeline(BasePipeline):
             self.cores,
             task_name="vcf-merge",
         )
+        dag.add_job(merge_job, merge_deps)
 
         gvcf_combine_job = None
         if self.gvcf:
             gvcf_combine_job = Job(
                 cmds.cmd_pyexec_gvcf_combine(
-                    self.reference,
+                    ctx.reference,
                     str(diploid_gvcf_fn),
                     str(merge_out_vcf),
                     self.cores,
@@ -1335,175 +1028,127 @@ class DNAscopeLRPipeline(BasePipeline):
                 0,
                 task_name="gvcf",
             )
+            dag.add_job(gvcf_combine_job, {merge_job})
 
-        haploid_calling_job = None
-        haploid_patch2_job = None
-        haploid_concat_job = None
-        haploid_gvcf_combine_job = None
-        haploid_gvcf_concat_job = None
-        if self.haploid_bed:
-            # Haploid variant calling
-            haploid_fn = self.tmp_dir.joinpath("haploid.vcf.gz")
-            haploid_gvcf_fn = self.tmp_dir.joinpath("haploid.g.vcf.gz")
-            haploid_hp_fn = self.tmp_dir.joinpath("haploid_hp.vcf.gz")
-            haploid_out_fn = self.tmp_dir.joinpath("haploid_patched.vcf.gz")
-            driver = Driver(
-                reference=self.reference,
-                thread_count=self.cores,
-                input=sample_input,
-                interval=self.haploid_bed,
-            )
-            driver.add_algo(
+        if not self.haploid_bed:
+            return
+
+        # Haploid variant calling. This job depends only on the repeat
+        # model, not on the alignment jobs.
+        haploid_fn = self.tmp_dir.joinpath("haploid.vcf.gz")
+        haploid_gvcf_fn = self.tmp_dir.joinpath("haploid.g.vcf.gz")
+        haploid_hp_fn = self.tmp_dir.joinpath("haploid_hp.vcf.gz")
+        haploid_out_fn = self.tmp_dir.joinpath("haploid_patched.vcf.gz")
+        haploid_algos: List[BaseAlgo] = [
+            DNAscope(
+                haploid_fn,
+                dbsnp=self.dbsnp,
+                model=haploid_model,
+            ),
+            DNAscopeHP(
+                haploid_hp_fn,
+                dbsnp=self.dbsnp,
+                model=haploid_hp_model,
+                pcr_indel_model=self.repeat_model,
+            ),
+        ]
+        if self.gvcf:
+            haploid_algos.append(
                 DNAscope(
-                    haploid_fn,
+                    haploid_gvcf_fn,
                     dbsnp=self.dbsnp,
-                    model=self.model_bundle.joinpath("haploid_model"),
+                    emit_mode="gvcf",
+                    ploidy=1,
+                    model=bundle.joinpath("gvcf_model"),
                 )
             )
-            driver.add_algo(
-                DNAscopeHP(
-                    haploid_hp_fn,
-                    dbsnp=self.dbsnp,
-                    model=self.model_bundle.joinpath("haploid_hp_model"),
-                    pcr_indel_model=self.repeat_model,
-                )
-            )
-            if self.gvcf:
-                driver.add_algo(
-                    DNAscope(
-                        haploid_gvcf_fn,
-                        dbsnp=self.dbsnp,
-                        emit_mode="gvcf",
-                        ploidy=1,
-                        model=self.model_bundle.joinpath("gvcf_model"),
-                    )
-                )
-            haploid_calling_job = Job(
-                Pipeline(Command(*driver.build_cmd())),
-                "haploid-calling",
-                self.cores,
-                task_name="variant-calling",
-            )
+        haploid_call = DNAscopeStage(
+            ctx=ctx,
+            algos=haploid_algos,
+            inputs=sample_input,
+            interval=self.haploid_bed,
+            name="dnascope-haploid",
+        ).add_to(dag, repeat_model_deps)
 
-            haploid_patch2_job = Job(
-                cmds.cmd_pyexec_vcf_mod_haploid_patch2(
-                    str(haploid_out_fn),
-                    str(haploid_fn),
-                    str(haploid_hp_fn),
-                    self.cores,
-                    kwargs,
-                ),
-                "haploid-patch2",
+        haploid_patch2_job = Job(
+            cmds.cmd_pyexec_vcf_mod_haploid_patch2(
+                str(haploid_out_fn),
+                str(haploid_fn),
+                str(haploid_hp_fn),
                 self.cores,
-                task_name="variant-patch",
-            )
-            haploid_concat_job = Job(
-                cmds.bcftools_concat(
-                    self.output_vcf,
-                    [diploid_merged_vcf, haploid_out_fn],
-                ),
-                "haploid-diploid-concat",
-                0,
-                task_name="vcf-merge",
-            )
+                kwargs,
+            ),
+            "haploid-patch2",
+            self.cores,
+            task_name="variant-patch",
+        )
+        dag.add_job(haploid_patch2_job, haploid_call.terminal)
 
-            if self.gvcf:
-                output_gvcf = pathlib.Path(
-                    str(self.output_vcf).replace(".vcf.gz", ".g.vcf.gz")
-                )
-                diploid_gvcf = pathlib.Path(
-                    str(diploid_merged_vcf).replace(".vcf.gz", ".g.vcf.gz")
-                )
-                haploid_gvcf = pathlib.Path(
-                    str(haploid_out_fn).replace(".vcf.gz", ".g.vcf.gz")
-                )
-                haploid_gvcf_combine_job = Job(
-                    cmds.cmd_pyexec_gvcf_combine(
-                        self.reference,
-                        str(haploid_gvcf_fn),
-                        str(haploid_out_fn),
-                        self.cores,
-                        kwargs,
-                    ),
-                    "haploid-gvcf-combine",
-                    0,
-                    task_name="gvcf",
-                )
-                haploid_gvcf_concat_job = Job(
-                    cmds.bcftools_concat(
-                        output_gvcf,
-                        [diploid_gvcf, haploid_gvcf],
-                    ),
-                    "haploid-gvcf-concat",
-                    0,
-                    task_name="gvcf",
-                )
-        return LRCallVariantsResult(
-            first_calling_job,
-            diploid_transfer_jobs,
-            diploid_concat_job,
-            first_modelapply_job,
-            phaser_job,
-            bcftools_subset_phased_job,
-            fai_to_bed_job,
-            bcftools_subtract_job,
-            repeatmodel_job,
-            bcftools_subset_unphased_job,
-            second_calling_job,
-            haploid_patch_job,
-            patch_transfer_jobs,
-            patch_concat_jobs,
-            second_modelapply_job,
-            calling_unphased_job,
-            diploid_patch_job,
-            unphased_transfer_jobs,
-            unphased_concat_job,
-            modelapply_unphased_job,
-            merge_job,
-            gvcf_combine_job,
-            haploid_calling_job,
-            haploid_patch2_job,
-            haploid_concat_job,
-            haploid_gvcf_combine_job,
+        haploid_concat_job = Job(
+            cmds.bcftools_concat(
+                ctx.output_vcf,
+                [diploid_merged_vcf, haploid_out_fn],
+            ),
+            "haploid-diploid-concat",
+            0,
+            task_name="vcf-merge",
+        )
+        dag.add_job(haploid_concat_job, {haploid_patch2_job, merge_job})
+
+        if not self.gvcf or gvcf_combine_job is None:
+            return
+
+        output_gvcf = pathlib.Path(
+            str(ctx.output_vcf).replace(".vcf.gz", ".g.vcf.gz")
+        )
+        diploid_gvcf = pathlib.Path(
+            str(diploid_merged_vcf).replace(".vcf.gz", ".g.vcf.gz")
+        )
+        haploid_gvcf = pathlib.Path(
+            str(haploid_out_fn).replace(".vcf.gz", ".g.vcf.gz")
+        )
+        haploid_gvcf_combine_job = Job(
+            cmds.cmd_pyexec_gvcf_combine(
+                ctx.reference,
+                str(haploid_gvcf_fn),
+                str(haploid_out_fn),
+                self.cores,
+                kwargs,
+            ),
+            "haploid-gvcf-combine",
+            0,
+            task_name="gvcf",
+        )
+        dag.add_job(haploid_gvcf_combine_job, {haploid_patch2_job})
+
+        haploid_gvcf_concat_job = Job(
+            cmds.bcftools_concat(
+                output_gvcf,
+                [diploid_gvcf, haploid_gvcf],
+            ),
+            "haploid-gvcf-concat",
+            0,
+            task_name="gvcf",
+        )
+        dag.add_job(
             haploid_gvcf_concat_job,
+            {haploid_gvcf_combine_job, gvcf_combine_job},
         )
 
-    def call_svs(
-        self,
-        sample_input: List[pathlib.Path],
-        replace_rg: Optional[List[List[str]]] = None,
-    ) -> Job:
+    def call_svs(self, sample_input: List[pathlib.Path]) -> Job:
         """
         Call SVs using Sentieon LongReadSV
         """
-        if not self.model_bundle:
-            self.logger.error("model_bundle is required")
-            sys.exit(2)
-        if not self.skip_version_check:
-            for cmd, min_version in SV_MIN_VERSIONS.items():
-                if not check_version(cmd, min_version):
-                    sys.exit(2)
+        bundle = self.required(self.model_bundle, "model_bundle")
+        require_versions(LONGREADSV_MIN_VERSIONS, skip=self.skip_version_check)
 
-        sv_vcf = pathlib.Path(
-            str(self.output_vcf).replace(".vcf.gz", ".sv.vcf.gz")
-        )
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-            replace_rg=replace_rg,
-            input=sample_input,
-            interval=self.bed,
-        )
-        driver.add_algo(
-            LongReadSV(
-                sv_vcf,
-                self.model_bundle.joinpath("longreadsv.model"),
+        return (
+            LongReadSVStage(
+                ctx=self.stage_context(),
+                inputs=sample_input,
+                model=bundle.joinpath("longreadsv.model"),
+                interval=self.bed,
             )
+            .build()
+            .job
         )
-        longreadsv_job = Job(
-            Pipeline(Command(*driver.build_cmd())),
-            "LongReadSV",
-            self.cores,
-            task_name="sv-calling",
-        )
-        return longreadsv_job

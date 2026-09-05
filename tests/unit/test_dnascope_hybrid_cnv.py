@@ -82,19 +82,13 @@ class TestDNAscopeHybridCnv:
 
     def build_dag(self, pipeline):
         """Build the first DAG and index the jobs by name"""
-        with patch(
-            "sentieon_cli.dnascope_hybrid.check_version", return_value=True
-        ):
-            dag = pipeline.build_dag()
+        dag = pipeline.build_dag()
         jobs = list(dag.waiting_jobs.keys()) + list(dag.ready_jobs.keys())
         return dag, {job.name: job for job in jobs}
 
     def build_second_dag(self, pipeline):
         """Build the second DAG and index the jobs by name"""
-        with patch(
-            "sentieon_cli.dnascope_hybrid.check_version", return_value=True
-        ):
-            dag = pipeline.build_second_dag()
+        dag = pipeline.build_second_dag()
         if dag is None:
             return None, {}
         jobs = list(dag.waiting_jobs.keys()) + list(dag.ready_jobs.keys())
@@ -105,14 +99,14 @@ class TestDNAscopeHybridCnv:
         pipeline.sample_sex = SampleSex.FEMALE
         _dag, jobs = self.build_dag(pipeline)
 
-        assert "CNVscope" not in jobs
-        assert "CNVModelApply" not in jobs
+        assert "cnvscope" not in jobs
+        assert "cnv-model-apply" not in jobs
 
         second_dag, second_jobs = self.build_second_dag(pipeline)
-        assert "CNVscope" in second_jobs
-        assert "CNVModelApply" in second_jobs
-        assert second_dag.waiting_jobs[second_jobs["CNVModelApply"]] == {
-            second_jobs["CNVscope"]
+        assert "cnvscope" in second_jobs
+        assert "cnv-model-apply" in second_jobs
+        assert second_dag.waiting_jobs[second_jobs["cnv-model-apply"]] == {
+            second_jobs["cnvscope"]
         }
 
     def test_the_first_dag_estimates_the_sample_ploidy(self):
@@ -164,7 +158,7 @@ class TestDNAscopeHybridCnv:
         self.build_dag(pipeline)
         _dag, jobs = self.build_second_dag(pipeline)
 
-        cmd_str = str(jobs["CNVscope"].shell)
+        cmd_str = str(jobs["cnvscope"].shell)
         assert "--sex F" in cmd_str
         assert "--par" not in cmd_str
 
@@ -175,7 +169,7 @@ class TestDNAscopeHybridCnv:
         self.build_dag(pipeline)
         _dag, jobs = self.build_second_dag(pipeline)
 
-        cmd_str = str(jobs["CNVscope"].shell)
+        cmd_str = str(jobs["cnvscope"].shell)
         assert "--sex M" in cmd_str
         assert f"--par {self.mock_par_bed}" in cmd_str
 
@@ -187,7 +181,7 @@ class TestDNAscopeHybridCnv:
         _dag, jobs = self.build_second_dag(pipeline)
 
         assert pipeline.sample_sex is SampleSex.MALE
-        cmd_str = str(jobs["CNVscope"].shell)
+        cmd_str = str(jobs["cnvscope"].shell)
         assert "--sex M" in cmd_str
         assert f"--par {self.mock_par_bed}" in cmd_str
 

@@ -9,7 +9,6 @@ import argparse
 import copy
 import json
 import pathlib
-import shutil
 import sys
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -20,10 +19,8 @@ from .archive import ar_load
 from .base_pangenome import BasePangenome
 from .dag import DAG
 from .driver import (
-    DNAModelApply,
     DNAscope,
     Driver,
-    LongReadSV,
     PangenomeSV,
     PGHapUpdateAlgo,
 )
@@ -36,13 +33,28 @@ from .shard import (
     vcf_contigs,
 )
 from .shell_pipeline import Command, Pipeline
-from .transfer import build_transfer_jobs
+from .stages.alignment import (
+    BwaExtractStage,
+    Minimap2RealignStage,
+    find_unzip,
+)
+from .stages.base import StageContext
+from .stages.dedup import DedupStage
+from .stages.metrics import MetricsPaths, MetricsStage
+from .stages.small_variants import (
+    ApplySpec,
+    DNAscopeStage,
+    TransferApplyStage,
+    TransferSpec,
+)
+from .stages.sv import LongReadSVStage
+from .stages.transfer import TransferConfig
 from .util import (
     __version__,
     check_kmc_patch,
-    check_version,
     parse_rg_line,
     path_arg,
+    require_versions,
     total_memory,
     vcf_id,
 )
@@ -250,19 +262,18 @@ class HybridPangenome(BasePangenome):
         self.collect_readgroups()
         self.validate_readgroups()
 
-        if not self.skip_version_check:
-            for cmd, min_version in HYBRID_PANGENOME_MIN_VERSIONS.items():
-                if not check_version(cmd, min_version):
-                    sys.exit(2)
+        require_versions(
+            HYBRID_PANGENOME_MIN_VERSIONS, skip=self.skip_version_check
+        )
 
-            if not check_kmc_patch("kmc"):
-                self.logger.error(
-                    "Error: The 'kmc' executable in the PATH does not "
-                    "support reading from stdin. Please ensure "
-                    "you are using the patched version of KMC from "
-                    "https://github.com/Sentieon/KMC/releases."
-                )
-                sys.exit(2)
+        if not self.skip_version_check and not check_kmc_patch("kmc"):
+            self.logger.error(
+                "Error: The 'kmc' executable in the PATH does not "
+                "support reading from stdin. Please ensure "
+                "you are using the patched version of KMC from "
+                "https://github.com/Sentieon/KMC/releases."
+            )
+            sys.exit(2)
 
         if self.bed is None:
             self.logger.info(
@@ -589,47 +600,27 @@ class HybridPangenome(BasePangenome):
         """Configure pipeline parameters"""
         pass
 
-    def find_unzip(self) -> str:
-        """The decompression tool for fastq input"""
-        unzip = "igzip"
-        if not shutil.which(unzip):
-            self.logger.info(
-                "igzip is recommended for decompression, but is not "
-                "available. Falling back to gzip."
-            )
-            unzip = "gzip"
-        return unzip
-
     def build_dag(self) -> DAG:
         """Build the DAG for the hybrid-pangenome pipeline"""
-        if not self.reference:
-            self.logger.error("reference is required")
-            sys.exit(2)
-        if not self.model_bundle:
-            self.logger.error("model_bundle is required")
-            sys.exit(2)
-        if not self.output_vcf:
-            self.logger.error("output_vcf is required")
-            sys.exit(2)
-        if not self.pop_vcf:
-            self.logger.error("pop_vcf is required")
-            sys.exit(2)
+        bundle = self.required(self.model_bundle, "model_bundle")
+        self.required(self.pop_vcf, "pop_vcf")
 
         self.logger.info("Building the hybrid-pangenome DAG")
         dag = DAG()
+        ctx = self.stage_context()
 
-        ref_fai = pathlib.Path(str(self.reference) + ".fai")
+        ref_fai = pathlib.Path(str(ctx.reference) + ".fai")
 
         # Output files
         suffix = "bam" if self.bam_format else "cram"
         out_bwa_aln = pathlib.Path(
-            str(self.output_vcf).replace(".vcf.gz", f"_bwa_deduped.{suffix}")
+            str(ctx.output_vcf).replace(".vcf.gz", f"_bwa_deduped.{suffix}")
         )
         out_lift_aln = pathlib.Path(
-            str(self.output_vcf).replace(".vcf.gz", f"_lift_deduped.{suffix}")
+            str(ctx.output_vcf).replace(".vcf.gz", f"_lift_deduped.{suffix}")
         )
         sv_vcf = pathlib.Path(
-            str(self.output_vcf).replace(".vcf.gz", "_sv.vcf.gz")
+            str(ctx.output_vcf).replace(".vcf.gz", "_sv.vcf.gz")
         )
 
         # Intermediate file paths
@@ -654,9 +645,9 @@ class HybridPangenome(BasePangenome):
         calling_lr = list(self.lr_aln)
         realign_jobs: Set[Job] = set()
         if self.lr_align_input:
-            calling_lr, realign_jobs = self.lr_align_inputs()
-            for job in realign_jobs:
-                dag.add_job(job)
+            lr_result = self.lr_realign_stage(ctx).add_to(dag)
+            calling_lr = lr_result.outputs
+            realign_jobs = set(lr_result.jobs)
 
         haplotype_dependencies: Set[Job] = set()
         mm2_dependencies: Set[Job] = set()
@@ -667,8 +658,10 @@ class HybridPangenome(BasePangenome):
             haplotype_dependencies.add(kmc_job)
 
             # BWA alignment and extraction
-            bwa_job = self.build_alignment_job(bwa_bam, ext_fastq)
-            dag.add_job(bwa_job)
+            bwa_result = self.bwa_extract_stage(
+                ctx, bwa_bam, ext_fastq
+            ).add_to(dag)
+            bwa_job = bwa_result.jobs[0]
             mm2_dependencies.add(bwa_job)
             # Do not run vg-haplotypes with bwa in low-mem environments
             total_mem_gb = total_memory() / (1024.0**3)
@@ -710,15 +703,22 @@ class HybridPangenome(BasePangenome):
         dag.add_job(update_raw_job, {gfa_job} | realign_jobs)
 
         # Call SVs from the long reads and collect graph update regions
-        longreadsv_job = self.build_longreadsv_job(longread_sv_vcf, calling_lr)
-        dag.add_job(longreadsv_job, realign_jobs)
+        longreadsv_result = LongReadSVStage(
+            ctx=ctx,
+            inputs=list(calling_lr),
+            model=bundle.joinpath("longreadsv.model"),
+            output=longread_sv_vcf,
+            min_sv_size=LONGREADSV_MIN_SV_SIZE,
+            name="longreadsv",
+            task_name="pangenome-update",
+        ).add_to(dag, realign_jobs)
         sv_bed_job = Job(
             cmds.cmd_longread_sv_bed(sv_bed, longread_sv_vcf, ref_fai),
             "longread-sv-bed",
             0,
             task_name="pangenome-update",
         )
-        dag.add_job(sv_bed_job, {longreadsv_job})
+        dag.add_job(sv_bed_job, {longreadsv_result.job})
 
         # Graph update with the SV BED
         update_job = self.build_graph_update_job(
@@ -762,42 +762,42 @@ class HybridPangenome(BasePangenome):
             # is assumed to be deduplicated already.
             # Emit Dedup metrics for the primary (bwa) short-read alignment
             # so they land in the metrics directory scanned by MultiQC.
+            paths = MetricsPaths.from_output_vcf(ctx.output_vcf)
             dedup_metrics: Optional[pathlib.Path] = None
             if not self.skip_metrics:
-                metrics_dir = pathlib.Path(
-                    str(self.output_vcf).replace(".vcf.gz", "_metrics")
-                )
-                if not self.dry_run:
-                    metrics_dir.mkdir(exist_ok=True)
-                sample_name = self.output_vcf.name.replace(".vcf.gz", "")
-                dedup_metrics = metrics_dir.joinpath(
-                    sample_name + ".txt.dedup_metrics.txt"
-                )
+                paths.ensure_dir(self.dry_run)
+                dedup_metrics = paths.dedup_metrics
 
-            bwa_lc_job, bwa_dedup_job = self.build_dedup_job(
-                out_bwa_aln, [bwa_bam], "bwa", metrics=dedup_metrics
-            )
-            lift_lc_job, lift_dedup_job = self.build_dedup_job(
-                out_lift_aln,
-                [lift_bam],
-                "lift",
-            )
-            dag.add_job(bwa_lc_job, {bwa_job})
-            dag.add_job(bwa_dedup_job, {bwa_lc_job})
-            dag.add_job(lift_lc_job, {mm2_job})
-            dag.add_job(lift_dedup_job, {lift_lc_job})
+            bwa_dedup = DedupStage(
+                ctx=ctx,
+                tag="bwa",
+                inputs=[bwa_bam],
+                output=out_bwa_aln,
+                score_file=self.tmp_dir.joinpath("sample-bwa-score.txt.gz"),
+                dedup_metrics=dedup_metrics,
+            ).add_to(dag, {bwa_job})
+            bwa_dedup_job = bwa_dedup.dedup_job
+            lift_dedup = DedupStage(
+                ctx=ctx,
+                tag="lift",
+                inputs=[lift_bam],
+                output=out_lift_aln,
+                score_file=self.tmp_dir.joinpath("sample-lift-score.txt.gz"),
+            ).add_to(dag, {mm2_job})
+            lift_dedup_job = lift_dedup.dedup_job
 
             # Alignment metrics from the deduplicated short reads
             if not self.skip_metrics:
-                metrics_job, rehead_job = self.build_metrics_job(
-                    [out_bwa_aln, out_lift_aln],
-                )
-                dag.add_job(metrics_job, {bwa_dedup_job, lift_dedup_job})
-                dag.add_job(rehead_job, {metrics_job})
+                metrics_result = MetricsStage(
+                    ctx=ctx,
+                    inputs=[out_bwa_aln, out_lift_aln],
+                    algos=self.pangenome_metrics_algos(paths),
+                    rehead_metrics=paths.wgs,
+                ).add_to(dag, {bwa_dedup_job, lift_dedup_job})
                 if not self.skip_multiqc:
                     multiqc_job = self.multiqc()
                     if multiqc_job:
-                        dag.add_job(multiqc_job, {rehead_job})
+                        dag.add_job(multiqc_job, metrics_result.terminal)
 
             calling_bams = [out_bwa_aln, out_lift_aln] + calling_lr
             calling_dependencies = {bwa_dedup_job, lift_dedup_job}
@@ -822,37 +822,39 @@ class HybridPangenome(BasePangenome):
         if self.skip_small_variants:
             return dag
 
-        dnascope_job = self.build_dnascope_job(
-            raw_vcf,
-            calling_bams,
-            replace_rg,
-        )
-        dag.add_job(dnascope_job, calling_dependencies)
+        model = bundle.joinpath("dnascope.model")
+        pcr_indel_model = "NONE" if self.pcr_free else "CONSERVATIVE"
+        call = DNAscopeStage(
+            ctx=ctx,
+            algos=[
+                DNAscope(
+                    raw_vcf,
+                    model=model,
+                    pcr_indel_model=pcr_indel_model,
+                    dbsnp=self.dbsnp,
+                )
+            ],
+            inputs=calling_bams,
+            interval=self.bed,
+            replace_rg=replace_rg,
+        ).add_to(dag, calling_dependencies)
 
-        # transfer annotations from the pop_vcf
+        # transfer annotations from the pop_vcf, then apply the model
         transfer_target = (
-            transfer_vcf if not self.skip_model_apply else self.output_vcf
+            transfer_vcf if not self.skip_model_apply else ctx.output_vcf
         )
-        transfer_jobs, concat_job = build_transfer_jobs(
-            transfer_target,
-            self.pop_vcf,
-            raw_vcf,
-            self.tmp_dir,
-            self.shards,
-            self.pop_vcf_contigs,
-            self.fai_data,
-            self.dry_run,
-            self.cores,
-        )
-        for job in transfer_jobs:
-            dag.add_job(job, {dnascope_job})
-        dag.add_job(concat_job, set(transfer_jobs))
-
-        if not self.skip_model_apply:
-            apply_job = self.build_dnamodelapply_job(
-                transfer_vcf, self.output_vcf
-            )
-            dag.add_job(apply_job, {concat_job})
+        TransferApplyStage(
+            ctx=ctx,
+            raw_vcf=raw_vcf,
+            transfer=TransferSpec(
+                TransferConfig.from_pipeline(self), transfer_target
+            ),
+            apply=(
+                ApplySpec(model, ctx.output_vcf)
+                if not self.skip_model_apply
+                else None
+            ),
+        ).add_to(dag, call.terminal)
 
         return dag
 
@@ -880,7 +882,7 @@ class HybridPangenome(BasePangenome):
                 self.tmp_dir,
                 memory=self.kmer_memory,
                 threads=self.cores,
-                unzip=self.find_unzip(),
+                unzip=find_unzip(self.logger),
             ),
             "kmc",
             0,  # run in the background
@@ -927,78 +929,50 @@ class HybridPangenome(BasePangenome):
         )
         return symlink_job, extract_kmc_job
 
-    def lr_align_inputs(self) -> Tuple[List[pathlib.Path], Set[Job]]:
-        """Align the long-read input files to the linear reference genome
-        with minimap2"""
-        assert self.output_vcf is not None
-        assert self.reference is not None
+    def lr_realign_stage(self, ctx: StageContext) -> Minimap2RealignStage:
+        """Re-align the long-read input to the linear reference genome"""
         assert self.model_bundle is not None
 
-        res: List[pathlib.Path] = []
-        realign_jobs: Set[Job] = set()
-        suffix = "bam" if self.bam_format else "cram"
-        for i, input_aln in enumerate(self.lr_aln):
-            out_aln = pathlib.Path(
-                str(self.output_vcf).replace(
-                    ".vcf.gz", f"_mm2_sorted_{i}.{suffix}"
-                )
-            )
-            rg_lines = cmds.get_rg_lines(input_aln, self.dry_run)
-            realign_jobs.add(
-                Job(
-                    cmds.cmd_samtools_fastq_minimap2(
-                        out_aln,
-                        input_aln,
-                        self.reference,
-                        self.model_bundle,
-                        self.cores,
-                        rg_lines,
-                        self.sample_sm,
-                        self.lr_input_ref,
-                        minimap2_model=self.model_bundle.joinpath(
-                            "minimap2_lr.model"
-                        ),
-                    ),
-                    f"bam-realign-{i}",
-                    self.cores,
-                    task_name="alignment",
-                )
-            )
-            res.append(out_aln)
-        return (res, realign_jobs)
+        return Minimap2RealignStage(
+            ctx=ctx,
+            inputs=self.lr_aln,
+            model_bundle=self.model_bundle,
+            sample_name=self.sample_sm,
+            bam_format=self.bam_format,
+            input_ref=self.lr_input_ref,
+            minimap2_model=self.model_bundle.joinpath("minimap2_lr.model"),
+        )
 
-    def build_alignment_job(
+    def bwa_extract_stage(
         self,
+        ctx: StageContext,
         sample_bam: pathlib.Path,
         sample_fastq: pathlib.Path,
-    ) -> Job:
-        """Build the bwa alignment and read extraction job"""
-        assert self.reference is not None
-        assert self.model_bundle is not None
+    ) -> BwaExtractStage:
+        """The bwa alignment and read extraction stage.
 
+        The short reads are given the sample name and marked as short
+        reads (`LR:0`) so the hybrid caller can tell them apart.
+        """
+        assert self.model_bundle is not None
         assert self.fastq_readgroup is not None
 
         rg = copy.deepcopy(self.fastq_readgroup)
         rg["SM"] = self.sample_sm
         rg["LR"] = "0"
-        bwa_job = Job(
-            cmds.cmd_bwa_extract(
-                sample_bam,
-                sample_fastq,
-                self.reference,
-                self.r1_fastq,
-                self.r2_fastq,
-                "@RG\\t" + "\\t".join([f"{x[0]}:{x[1]}" for x in rg.items()]),
-                self.model_bundle.joinpath(self.extract_model_name),
-                self.model_bundle.joinpath("bwa.model"),
-                self.cores,
-                unzip=self.find_unzip(),
+        return BwaExtractStage(
+            ctx=ctx,
+            output_bam=sample_bam,
+            output_fastq=sample_fastq,
+            r1_fastq=self.r1_fastq,
+            r2_fastq=self.r2_fastq,
+            readgroup=(
+                "@RG\\t" + "\\t".join([f"{x[0]}:{x[1]}" for x in rg.items()])
             ),
-            "bwa-extract",
-            self.cores,
-            task_name="alignment",
+            extract_model=self.model_bundle.joinpath(self.extract_model_name),
+            bwa_model=self.model_bundle.joinpath("bwa.model"),
+            unzip=find_unzip(self.logger),
         )
-        return bwa_job
 
     def build_haplotypes_job(
         self, output_gbz: pathlib.Path, kmer_file: pathlib.Path
@@ -1069,32 +1043,6 @@ class HybridPangenome(BasePangenome):
         return Job(
             Pipeline(Command(*driver.build_cmd())),
             name,
-            self.cores,
-            task_name="pangenome-update",
-        )
-
-    def build_longreadsv_job(
-        self,
-        out_vcf: pathlib.Path,
-        lr_aln: List[pathlib.Path],
-    ) -> Job:
-        """Call SVs from the long reads for the graph update"""
-        assert self.model_bundle is not None
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-            input=list(lr_aln),
-        )
-        driver.add_algo(
-            LongReadSV(
-                out_vcf,
-                model=self.model_bundle.joinpath("longreadsv.model"),
-                min_sv_size=LONGREADSV_MIN_SV_SIZE,
-            )
-        )
-        return Job(
-            Pipeline(Command(*driver.build_cmd())),
-            "longreadsv",
             self.cores,
             task_name="pangenome-update",
         )
@@ -1202,60 +1150,4 @@ class HybridPangenome(BasePangenome):
             "pangenome-sv",
             self.cores,
             task_name="sv-calling",
-        )
-
-    def build_dnascope_job(
-        self,
-        out_vcf: pathlib.Path,
-        input_bams: List[pathlib.Path],
-        replace_rg: List[List[str]],
-    ) -> Job:
-        """Call small variants with the original, lifted, and long reads"""
-        assert self.model_bundle is not None
-        pcr_indel_model = "NONE" if self.pcr_free else "CONSERVATIVE"
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-            input=input_bams,
-            interval=self.bed,
-            replace_rg=replace_rg,
-        )
-        driver.add_algo(
-            DNAscope(
-                out_vcf,
-                model=self.model_bundle.joinpath("dnascope.model"),
-                pcr_indel_model=pcr_indel_model,
-                dbsnp=self.dbsnp,
-            )
-        )
-        return Job(
-            Pipeline(Command(*driver.build_cmd())),
-            "dnascope-raw",
-            self.cores,
-            task_name="variant-calling",
-        )
-
-    def build_dnamodelapply_job(
-        self,
-        in_vcf: pathlib.Path,
-        out_vcf: pathlib.Path,
-    ) -> Job:
-        """Apply the DNAscope model"""
-        assert self.model_bundle is not None
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-        )
-        driver.add_algo(
-            DNAModelApply(
-                model=self.model_bundle.joinpath("dnascope.model"),
-                vcf=in_vcf,
-                output=out_vcf,
-            )
-        )
-        return Job(
-            Pipeline(Command(*driver.build_cmd())),
-            "model-apply",
-            self.cores,
-            task_name="model-apply",
         )

@@ -1,19 +1,22 @@
 """
-Annotation transfer functionality
+Annotation transfer from a population VCF
 """
 
+from dataclasses import dataclass
 import pathlib
 import re
 import subprocess as sp
 import tempfile
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, Iterable, List, Optional, Protocol, Set, Tuple
 
 from importlib.resources import files
 
-from . import command_strings as cmds
-from .job import Job
-from .logging import get_logger
-from .shard import Shard
+from .. import command_strings as cmds
+from ..dag import DAG
+from ..job import Job
+from ..logging import get_logger
+from ..shard import Shard
+from .base import Stage, StageResult
 
 logger = get_logger(__name__)
 
@@ -28,8 +31,17 @@ def build_transfer_jobs(
     fai_data: Dict[str, Dict[str, int]],
     dry_run: bool = False,
     cores: int = 1,
+    *,
+    tag: Optional[str] = None,
 ) -> Tuple[List[Job], Job]:
-    """Transfer annotations from the pop_vcf to the raw_vcf"""
+    """Transfer annotations from the pop_vcf to the raw_vcf.
+
+    ``tag`` is inserted into the job names (``merge-trim-{tag}-...``) so a
+    pipeline that transfers annotations more than once in a run can tell
+    the two fan-outs apart.
+    """
+
+    name_base = "merge-trim" if tag is None else f"merge-trim-{tag}"
 
     # Get a unique tmpdir
     tmp_dir_str = tempfile.mkdtemp(dir=base_tmp_dir)
@@ -87,7 +99,7 @@ def build_transfer_jobs(
                     raw_vcf,
                     regions_file=subset_bed,
                 ),
-                "merge-trim-extra",
+                f"{name_base}-extra",
                 1,
                 task_name="annotation-transfer",
             )
@@ -122,7 +134,7 @@ def build_transfer_jobs(
                     ],
                     view_xargs=["--no-version"],
                 ),
-                f"merge-trim-{i}",
+                f"{name_base}-{i}",
                 1,
                 task_name="annotation-transfer",
             )
@@ -136,8 +148,107 @@ def build_transfer_jobs(
             sharded_vcfs,
             xargs=["--no-version", "--threads", str(cores)],
         ),
-        "merge-trim-concat",
+        f"{name_base}-concat",
         cores,
         task_name="annotation-transfer",
     )
     return (sharded_merge_jobs, concat_job)
+
+
+class TransferInputs(Protocol):
+    """A pipeline that carries the annotation transfer's inputs.
+
+    Every pipeline that transfers annotations holds these four values under
+    these names, so `TransferConfig.from_pipeline` can collect them
+    structurally instead of each pipeline repeating the same helper.
+    """
+
+    pop_vcf: Optional[pathlib.Path]
+    shards: List[Shard]
+    pop_vcf_contigs: Dict[str, Optional[int]]
+    fai_data: Dict[str, Dict[str, int]]
+
+
+@dataclass(frozen=True)
+class TransferConfig:
+    """The run-wide inputs the annotation transfer needs.
+
+    Every pipeline that transfers annotations builds the same fan-out from
+    the same four values, so they travel together instead of being threaded
+    through each call site.
+    """
+
+    pop_vcf: pathlib.Path
+    shards: List[Shard]
+    pop_vcf_contigs: Dict[str, Optional[int]]
+    fai_data: Dict[str, Dict[str, int]]
+
+    @classmethod
+    def from_pipeline(cls, pipeline: TransferInputs) -> "TransferConfig":
+        """Collect the transfer's inputs from a pipeline.
+
+        The four values are set together while the pipeline validates its
+        arguments, so they are read back together here. Callers check
+        `pop_vcf` before asking for a transfer at all.
+        """
+        pop_vcf = pipeline.pop_vcf
+        if pop_vcf is None:
+            raise ValueError("The annotation transfer needs a population VCF")
+        return cls(
+            pop_vcf=pop_vcf,
+            shards=pipeline.shards,
+            pop_vcf_contigs=pipeline.pop_vcf_contigs,
+            fai_data=pipeline.fai_data,
+        )
+
+
+@dataclass(kw_only=True)
+class TransferResult(StageResult):
+    """The jobs and output of `TransferStage`"""
+
+    shard_jobs: List[Job]
+    concat_job: Job
+    out_vcf: pathlib.Path
+
+
+@dataclass(kw_only=True)
+class TransferStage(Stage):
+    """Transfer annotations from the population VCF onto a raw VCF.
+
+    One job per genomic shard merges the shard's annotations, then a
+    single concat job assembles ``out_vcf``. ``tag`` disambiguates the
+    job names when a pipeline transfers more than once in a run.
+    """
+
+    config: TransferConfig
+    raw_vcf: pathlib.Path
+    out_vcf: pathlib.Path
+    tag: Optional[str] = None
+
+    def add_to(self, dag: DAG, upstream: Iterable[Job] = ()) -> TransferResult:
+        deps = set(upstream)
+
+        shard_jobs, concat_job = build_transfer_jobs(
+            self.out_vcf,
+            self.config.pop_vcf,
+            self.raw_vcf,
+            self.ctx.tmp_dir,
+            self.config.shards,
+            self.config.pop_vcf_contigs,
+            self.config.fai_data,
+            self.ctx.dry_run,
+            self.ctx.cores,
+            tag=self.tag,
+        )
+
+        for job in shard_jobs:
+            dag.add_job(job, deps)
+        dag.add_job(concat_job, set(shard_jobs))
+
+        return TransferResult(
+            jobs=[*shard_jobs, concat_job],
+            terminal={concat_job},
+            shard_jobs=shard_jobs,
+            concat_job=concat_job,
+            out_vcf=self.out_vcf,
+        )

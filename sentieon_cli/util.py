@@ -9,11 +9,11 @@ import multiprocessing as mp
 import os
 import pathlib
 import re
-import shlex
 import shutil
 import subprocess as sp
+import sys
 import tempfile
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Mapping, Optional, Tuple
 
 import packaging.version
 
@@ -30,7 +30,6 @@ PRELOAD_SEP = r":| "
 PRELOAD_SEP_PAT = re.compile(PRELOAD_SEP)
 
 NUMA_NODE_PAT = re.compile(r"^NUMA node. CPU\(s\):\s+(?P<cpus>.*)$")
-READ_LENGTH_PAT = re.compile(r"SN\taverage length:\t(?P<length>\d*)$")
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
 
@@ -137,6 +136,45 @@ def check_version(
     return True
 
 
+def require_versions(
+    min_versions: Mapping[str, Optional[packaging.version.Version]],
+    *,
+    skip: bool = False,
+) -> None:
+    """Exit unless every executable meets its minimum version.
+
+    `check_version` has already logged the reason, so the exit is silent.
+    Pass `skip=True` (the pipelines' `--skip_version_check`) to do nothing.
+
+    A `Mapping` rather than a `Dict`, so the module-level
+    `*_MIN_VERSIONS` constants -- some of which mypy infers as
+    `Dict[str, Version]`, with no `None` entry -- are accepted.
+    """
+    if skip:
+        return
+    for cmd, min_version in min_versions.items():
+        if not check_version(cmd, min_version):
+            sys.exit(2)
+
+
+def versions_available(
+    min_versions: Mapping[str, Optional[packaging.version.Version]],
+    *,
+    skip: bool = False,
+) -> bool:
+    """Whether every executable meets its minimum version.
+
+    For optional tools, where a missing or outdated executable skips a step
+    rather than ending the run. `skip=True` reports them as available.
+    """
+    if skip:
+        return True
+    return all(
+        check_version(cmd, min_version)
+        for cmd, min_version in min_versions.items()
+    )
+
+
 def path_arg(
     exists: Optional[bool] = None,
     is_dir: Optional[bool] = None,
@@ -195,6 +233,36 @@ def total_memory() -> int:
                 pass
     total_mem = min(total_mem, cgroup_mem_limit)
     return total_mem
+
+
+def set_bwt_max_mem(
+    total_input_size: int,
+    n_alignment_jobs: int = 1,
+    override: Optional[str] = None,
+) -> str:
+    """Set the `bwt_max_mem` environment variable and return its value.
+
+    `override` short-circuits the calculation, for the hidden
+    `--bwt_max_mem` argument. Otherwise the value is derived from the
+    memory available to the run, the size of the inputs staged in
+    memory, and the number of concurrent alignment jobs.
+    """
+    if override:
+        os.environ["bwt_max_mem"] = override
+        return override
+
+    total_mem = total_memory()
+    total_mem_gb = total_mem / (1024.0**3)
+    align_mem_gb = (
+        total_mem_gb - 4 - total_input_size / (1024.0**3) * 2.3
+    )  # some memory for other system processes
+    bwa_mem_gb = max(
+        int((align_mem_gb / n_alignment_jobs) - 6), 0
+    )  # some memory for other alignment processes
+    logger.debug("Setting bwt_max_mem to: %sG", bwa_mem_gb)
+    bwt_max_mem = f"{bwa_mem_gb}G"
+    os.environ["bwt_max_mem"] = bwt_max_mem
+    return bwt_max_mem
 
 
 def find_numa_nodes() -> List[str]:
@@ -260,48 +328,6 @@ def parse_rg_line(rg_line: str) -> Dict[str, str]:
             )
         parsed[key] = value
     return parsed
-
-
-def get_read_length_aln(
-    aln: pathlib.Path,
-    reference: pathlib.Path,
-    n_reads: int = 100000,
-) -> int:
-    """Get the average read length for an alignment file"""
-    cmds = []
-    cmds.append(
-        [
-            "samtools",
-            "view",
-            "-h",
-            "--reference",
-            shlex.quote(str(reference)),
-            shlex.quote(str(aln)),
-        ]
-    )
-    cmds.append(
-        [
-            "head",
-            "-n",
-            str(n_reads),
-        ]
-    )
-    cmds.append(["samtools", "stats", "-"])
-    all_cmds = [shlex.join(x) for x in cmds]
-    cmd = " | ".join(all_cmds)
-    res = sp.run(
-        cmd,
-        shell=True,
-        capture_output=True,
-        text=True,
-        executable="/bin/bash",
-    )
-
-    for line in res.stdout.split("\n"):
-        m = READ_LENGTH_PAT.match(line)
-        if m:
-            return int(m.groupdict()["length"])
-    return 151
 
 
 def vcf_id(in_vcf: pathlib.Path) -> Optional[str]:
