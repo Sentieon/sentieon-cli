@@ -7,7 +7,7 @@ import copy
 import json
 import pathlib
 import sys
-from typing import Dict, List, Optional, Set, Tuple, Union
+from typing import Dict, List, Optional, Set, Union
 
 import packaging.version
 
@@ -27,14 +27,15 @@ from .logging import get_logger
 from .shell_pipeline import Command, Pipeline
 from .stages.alignment import (
     BwaExtractStage,
-    ReadWriterStage,
     find_unzip,
 )
 from .stages.base import StageContext
-from .stages.cnv import CNV_MIN_VERSIONS, CNVscopeStage
+from .stages.cnv import CNV_MIN_VERSIONS
 from .stages.dedup import DedupStage
+from .stages.expansion import EXPANSION_MIN_VERSIONS
 from .stages.metrics import MetricsPaths, MetricsStage
 from .stages.ploidy import PloidyStage
+from .stages.segdup import SEGDUP_MIN_VERSIONS
 from .stages.small_variants import (
     ApplySpec,
     DNAscopeStage,
@@ -44,13 +45,11 @@ from .stages.small_variants import (
 )
 from .stages.transfer import TransferConfig
 from .util import (
-    SampleSex,
     __version__,
     check_kmc_patch,
     parse_rg_line,
     path_arg,
     require_versions,
-    sample_sex_arg,
     total_memory,
     vcf_id,
 )
@@ -68,21 +67,6 @@ SENT_PANGENOME_MIN_VERSIONS = {
     "bcftools": packaging.version.Version("1.22"),
     "samtools": packaging.version.Version("1.16"),
 }
-
-SEGDUP_MIN_VERSION = {
-    "segdup-caller": packaging.version.Version("0.7.0"),
-}
-
-EXPANSION_MIN_VERSION = {
-    "ExpansionHunter": None,
-}
-
-T1K_MIN_VERSION = {
-    "run-t1k": None,
-}
-
-DEFAULT_T1K_HLA_LOCUS = "chr6:28510020-33480577"
-DEFAULT_T1K_KIR_LOCUS = "chr19:53100000-55800000"
 
 logger = get_logger(__name__)
 
@@ -145,23 +129,6 @@ class SentieonPangenome(BasePangenome):
                     "Prefix to strip from pangenome contig names (GRCh38#0#)"
                 ),
             },
-            "par_bed": {
-                "help": (
-                    "A BED file of the pseudo-autosomal regions (PAR), used "
-                    "for sex-aware CNV calling of male samples. Overrides the "
-                    "PAR BED file selected for the reference genome."
-                ),
-                "type": path_arg(exists=True, is_file=True),
-            },
-            "sample_sex": {
-                "help": (
-                    "The sample sex, used by the sex-aware callers. "
-                    "Supplying this argument overrides the sex estimated "
-                    "from read coverage."
-                ),
-                "metavar": "{male,female}",
-                "type": sample_sex_arg,
-            },
             "skip_metrics": {
                 "help": "Skip metrics collection and multiQC",
                 "action": "store_true",
@@ -169,67 +136,6 @@ class SentieonPangenome(BasePangenome):
             "skip_multiqc": {
                 "help": "Skip multiQC report generation",
                 "action": "store_true",
-            },
-            "segdup_caller": {
-                "nargs": "*",
-                "help": (
-                    "Call variants in difficult segmental duplications with "
-                    "segdup-caller. Supply the flag with no arguments to run "
-                    "the caller's default gene set. Supply a comma-separated "
-                    "list of gene names (e.g. 'CFH,CYP2D6,SMN1') to restrict "
-                    "calling to those genes."
-                ),
-            },
-            "expansion_catalog": {
-                "help": (
-                    "An ExpansionHunter variant catalog. Required for short "
-                    "tandem repeat expansion calling."
-                ),
-                "type": path_arg(exists=True, is_file=True),
-            },
-            "t1k_hla_seq": {
-                "help": (
-                    "The DNA HLA seq FASTA file for T1K. Required for HLA "
-                    "calling."
-                ),
-                "type": path_arg(exists=True, is_file=True),
-            },
-            "t1k_hla_coord": {
-                "help": (
-                    "The DNA HLA coord FASTA file for T1K. Required for HLA "
-                    "calling."
-                ),
-                "type": path_arg(exists=True, is_file=True),
-            },
-            "t1k_hla_locus": {
-                "default": DEFAULT_T1K_HLA_LOCUS,
-                "help": (
-                    "Reference interval covering the HLA locus. Reads "
-                    "overlapping this region are extracted before being "
-                    f"passed to T1K (default: {DEFAULT_T1K_HLA_LOCUS})."
-                ),
-            },
-            "t1k_kir_seq": {
-                "help": (
-                    "The DNA KIR seq FASTA file for T1K. Required for KIR "
-                    "calling."
-                ),
-                "type": path_arg(exists=True, is_file=True),
-            },
-            "t1k_kir_coord": {
-                "help": (
-                    "The DNA KIR coord FASTA file for T1K. Required for KIR "
-                    "calling."
-                ),
-                "type": path_arg(exists=True, is_file=True),
-            },
-            "t1k_kir_locus": {
-                "default": DEFAULT_T1K_KIR_LOCUS,
-                "help": (
-                    "Reference interval covering the KIR locus. Reads "
-                    "overlapping this region are extracted before being "
-                    f"passed to T1K (default: {DEFAULT_T1K_KIR_LOCUS})."
-                ),
             },
             # Hidden arguments
             "skip_contig_checks": {
@@ -265,29 +171,16 @@ class SentieonPangenome(BasePangenome):
         self.bed: Optional[pathlib.Path] = None
         self.call_svs = False
         self.gvcf = False
-        self.par_bed: Optional[pathlib.Path] = None
         self.pangenome_ref_name = "GRCh38"
         self.extract_model_name = "extract.model"
         self.pangenome_contig_prefix = "GRCh38#0#"
         self.skip_metrics = False
         self.skip_multiqc = False
-        self.segdup_caller: Optional[List[str]] = None
-        self.expansion_catalog: Optional[pathlib.Path] = None
-        self.t1k_hla_seq: Optional[pathlib.Path] = None
-        self.t1k_hla_coord: Optional[pathlib.Path] = None
-        self.t1k_hla_locus: str = DEFAULT_T1K_HLA_LOCUS
-        self.t1k_kir_seq: Optional[pathlib.Path] = None
-        self.t1k_kir_coord: Optional[pathlib.Path] = None
-        self.t1k_kir_locus: str = DEFAULT_T1K_KIR_LOCUS
         self.skip_contig_checks: bool = False
         self.skip_pangenome_name_checks: bool = False
         self.skip_pop_vcf_id_check: bool = False
         self.skip_model_apply = False
         self.skip_small_variants = False
-        # Stashed by `build_dag` for the second, sex-aware DAG
-        self.ploidy_json: Optional[pathlib.Path] = None
-        self.sr_alignment: Optional[pathlib.Path] = None
-        self.cnv_input_bams: List[pathlib.Path] = []
 
     def _cnv_in_second_dag(self) -> bool:
         """CNV calling runs in the second, sex-aware DAG"""
@@ -425,7 +318,7 @@ class SentieonPangenome(BasePangenome):
             )
             sys.exit(2)
 
-        require_versions(SEGDUP_MIN_VERSION, skip=self.skip_version_check)
+        require_versions(SEGDUP_MIN_VERSIONS, skip=self.skip_version_check)
 
     def validate_expansion(self) -> None:
         if self.expansion_catalog is None:
@@ -445,7 +338,7 @@ class SentieonPangenome(BasePangenome):
             )
             sys.exit(2)
 
-        require_versions(EXPANSION_MIN_VERSION, skip=self.skip_version_check)
+        require_versions(EXPANSION_MIN_VERSIONS, skip=self.skip_version_check)
 
     def validate_cnv(self) -> None:
         """Validate the arguments used for sex-aware CNV calling"""
@@ -459,32 +352,6 @@ class SentieonPangenome(BasePangenome):
         self.validate_cnv_par(True)
 
         require_versions(CNV_MIN_VERSIONS, skip=self.skip_version_check)
-
-    def validate_t1k(self) -> None:
-        hla_requested = self.t1k_hla_seq is not None or (
-            self.t1k_hla_coord is not None
-        )
-        if hla_requested and not (self.t1k_hla_seq and self.t1k_hla_coord):
-            self.logger.error(
-                "For HLA calling, both `--t1k_hla_seq` and `--t1k_hla_coord` "
-                "must be supplied."
-            )
-            sys.exit(2)
-
-        kir_requested = self.t1k_kir_seq is not None or (
-            self.t1k_kir_coord is not None
-        )
-        if kir_requested and not (self.t1k_kir_seq and self.t1k_kir_coord):
-            self.logger.error(
-                "For KIR calling, both `--t1k_kir_seq` and `--t1k_kir_coord` "
-                "must be supplied."
-            )
-            sys.exit(2)
-
-        if not (hla_requested or kir_requested):
-            return
-
-        require_versions(T1K_MIN_VERSION, skip=self.skip_version_check)
 
     def validate_bundle(self) -> None:
         pop_vcf = self.required(self.pop_vcf, "pop_vcf")
@@ -662,8 +529,6 @@ class SentieonPangenome(BasePangenome):
             )
         raw_vcf = self.tmp_dir.joinpath("sample-dnascope.vcf.gz")
         transfer_vcf = self.tmp_dir.joinpath("sample-dnascope_transfer.vcf.gz")
-        # - Ensure we have a bam file for t1k
-        self.rw_bam = self.tmp_dir.joinpath("sample_deduped.bam")
 
         bwa_lc_dependencies: Set[Job] = set()
         haplotype_dependencies: Set[Job] = set()
@@ -742,7 +607,7 @@ class SentieonPangenome(BasePangenome):
         dnascope_dependencies.add(mm2_job)
 
         # With fastq input, perform dedup and metrics
-        cnv_input_bams: List[pathlib.Path] = []
+        sr_alignments: List[pathlib.Path] = []
         cnvscope_deps: Set[Job] = set()
         if self.r1_fastq:
             dnascope_bams.append(out_bwa_aln)
@@ -779,7 +644,7 @@ class SentieonPangenome(BasePangenome):
             ).add_to(dag, {mm2_job})
             dnascope_dependencies.add(mm2_dedup.dedup_job)
 
-            cnv_input_bams = [out_bwa_aln]
+            sr_alignments = [out_bwa_aln]
             cnvscope_deps = {bwa_dedup_job}
 
             if not self.skip_metrics:
@@ -795,53 +660,23 @@ class SentieonPangenome(BasePangenome):
                         dag.add_job(multiqc_job, metrics_result.terminal)
         else:
             dnascope_bams.append(mm2_bam)
-            cnv_input_bams = list(self.sample_input)
+            sr_alignments = list(self.sample_input)
 
-        # Stash the short-read alignment for the second DAG
-        self.sr_alignment = cnv_input_bams[0]
-        self.cnv_input_bams = cnv_input_bams
+        # Stash the short-read alignments for the second DAG
+        self.sr_alignments = sr_alignments
 
         # Estimate the sample ploidy and sex. The JSON output is always
         # written; `--sample_sex` takes precedence for the sex used by
         # the sex-aware callers.
         ploidy_result = PloidyStage(
             ctx=ctx,
-            inputs=[cnv_input_bams[0]],
+            inputs=[self.sr_alignments[0]],
             reference_build=self.reference_build,
         ).add_to(dag, cnvscope_deps)
         self.ploidy_json = ploidy_result.ploidy_json
 
         # T1K HLA/KIR calling
-        if self.t1k_hla_seq and self.t1k_hla_coord:
-            out_hla = pathlib.Path(
-                str(ctx.output_vcf).replace(".vcf.gz", "_hla")
-            )
-            extract_job, t1k_job = self.build_t1k_jobs(
-                out_hla,
-                cnv_input_bams,
-                self.t1k_hla_seq,
-                self.t1k_hla_coord,
-                self.t1k_hla_locus,
-                "hla-wgs",
-                tag="hla",
-            )
-            dag.add_job(extract_job, cnvscope_deps)
-            dag.add_job(t1k_job, {extract_job})
-        if self.t1k_kir_seq and self.t1k_kir_coord:
-            out_kir = pathlib.Path(
-                str(ctx.output_vcf).replace(".vcf.gz", "_kir")
-            )
-            extract_job, t1k_job = self.build_t1k_jobs(
-                out_kir,
-                cnv_input_bams,
-                self.t1k_kir_seq,
-                self.t1k_kir_coord,
-                self.t1k_kir_locus,
-                "kir-wgs",
-                tag="kir",
-            )
-            dag.add_job(extract_job, cnvscope_deps)
-            dag.add_job(t1k_job, {extract_job})
+        self.add_t1k(dag, ctx, self.sr_alignments, cnvscope_deps)
 
         # DNAscope calling with bwa and mm2 input
         sv_vcf = None
@@ -1099,41 +934,6 @@ class SentieonPangenome(BasePangenome):
             task_name="ad-update",
         )
 
-    def build_segdup_job(
-        self,
-        out_segdup: pathlib.Path,
-        sr_alignment: pathlib.Path,
-        input_vcf: pathlib.Path,
-        genes: Optional[str],
-    ) -> Job:
-        """Call variants in difficult SegDups"""
-        reference = self.required(self.reference, "reference")
-        bundle = self.required(self.model_bundle, "model_bundle")
-
-        sex = "male" if self.sample_sex == SampleSex.MALE else "female"
-
-        # segdup-caller's default `main.min_map_qual` of 45 is too strict
-        # for Ultima alignments.
-        overrides = []
-        if self.tech.upper() == "ULTIMA":
-            overrides.append("main.min_map_qual=30")
-
-        return Job(
-            cmds.cmd_segdup_caller(
-                out_segdup,
-                sr_alignment,
-                reference=reference,
-                sr_bundle=bundle,
-                input_vcf=input_vcf,
-                sex=sex,
-                genes=genes,
-                overrides=overrides,
-            ),
-            "segdup-caller",
-            self.cores,
-            task_name="segdup",
-        )
-
     def build_second_dag(self) -> Optional[DAG]:
         """Build the second DAG for sex-aware downstream tools"""
         if not self._needs_second_dag():
@@ -1144,201 +944,33 @@ class SentieonPangenome(BasePangenome):
 
         self.logger.info("Building the second pangenome DAG")
         dag = DAG()
+        ctx = self.stage_context()
 
         # CNV calling with CNVscope, using the sample sex
         if self._cnv_in_second_dag():
-            sv_vcf = pathlib.Path(
-                str(self.output_vcf).replace(".vcf.gz", "_sv.vcf.gz")
+            self.add_pangenome_cnv(
+                dag,
+                ctx,
+                self.output_path("_sv.vcf.gz"),
+                self.sr_alignments,
+                interval=self.bed,
             )
-            self._add_cnv_jobs(dag, sv_vcf, self.cnv_input_bams)
 
-        if self.expansion_catalog and self.sr_alignment:
-            out_expansions = pathlib.Path(
-                str(self.output_vcf).replace(".vcf.gz", "_expansion")
-            )
-            expansion_job = self.build_expansion_job(
-                out_expansions, self.sr_alignment, self.expansion_catalog
-            )
-            dag.add_job(expansion_job)
+        if self.sr_alignments:
+            self.add_expansion(dag, ctx, self.sr_alignments[0])
 
-        # SegDup calling consumes the small-variant VCF and the inferred sex
-        if (
-            self.segdup_caller is not None
-            and self.sr_alignment
-            and self.output_vcf
-        ):
-            out_segdup = pathlib.Path(
-                str(self.output_vcf).replace(".vcf.gz", "_segdups")
+            # SegDup calling consumes the small-variant VCF and the
+            # inferred sex. segdup-caller's default `main.min_map_qual`
+            # of 45 is too strict for Ultima alignments.
+            self.add_segdup(
+                dag,
+                ctx,
+                self.sr_alignments[0],
+                overrides=(
+                    ["main.min_map_qual=30"]
+                    if self.tech.upper() == "ULTIMA"
+                    else ()
+                ),
             )
-            genes = ",".join(self.segdup_caller) or None
-            segdup_job = self.build_segdup_job(
-                out_segdup,
-                self.sr_alignment,
-                self.output_vcf,
-                genes,
-            )
-            dag.add_job(segdup_job)
 
         return dag
-
-    def build_t1k_jobs(
-        self,
-        out_basename: pathlib.Path,
-        sr_alignments: List[pathlib.Path],
-        gene_seq: pathlib.Path,
-        gene_coord: pathlib.Path,
-        locus: str,
-        preset: str,
-        tag: str,
-    ) -> Tuple[Job, Job]:
-        """Extract reads at the T1K locus and genotype them with T1K"""
-        self.required(self.reference, "reference")
-
-        # Extract reads overlapping the locus to a BAM file with ReadWriter
-        extracted_bam = self.tmp_dir.joinpath(f"sample_{tag}.bam")
-        extract_result = ReadWriterStage(
-            ctx=self.stage_context(),
-            inputs=sr_alignments,
-            output=extracted_bam,
-            name=f"t1k-{tag}-extract",
-            task_name="t1k",
-            interval=locus,
-        ).build()
-        extract_job = extract_result.jobs[0]
-
-        t1k_job = Job(
-            cmds.cmd_t1k(
-                out_basename,
-                extracted_bam,
-                gene_seq=gene_seq,
-                gene_coord=gene_coord,
-                preset=preset,
-                threads=self.cores,
-            ),
-            f"t1k-{tag}",
-            self.cores,
-            task_name="t1k",
-        )
-        return (extract_job, t1k_job)
-
-    def build_expansion_job(
-        self,
-        out_expansions: pathlib.Path,
-        sr_alignment: pathlib.Path,
-        expansion_catalog: pathlib.Path,
-    ) -> Job:
-        """Identify repeat expansions"""
-        reference = self.required(self.reference, "reference")
-
-        return Job(
-            cmds.cmd_expansion_hunter(
-                out_expansions,
-                sr_alignment,
-                reference=reference,
-                variant_catalog=expansion_catalog,
-                sex="male" if self.sample_sex == SampleSex.MALE else "female",
-                threads=self.cores,
-            ),
-            "expansion-hunter",
-            self.cores,
-            task_name="expansion-hunter",
-        )
-
-    def _add_cnv_jobs(
-        self,
-        dag: DAG,
-        sv_vcf: pathlib.Path,
-        cnv_input_bams: List[pathlib.Path],
-    ) -> None:
-        """Add CNV calling jobs to the DAG"""
-        bundle = self.required(self.model_bundle, "model_bundle")
-
-        ctx = self.stage_context()
-        cnvscope_vcf = self.tmp_dir.joinpath("sample-cnvscope.vcf.gz")
-        cnv_apply_vcf = self.tmp_dir.joinpath("sample-cnv_model_apply.vcf.gz")
-        indel2cnv_vcf = self.tmp_dir.joinpath("sample-sv_cnv.vcf.gz")
-        cnv_vcf = pathlib.Path(
-            str(ctx.output_vcf).replace(".vcf.gz", "_cnv.vcf.gz")
-        )
-        cnv_probes = pathlib.Path(
-            str(ctx.output_vcf).replace(".vcf.gz", "_cnv.probes")
-        )
-
-        # CNVscope on BWA deduped BAM, then CNVModelApply. The alignment
-        # and the PangenomeSV output were both written by the first DAG.
-        cnv_result = CNVscopeStage(
-            ctx=ctx,
-            inputs=cnv_input_bams,
-            model=bundle.joinpath("cnv.model"),
-            cnvscope_vcf=cnvscope_vcf,
-            cnv_vcf=cnv_apply_vcf,
-            sample_sex=self.sample_sex,
-            par_bed=self.cnv_par_bed,
-            dump_probes=cnv_probes,
-            interval=self.bed,
-        ).add_to(dag)
-
-        # Convert PangenomeSV output to CNVs
-        indel2cnv_job = self._build_indel2cnv_job(indel2cnv_vcf, sv_vcf)
-        dag.add_job(indel2cnv_job)
-
-        # Combine CNVModelApply output with converted SVs
-        combine_job = self._build_combine_cnv_job(
-            cnv_vcf, cnv_apply_vcf, indel2cnv_vcf
-        )
-        dag.add_job(combine_job, {cnv_result.apply_job, indel2cnv_job})
-
-    def _build_indel2cnv_job(
-        self,
-        output_vcf: pathlib.Path,
-        input_vcf: pathlib.Path,
-    ) -> Job:
-        """Convert PangenomeSV INDELs to CNV calls"""
-        indel2cnv_script = pathlib.Path(
-            str(files("sentieon_cli.scripts").joinpath("indel2cnv.py"))
-        )
-        # Run in background
-        return Job(
-            Pipeline(
-                Command(
-                    sys.executable,
-                    str(indel2cnv_script),
-                    str(self.reference),
-                    str(input_vcf),
-                    str(output_vcf),
-                    "-t",
-                    str(self.cores),
-                )
-            ),
-            "indel2cnv",
-            0,
-            task_name="cnv",
-        )
-
-    def _build_combine_cnv_job(
-        self,
-        output_vcf: pathlib.Path,
-        cnv_vcf: pathlib.Path,
-        converted_vcf: pathlib.Path,
-    ) -> Job:
-        """Combine CNVscope and converted SV calls"""
-        combine_script = pathlib.Path(
-            str(files("sentieon_cli.scripts").joinpath("combine_cnv.py"))
-        )
-        return Job(
-            Pipeline(
-                Command(
-                    sys.executable,
-                    str(combine_script),
-                    "--cnv",
-                    str(cnv_vcf),
-                    "--converted",
-                    str(converted_vcf),
-                    "-o",
-                    str(output_vcf),
-                )
-            ),
-            "combine-cnv",
-            0,
-            task_name="cnv",
-        )
