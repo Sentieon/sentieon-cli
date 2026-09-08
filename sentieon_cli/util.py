@@ -75,6 +75,16 @@ def cnvscope_sex_args(
     return (None, None)
 
 
+def caller_sex_arg(sample_sex: Optional[SampleSex]) -> str:
+    """The `--sex male|female` value for ExpansionHunter and segdup-caller.
+
+    Both tools accept only the two values, so an unknown sample sex
+    collapses to "female", unchanged from the previous
+    dnascope-pangenome behavior.
+    """
+    return "male" if sample_sex is SampleSex.MALE else "female"
+
+
 def sanitize(component: str) -> str:
     """Restrict a path component to filesystem-safe characters"""
     return _UNSAFE.sub("-", component)
