@@ -1308,17 +1308,16 @@ def cmd_vg_paths_fasta(
     return Pipeline(Command(*cmd), file_output=output_fasta)
 
 
-def cmd_vg_paths_ref_fasta(
+def cmd_vg_gfa2fa(
     output_fasta: pathlib.Path,
     gfa_file: pathlib.Path,
-    ref_name: str,
 ) -> Pipeline:
-    """Extract a graph's reference paths as FASTA.
+    """Write every path of a GFA file as FASTA.
 
     A slower stand-in for `pgutil gfa2fa`, for driver releases whose
     `gfa2fa` handles only GRCh38 pangenomes.
     """
-    cmd = ["vg", "paths", "-x", str(gfa_file), "-Q", ref_name, "-F"]
+    cmd = ["vg", "paths", "-x", str(gfa_file), "-F"]
     return Pipeline(Command(*cmd), file_output=output_fasta)
 
 

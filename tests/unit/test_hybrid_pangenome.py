@@ -397,23 +397,13 @@ class TestHybridPangenome:
         gfa = self.mock_dir / "sample-pangenome.gfa"
         fasta = self.mock_dir / "sample-pangenome.fa"
         gfa2fa_cmd = str(self._get_job(all_jobs, "gfa2fa").shell)
-        assert gfa2fa_cmd == (f"vg paths -x {gfa} -Q GRCh38 -F >'{fasta}'")
+        assert gfa2fa_cmd == (f"vg paths -x {gfa} -F >'{fasta}'")
         assert "pgutil gfa2fa" not in gfa2fa_cmd
+        assert "-Q" not in gfa2fa_cmd
 
         # The DAG shape is unchanged
         assert self._get_dep_names(dag, all_jobs, "faidx") == {"gfa2fa"}
         assert "faidx" in self._get_dep_names(dag, all_jobs, "mm2-lift")
-
-    def test_gfa2fa_with_vg_paths_chm13(self):
-        """`vg paths` extracts the paths of the configured reference"""
-        pipeline = self.create_pipeline()
-        pipeline.gfa2fa_with_vg = True
-        pipeline.pangenome_ref_name = "CHM13"
-        dag = pipeline.build_dag()
-        _, all_jobs = self._get_all_job_names(dag)
-
-        gfa2fa_cmd = str(self._get_job(all_jobs, "gfa2fa").shell)
-        assert "-Q CHM13" in gfa2fa_cmd
 
     def test_resolve_gfa2fa_tool_hg38(self, monkeypatch):
         """A GRCh38 reference keeps `pgutil gfa2fa`, unprobed"""

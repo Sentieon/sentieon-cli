@@ -76,7 +76,7 @@ HYBRID_PANGENOME_MIN_VERSIONS = {
 
 # The last driver release whose `pgutil gfa2fa` handles only GRCh38
 # pangenomes. Non-GRCh38 runs on it (and older) extract the graph's
-# reference paths with `vg paths` instead, which is much slower.
+# paths with `vg paths` instead, which is much slower.
 PGUTIL_GFA2FA_GRCH38_ONLY_VERSION = packaging.version.Version("202503.04")
 
 # LongReadSV settings for finding graph update regions
@@ -1287,9 +1287,7 @@ class HybridPangenome(BasePangenome):
     ) -> Job:
         """Generate the FASTA sequences of the updated graph"""
         shell = (
-            cmds.cmd_vg_paths_ref_fasta(
-                pangenome_fasta, pangenome_gfa, self.pangenome_ref_name
-            )
+            cmds.cmd_vg_gfa2fa(pangenome_fasta, pangenome_gfa)
             if self.gfa2fa_with_vg
             else cmds.cmd_pgutil_gfa2fa(
                 pangenome_fasta, ref_fai, pangenome_gfa
