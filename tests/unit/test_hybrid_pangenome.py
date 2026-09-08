@@ -2,10 +2,13 @@
 Unit tests for the HybridPangenome pipeline logic
 """
 
+from importlib.resources import files
+import logging
 import os
 import pathlib
 import sys
 import tempfile
+from typing import List
 from unittest.mock import MagicMock
 
 import packaging.version
@@ -21,6 +24,32 @@ from sentieon_cli import hybrid_pangenome
 from sentieon_cli.hybrid_pangenome import HybridPangenome
 from sentieon_cli.command_strings import LONGREAD_SV_BED_AWK
 from sentieon_cli.dag import DAG
+from sentieon_cli.util import SampleSex
+
+PACKAGE_LOGGER = "sentieon_cli"
+
+
+class _RecordingHandler(logging.Handler):
+    """Collects formatted messages from the package logger."""
+
+    def __init__(self) -> None:
+        super().__init__(logging.DEBUG)
+        self.messages: List[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.messages.append(record.getMessage())
+
+
+@pytest.fixture
+def messages():
+    """`caplog` does not see the package logger, which does not propagate"""
+    logger = logging.getLogger(PACKAGE_LOGGER)
+    handler = _RecordingHandler()
+    logger.addHandler(handler)
+    try:
+        yield handler.messages
+    finally:
+        logger.removeHandler(handler)
 
 
 class TestHybridPangenome:
@@ -1218,12 +1247,301 @@ class TestHybridPangenome:
 
         assert pipeline.lr_alignment is None
 
-    def test_build_second_dag_not_implemented_yet(self):
-        """The sex-aware callers do not build jobs yet"""
-        pipeline = self.create_pipeline()
-        pipeline.build_dag()
+    # The second, sex-aware DAG
 
-        assert pipeline.build_second_dag() is None
+    def _build_second_dag(self, pipeline, sample_sex=SampleSex.FEMALE):
+        """Build both DAGs and return the second.
+
+        The first DAG has to be built first so that the short-read
+        alignments and the ploidy JSON are stashed for the second.
+        """
+        pipeline.build_dag()
+        pipeline.sample_sex = sample_sex
+        return pipeline.build_second_dag()
+
+    def _second_dag_job(self, pipeline, name, sample_sex=SampleSex.FEMALE):
+        """Build both DAGs and return the named job of the second"""
+        dag = self._build_second_dag(pipeline, sample_sex)
+        _, all_jobs = self._get_all_job_names(dag)
+        return self._get_job(all_jobs, name)
+
+    def enable_cnv(self, pipeline):
+        """Call CNVs with a bundle CNV model and a PAR BED file"""
+        par_bed = self.mock_dir / "par.bed"
+        par_bed.write_text("chrX\t10000\t2781479\n")
+        pipeline.call_cnvs = True
+        pipeline.has_cnv_model = True
+        pipeline.cnv_par_bed = par_bed
+        return pipeline
+
+    def script_path(self, name):
+        """A path to a packaged helper script, as the stages build it"""
+        return pathlib.Path(str(files("sentieon_cli.scripts").joinpath(name)))
+
+    CNV_JOBS = ("cnvscope", "cnv-model-apply", "indel2cnv", "combine-cnv")
+
+    def test_no_second_dag_without_callers(self):
+        """No second DAG when nothing consumes the sample sex"""
+        pipeline = self.create_pipeline()
+
+        assert self._build_second_dag(pipeline) is None
+
+    def test_no_second_dag_without_a_cnv_model(self):
+        """`--call_cnvs` without a bundle CNV model is rejected earlier"""
+        pipeline = self.create_pipeline()
+        pipeline.call_cnvs = True
+        pipeline.has_cnv_model = False
+
+        assert self._build_second_dag(pipeline) is None
+
+    def test_second_dag_for_each_caller(self):
+        """Every sex-aware caller on its own builds the second DAG"""
+        pipeline = self.create_pipeline()
+        pipeline.expansion_catalog = self.mock_bed
+        job_names, _ = self._get_all_job_names(
+            self._build_second_dag(pipeline)
+        )
+        assert job_names == ["expansion-hunter"]
+
+        pipeline = self.create_pipeline()
+        pipeline.segdup_caller = []
+        job_names, _ = self._get_all_job_names(
+            self._build_second_dag(pipeline)
+        )
+        assert job_names == ["segdup-caller"]
+
+        pipeline = self.enable_cnv(self.create_pipeline())
+        job_names, _ = self._get_all_job_names(
+            self._build_second_dag(pipeline)
+        )
+        assert sorted(job_names) == sorted(self.CNV_JOBS)
+
+    def test_cnv_jobs_in_the_second_dag(self):
+        """The CNV jobs and their dependencies"""
+        pipeline = self.enable_cnv(self.create_pipeline())
+        first_dag = pipeline.build_dag()
+
+        # CNV calling is sex-aware, so it is not in the first DAG
+        first_job_names, _ = self._get_all_job_names(first_dag)
+        for name in self.CNV_JOBS:
+            assert name not in first_job_names
+
+        pipeline.sample_sex = SampleSex.FEMALE
+        dag = pipeline.build_second_dag()
+        job_names, all_jobs = self._get_all_job_names(dag)
+        assert sorted(job_names) == sorted(self.CNV_JOBS)
+
+        assert self._get_dep_names(dag, all_jobs, "cnvscope") == set()
+        assert self._get_dep_names(dag, all_jobs, "indel2cnv") == set()
+        assert self._get_dep_names(dag, all_jobs, "cnv-model-apply") == {
+            "cnvscope"
+        }
+        assert self._get_dep_names(dag, all_jobs, "combine-cnv") == {
+            "cnv-model-apply",
+            "indel2cnv",
+        }
+
+        for name in self.CNV_JOBS:
+            job = self._get_job(all_jobs, name)
+            assert job.task_name == "cnv", name
+        for name in ("cnvscope", "cnv-model-apply"):
+            assert self._get_job(all_jobs, name).threads == pipeline.cores
+        for name in ("indel2cnv", "combine-cnv"):
+            assert self._get_job(all_jobs, name).threads == 0
+
+    def test_cnvscope_command_with_fastq_input(self):
+        """CNVscope runs on the deduplicated short reads"""
+        pipeline = self.enable_cnv(self.create_pipeline())
+        job = self._second_dag_job(pipeline, "cnvscope")
+
+        bwa_aln = str(self.mock_vcf).replace(".vcf.gz", "_bwa_deduped.cram")
+        probes = str(self.mock_vcf).replace(".vcf.gz", "_cnv.probes")
+        assert str(job.shell) == (
+            f"sentieon driver --input {bwa_aln} "
+            f"--reference {self.mock_ref} --thread_count {pipeline.cores} "
+            f"--interval {self.mock_bed} "
+            f"--algo CNVscope --model {self.mock_bundle}/cnv.model "
+            "--sex F "
+            f"--dump_probes {probes} "
+            f"{self.mock_dir}/sample-cnvscope.vcf.gz"
+        )
+        # The pipeline-generated alignment carries the LR attribute already
+        assert "--replace_rg" not in str(job.shell)
+
+    def test_cnvscope_command_with_aligned_input(self):
+        """The `--sr_aln` input is used with its `--replace_rg` row"""
+        pipeline = self.enable_cnv(self.create_aligned_pipeline())
+        job = self._second_dag_job(pipeline, "cnvscope")
+
+        probes = str(self.mock_vcf).replace(".vcf.gz", "_cnv.probes")
+        assert str(job.shell) == (
+            "sentieon driver "
+            r"--replace_rg 'sr-rg1=ID:sr-rg1\tSM:sample1\tLR:0' "
+            f"--input {self.mock_sr_bam} "
+            f"--reference {self.mock_ref} --thread_count {pipeline.cores} "
+            f"--interval {self.mock_bed} "
+            f"--algo CNVscope --model {self.mock_bundle}/cnv.model "
+            "--sex F "
+            f"--dump_probes {probes} "
+            f"{self.mock_dir}/sample-cnvscope.vcf.gz"
+        )
+
+    def test_cnvscope_without_a_bed(self):
+        """Without `--bed`, CNVscope runs across the whole reference"""
+        pipeline = self.enable_cnv(self.create_pipeline())
+        pipeline.bed = None
+        job = self._second_dag_job(pipeline, "cnvscope")
+
+        assert "--interval" not in str(job.shell)
+
+    def test_cnv_model_apply_command(self):
+        """CNVModelApply filters the CNVscope output"""
+        pipeline = self.enable_cnv(self.create_pipeline())
+        job = self._second_dag_job(pipeline, "cnv-model-apply")
+
+        assert str(job.shell) == (
+            f"sentieon driver --reference {self.mock_ref} "
+            f"--thread_count {pipeline.cores} "
+            f"--algo CNVModelApply --model {self.mock_bundle}/cnv.model "
+            f"--vcf {self.mock_dir}/sample-cnvscope.vcf.gz "
+            f"{self.mock_dir}/sample-cnv_model_apply.vcf.gz"
+        )
+        # The BED restricts CNVscope, not the model apply
+        assert "--interval" not in str(job.shell)
+
+    def test_cnvscope_male_sample(self):
+        """A male sample is called with the PAR BED file"""
+        pipeline = self.enable_cnv(self.create_pipeline())
+        job = self._second_dag_job(
+            pipeline, "cnvscope", sample_sex=SampleSex.MALE
+        )
+
+        assert "--sex M" in str(job.shell)
+        assert f"--par {pipeline.cnv_par_bed}" in str(job.shell)
+
+    def test_cnvscope_female_sample(self):
+        """A female sample does not need the PAR regions"""
+        pipeline = self.enable_cnv(self.create_pipeline())
+        job = self._second_dag_job(
+            pipeline, "cnvscope", sample_sex=SampleSex.FEMALE
+        )
+
+        assert "--sex F" in str(job.shell)
+        assert "--par" not in str(job.shell)
+
+    def test_cnvscope_unknown_sex(self, messages):
+        """An unknown sex calls a diploid genome, with a warning"""
+        pipeline = self.enable_cnv(self.create_pipeline())
+        job = self._second_dag_job(
+            pipeline, "cnvscope", sample_sex=SampleSex.UNKNOWN
+        )
+
+        assert "--sex" not in str(job.shell)
+        assert "--par" not in str(job.shell)
+        assert any("diploid" in msg for msg in messages)
+
+    def test_indel2cnv_command(self):
+        """The PangenomeSV output is converted to CNVs"""
+        pipeline = self.enable_cnv(self.create_pipeline())
+        job = self._second_dag_job(pipeline, "indel2cnv")
+
+        sv_vcf = str(self.mock_vcf).replace(".vcf.gz", "_sv.vcf.gz")
+        assert str(job.shell) == (
+            f"{sys.executable} {self.script_path('indel2cnv.py')} "
+            f"{self.mock_ref} {sv_vcf} "
+            f"{self.mock_dir}/sample-sv_cnv.vcf.gz -t {pipeline.cores}"
+        )
+
+    def test_combine_cnv_command(self):
+        """The CNV and converted SV calls are combined"""
+        pipeline = self.enable_cnv(self.create_pipeline())
+        job = self._second_dag_job(pipeline, "combine-cnv")
+
+        cnv_vcf = str(self.mock_vcf).replace(".vcf.gz", "_cnv.vcf.gz")
+        assert str(job.shell) == (
+            f"{sys.executable} {self.script_path('combine_cnv.py')} "
+            f"--cnv {self.mock_dir}/sample-cnv_model_apply.vcf.gz "
+            f"--converted {self.mock_dir}/sample-sv_cnv.vcf.gz "
+            f"-o {cnv_vcf}"
+        )
+
+    def test_expansion_hunter_command(self):
+        """ExpansionHunter genotypes the short reads"""
+        catalog = self.mock_dir / "catalog.json"
+        catalog.touch()
+
+        pipeline = self.create_pipeline()
+        pipeline.expansion_catalog = catalog
+        dag = self._build_second_dag(pipeline)
+        _, all_jobs = self._get_all_job_names(dag)
+        job = self._get_job(all_jobs, "expansion-hunter")
+
+        bwa_aln = str(self.mock_vcf).replace(".vcf.gz", "_bwa_deduped.cram")
+        assert str(job.shell) == (
+            f"ExpansionHunter --reads {bwa_aln} "
+            f"--reference {self.mock_ref} "
+            f"--variant-catalog {catalog} "
+            "--sex female "
+            f"--threads {pipeline.cores} "
+            f"--output-prefix {self.mock_dir}/output_expansion"
+        )
+        assert job.task_name == "expansion-hunter"
+        assert job.threads == pipeline.cores
+        assert self._get_dep_names(dag, all_jobs, "expansion-hunter") == set()
+
+    def test_segdup_command_with_fastq_input(self):
+        """segdup-caller uses the short and long reads, and one bundle"""
+        pipeline = self.create_pipeline()
+        pipeline.segdup_caller = ["CFH", "CYP2D6", "SMN1"]
+        first_job_names, _ = self._get_all_job_names(pipeline.build_dag())
+        assert "segdup-caller" not in first_job_names
+
+        pipeline.sample_sex = SampleSex.MALE
+        dag = pipeline.build_second_dag()
+        _, all_jobs = self._get_all_job_names(dag)
+        job = self._get_job(all_jobs, "segdup-caller")
+
+        bwa_aln = str(self.mock_vcf).replace(".vcf.gz", "_bwa_deduped.cram")
+        assert str(job.shell) == (
+            f"segdup-caller --short {bwa_aln} "
+            f"--long {self.mock_lr_bam} "
+            f"--reference {self.mock_ref} "
+            f"--sr_model {self.mock_bundle} "
+            f"--lr_model {self.mock_bundle} "
+            f"--input_vcf {self.mock_vcf} "
+            "--sex male "
+            "--genes CFH,CYP2D6,SMN1 "
+            f"--outdir {self.mock_dir}/output_segdups"
+        )
+        assert job.task_name == "segdup"
+        assert job.threads == pipeline.cores
+        assert self._get_dep_names(dag, all_jobs, "segdup-caller") == set()
+
+    def test_segdup_without_genes(self):
+        """An empty gene list runs segdup-caller's own default set"""
+        pipeline = self.create_pipeline()
+        pipeline.segdup_caller = []
+        job = self._second_dag_job(pipeline, "segdup-caller")
+
+        assert "--genes" not in str(job.shell)
+        assert "--sex female" in str(job.shell)
+
+    def test_segdup_command_with_aligned_input(self):
+        """The `--sr_aln` input is passed to segdup-caller as-is"""
+        pipeline = self.create_aligned_pipeline()
+        pipeline.segdup_caller = []
+        job = self._second_dag_job(pipeline, "segdup-caller")
+
+        assert f"--short {self.mock_sr_bam} " in str(job.shell)
+
+    def test_segdup_command_with_realigned_long_reads(self):
+        """The realigned long-read alignment reaches segdup-caller"""
+        pipeline = self.create_lr_realign_pipeline()
+        pipeline.segdup_caller = []
+        job = self._second_dag_job(pipeline, "segdup-caller")
+
+        lr_aln = str(self.mock_vcf).replace(".vcf.gz", "_mm2_sorted_0.cram")
+        assert f"--long {lr_aln} " in str(job.shell)
 
     # Second-DAG gates
 

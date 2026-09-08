@@ -1051,6 +1051,45 @@ class HybridPangenome(BasePangenome):
 
         return dag
 
+    def build_second_dag(self) -> Optional[DAG]:
+        """Build the second DAG for sex-aware downstream tools"""
+        if not self._needs_second_dag():
+            return None
+
+        assert self.ploidy_json is not None
+        self.get_sex(self.ploidy_json)
+
+        self.logger.info("Building the second hybrid-pangenome DAG")
+        dag = DAG()
+        ctx = self.stage_context()
+
+        # CNV calling with CNVscope on the short reads, using the sample sex
+        if self._cnv_in_second_dag():
+            self.add_pangenome_cnv(
+                dag,
+                ctx,
+                self.output_path("_sv.vcf.gz"),
+                self.sr_alignments,
+                replace_rg=self.sr_replace_rg,
+                interval=self.bed,
+            )
+
+        if self.sr_alignments:
+            self.add_expansion(dag, ctx, self.sr_alignments[0])
+
+            # segdup-caller consumes the small-variant VCF, the sample sex,
+            # and the long reads. The bundle serves as both the short- and
+            # long-read model, as it ships the `diploid_model`.
+            self.add_segdup(
+                dag,
+                ctx,
+                self.sr_alignments[0],
+                lr_alignment=self.lr_alignment,
+                lr_bundle=self.model_bundle if self.lr_alignment else None,
+            )
+
+        return dag
+
     def lr_kmc_pairs(self) -> List[Tuple[pathlib.Path, pathlib.Path]]:
         """`(alignment, decode reference)` pairs for the long-read k-mer
         counting.
