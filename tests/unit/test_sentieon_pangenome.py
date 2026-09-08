@@ -11,7 +11,9 @@ import json
 from unittest.mock import patch, MagicMock
 
 # Add the parent directory to the path to import sentieon_cli
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+sys.path.insert(
+    0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+)
 
 from sentieon_cli.sentieon_pangenome import SentieonPangenome
 from sentieon_cli.util import SampleSex
@@ -53,10 +55,10 @@ class TestSentieonPangenome:
     def create_pipeline(self):
         """Create a SentieonPangenome pipeline for testing"""
         pipeline = SentieonPangenome()
-        
+
         # Setup mocks
         pipeline.logger = MagicMock()
-        
+
         # Configure arguments
         pipeline.output_vcf = self.mock_vcf
         pipeline.reference = self.mock_ref
@@ -72,14 +74,14 @@ class TestSentieonPangenome:
         pipeline.skip_pangenome_name_checks = True
         pipeline.skip_pop_vcf_id_check = True
         pipeline.tmp_dir = self.mock_dir
-        
+
         # Mock parsing fai
         pipeline.fai_data = {"chr1": {"length": 1000}}
         pipeline.shards = [MagicMock()]
         pipeline.shards[0].contig = "chr1"
         pipeline.shards[0].start = 1
         pipeline.shards[0].stop = 1000
-        
+
         # Mock pop vcf contigs
         pipeline.pop_vcf_contigs = {"chr1": 1000}
 
@@ -200,16 +202,16 @@ class TestSentieonPangenome:
 
         assert concat_job is not None
         # Check that the first argument (output file) is set to the intermediate
-        args_str = " ".join([str(arg) for arg in concat_job.shell.nodes[0].args])
+        args_str = " ".join(
+            [str(arg) for arg in concat_job.shell.nodes[0].args]
+        )
         assert str(self.snv_apply_vcf(pipeline)) in args_str
         assert str(pipeline.output_vcf) not in args_str
 
         # The AD-update job writes the final output and depends
         # on the concat job
         _, all_jobs = self._get_all_job_names(dag)
-        ad_update_job = next(
-            j for j in all_jobs if j.name == "sad-lad-update"
-        )
+        ad_update_job = next(j for j in all_jobs if j.name == "sad-lad-update")
         update_cmd = str(ad_update_job.shell)
         assert f"--input_vcf {self.snv_apply_vcf(pipeline)}" in update_cmd
         assert f"--output_vcf {pipeline.output_vcf}" in update_cmd
@@ -247,9 +249,7 @@ class TestSentieonPangenome:
 
         # The update job rewrites it to the final .g.vcf.gz
         apply_job = next(j for j in all_jobs if j.name == "model-apply")
-        ad_update_job = next(
-            j for j in all_jobs if j.name == "sad-lad-update"
-        )
+        ad_update_job = next(j for j in all_jobs if j.name == "sad-lad-update")
         update_cmd = str(ad_update_job.shell)
         assert f"--input_vcf {apply_gvcf}" in update_cmd
         assert f"--output_vcf {expected_gvcf}" in update_cmd
@@ -282,9 +282,7 @@ class TestSentieonPangenome:
         job_names, all_jobs = self._get_all_job_names(dag)
         assert job_names.count("sad-lad-update") == 1
 
-        ad_update_job = next(
-            j for j in all_jobs if j.name == "sad-lad-update"
-        )
+        ad_update_job = next(j for j in all_jobs if j.name == "sad-lad-update")
         cmd_str = str(ad_update_job.shell)
         assert "sad_lad_update.py" in cmd_str
         assert f"--input_vcf {self.snv_apply_vcf(pipeline)}" in cmd_str
@@ -317,17 +315,24 @@ class TestSentieonPangenome:
         job_names = [job.name for job in all_jobs]
         assert "gvcftyper" not in job_names
 
+    def _second_dag_job(self, pipeline, name, sample_sex=SampleSex.FEMALE):
+        """Build both DAGs and return the named job of the second.
+
+        The first DAG has to be built first so that the short-read
+        alignments and the ploidy JSON are stashed for the second.
+        """
+        pipeline.build_dag()
+        pipeline.sample_sex = sample_sex
+        dag = pipeline.build_second_dag()
+        _, all_jobs = self._get_all_job_names(dag)
+        return next(j for j in all_jobs if j.name == name)
+
     def build_segdup_cmd(self, tech):
         """Build the segdup-caller command string for a given platform"""
         pipeline = self.create_pipeline()
         pipeline.tech = tech
-        pipeline.sample_sex = SampleSex.FEMALE
-        job = pipeline.build_segdup_job(
-            self.mock_dir / "output_segdups",
-            self.mock_bam,
-            self.mock_vcf,
-            None,
-        )
+        pipeline.segdup_caller = []
+        job = self._second_dag_job(pipeline, "segdup-caller")
         return str(job.shell)
 
     def test_segdup_ultima_lowers_min_map_qual(self):
@@ -338,6 +343,180 @@ class TestSentieonPangenome:
         """Non-Ultima input leaves the segdup-caller defaults alone"""
         assert "--set" not in self.build_segdup_cmd("Illumina")
 
+    def test_segdup_command(self):
+        """The short-read segdup-caller command built by the second DAG"""
+        pipeline = self.create_pipeline()
+        pipeline.segdup_caller = ["CFH", "CYP2D6", "SMN1"]
+        job = self._second_dag_job(pipeline, "segdup-caller")
+
+        assert str(job.shell) == (
+            f"segdup-caller --short {self.mock_bam} "
+            f"--reference {self.mock_ref} "
+            f"--sr_model {self.mock_bundle} "
+            f"--input_vcf {self.mock_vcf} "
+            "--sex female "
+            "--genes CFH,CYP2D6,SMN1 "
+            f"--outdir {self.mock_dir}/output_segdups"
+        )
+        assert job.name == "segdup-caller"
+        assert job.task_name == "segdup"
+        assert job.threads == pipeline.cores
+
+    def test_segdup_without_genes(self):
+        """An empty gene list runs segdup-caller's own default set"""
+        pipeline = self.create_pipeline()
+        pipeline.segdup_caller = []
+        job = self._second_dag_job(pipeline, "segdup-caller")
+
+        assert "--genes" not in str(job.shell)
+
+    def test_segdup_male_sample(self):
+        """The estimated sex reaches segdup-caller"""
+        pipeline = self.create_pipeline()
+        pipeline.segdup_caller = []
+        job = self._second_dag_job(
+            pipeline, "segdup-caller", sample_sex=SampleSex.MALE
+        )
+
+        assert "--sex male" in str(job.shell)
+
+    def test_no_segdup_job_by_default(self):
+        """Without `--segdup_caller` there is no segdup job, or DAG 2"""
+        pipeline = self.create_pipeline()
+        pipeline.build_dag()
+        pipeline.sample_sex = SampleSex.FEMALE
+
+        assert pipeline.build_second_dag() is None
+
+    def test_expansion_hunter_command(self):
+        """The ExpansionHunter command built by the second DAG"""
+        catalog = self.mock_dir / "catalog.json"
+        catalog.touch()
+
+        pipeline = self.create_pipeline()
+        pipeline.expansion_catalog = catalog
+        job = self._second_dag_job(pipeline, "expansion-hunter")
+
+        assert str(job.shell) == (
+            f"ExpansionHunter --reads {self.mock_bam} "
+            f"--reference {self.mock_ref} "
+            f"--variant-catalog {catalog} "
+            "--sex female "
+            f"--threads {pipeline.cores} "
+            f"--output-prefix {self.mock_dir}/output_expansion"
+        )
+        assert job.name == "expansion-hunter"
+        assert job.task_name == "expansion-hunter"
+        assert job.threads == pipeline.cores
+
+    def enable_t1k(self, pipeline):
+        """Supply the T1K HLA and KIR reference files"""
+        for name in ("hla_seq", "hla_coord", "kir_seq", "kir_coord"):
+            (self.mock_dir / f"{name}.fa").touch()
+        pipeline.t1k_hla_seq = self.mock_dir / "hla_seq.fa"
+        pipeline.t1k_hla_coord = self.mock_dir / "hla_coord.fa"
+        pipeline.t1k_kir_seq = self.mock_dir / "kir_seq.fa"
+        pipeline.t1k_kir_coord = self.mock_dir / "kir_coord.fa"
+        return pipeline
+
+    def _get_deps(self, dag, job):
+        """The dependencies of a job in a DAG"""
+        return dag.waiting_jobs.get(job, set())
+
+    def _get_dep_names(self, dag, job):
+        """The names of a job's dependencies"""
+        return {dep.name for dep in self._get_deps(dag, job)}
+
+    def test_t1k_jobs_in_the_first_dag(self):
+        """Both T1K gene groups add an extract and a genotyping job"""
+        pipeline = self.enable_t1k(self.create_pipeline())
+        dag = pipeline.build_dag()
+
+        job_names, all_jobs = self._get_all_job_names(dag)
+        for name in (
+            "t1k-hla-extract",
+            "t1k-hla",
+            "t1k-kir-extract",
+            "t1k-kir",
+        ):
+            assert name in job_names
+
+        for tag in ("hla", "kir"):
+            extract = next(
+                j for j in all_jobs if j.name == f"t1k-{tag}-extract"
+            )
+            t1k = next(j for j in all_jobs if j.name == f"t1k-{tag}")
+            assert self._get_deps(dag, t1k) == {extract}
+            # With BAM/CRAM input the extract reads the user's alignment
+            assert self._get_deps(dag, extract) == set()
+            assert extract.task_name == "t1k"
+            assert t1k.task_name == "t1k"
+
+    def test_t1k_extract_command(self):
+        """The HLA extract runs ReadWriter over the T1K locus"""
+        pipeline = self.enable_t1k(self.create_pipeline())
+        dag = pipeline.build_dag()
+
+        _, all_jobs = self._get_all_job_names(dag)
+        extract = next(j for j in all_jobs if j.name == "t1k-hla-extract")
+        assert str(extract.shell) == (
+            f"sentieon driver --input {self.mock_bam} "
+            f"--reference {self.mock_ref} --thread_count {pipeline.cores} "
+            "--interval chr6:28510020-33480577 "
+            f"--algo ReadWriter {self.mock_dir}/sample_hla.bam"
+        )
+
+    def test_t1k_command(self):
+        """run-t1k reads the extracted BAM and writes next to the VCF"""
+        pipeline = self.enable_t1k(self.create_pipeline())
+        dag = pipeline.build_dag()
+
+        _, all_jobs = self._get_all_job_names(dag)
+        t1k = next(j for j in all_jobs if j.name == "t1k-kir")
+        assert str(t1k.shell) == (
+            f"run-t1k --abnormalUnmapFlag -t {pipeline.cores} "
+            "--preset kir-wgs "
+            f"-f {self.mock_dir}/kir_seq.fa "
+            f"-c {self.mock_dir}/kir_coord.fa "
+            f"--od {self.mock_dir}/output_kir "
+            f"-b {self.mock_dir}/sample_kir.bam"
+        )
+
+    def test_t1k_extract_depends_on_dedup_with_fastq_input(self):
+        """With fastq input the extract waits for the bwa alignment"""
+        pipeline = self.enable_t1k(self.create_fastq_pipeline())
+        dag = pipeline.build_dag()
+
+        _, all_jobs = self._get_all_job_names(dag)
+        extract = next(j for j in all_jobs if j.name == "t1k-hla-extract")
+        assert self._get_dep_names(dag, extract) == {"dedup-bwa"}
+        assert str(self.mock_dir / "output_bwa_deduped.cram") in str(
+            extract.shell
+        )
+
+    def test_no_t1k_jobs_by_default(self):
+        """T1K runs only when its reference files are supplied"""
+        pipeline = self.create_pipeline()
+        job_names, _ = self._get_all_job_names(pipeline.build_dag())
+
+        assert not [name for name in job_names if name.startswith("t1k")]
+
+    def test_sr_alignments_stashed_with_bam_input(self):
+        """The second DAG reads the short-read alignments off the pipeline"""
+        pipeline = self.create_pipeline()
+        pipeline.build_dag()
+
+        assert pipeline.sr_alignments == [self.mock_bam]
+
+    def test_sr_alignments_stashed_with_fastq_input(self):
+        """With fastq input it is the deduplicated bwa alignment"""
+        pipeline = self.create_fastq_pipeline()
+        pipeline.build_dag()
+
+        assert pipeline.sr_alignments == [
+            self.mock_dir / "output_bwa_deduped.cram"
+        ]
+
     def test_call_svs(self):
         """Test that PangenomeSV is added when --call_svs is enabled"""
         pipeline = self.create_pipeline()
@@ -347,9 +526,7 @@ class TestSentieonPangenome:
         assert isinstance(dag, DAG)
 
         # The dnascope job should exist
-        all_jobs = list(dag.waiting_jobs.keys()) + list(
-            dag.ready_jobs.keys()
-        )
+        all_jobs = list(dag.waiting_jobs.keys()) + list(dag.ready_jobs.keys())
         job_names = [job.name for job in all_jobs]
         assert "dnascope" in job_names
 
@@ -367,9 +544,7 @@ class TestSentieonPangenome:
         assert "--gfa_file" in cmd_str
 
         # SV output should use _sv.vcf.gz suffix
-        sv_vcf = str(pipeline.output_vcf).replace(
-            ".vcf.gz", "_sv.vcf.gz"
-        )
+        sv_vcf = str(pipeline.output_vcf).replace(".vcf.gz", "_sv.vcf.gz")
         assert sv_vcf in cmd_str
 
     def test_call_svs_disabled_by_default(self):
@@ -377,9 +552,7 @@ class TestSentieonPangenome:
         pipeline = self.create_pipeline()
         dag = pipeline.build_dag()
 
-        all_jobs = list(dag.waiting_jobs.keys()) + list(
-            dag.ready_jobs.keys()
-        )
+        all_jobs = list(dag.waiting_jobs.keys()) + list(dag.ready_jobs.keys())
         dnascope_job = None
         for job in all_jobs:
             if job.name == "dnascope":
@@ -398,9 +571,7 @@ class TestSentieonPangenome:
 
         assert isinstance(dag, DAG)
 
-        all_jobs = list(dag.waiting_jobs.keys()) + list(
-            dag.ready_jobs.keys()
-        )
+        all_jobs = list(dag.waiting_jobs.keys()) + list(dag.ready_jobs.keys())
         job_names = [job.name for job in all_jobs]
         assert "dnascope" not in job_names
         assert "model-apply" not in job_names
@@ -415,9 +586,7 @@ class TestSentieonPangenome:
 
         assert isinstance(dag, DAG)
 
-        all_jobs = list(dag.waiting_jobs.keys()) + list(
-            dag.ready_jobs.keys()
-        )
+        all_jobs = list(dag.waiting_jobs.keys()) + list(dag.ready_jobs.keys())
         job_names = [job.name for job in all_jobs]
 
         # The driver job should still run for SV calling
@@ -440,9 +609,7 @@ class TestSentieonPangenome:
 
     def _get_all_job_names(self, dag):
         """Helper to get all job names from a DAG"""
-        all_jobs = list(dag.waiting_jobs.keys()) + list(
-            dag.ready_jobs.keys()
-        )
+        all_jobs = list(dag.waiting_jobs.keys()) + list(dag.ready_jobs.keys())
         return [job.name for job in all_jobs], all_jobs
 
     def _build_cnv_dag(self, pipeline, sample_sex=SampleSex.FEMALE):
@@ -566,9 +733,7 @@ class TestSentieonPangenome:
         pipeline = self.create_pipeline()
 
         assert pipeline._needs_second_dag() is False
-        job_names, all_jobs = self._get_all_job_names(
-            pipeline.build_dag()
-        )
+        job_names, all_jobs = self._get_all_job_names(pipeline.build_dag())
         assert "estimate-ploidy" in job_names
 
         ploidy_job = next(j for j in all_jobs if j.name == "estimate-ploidy")
@@ -725,9 +890,7 @@ class TestSentieonPangenome:
         assert "--cnv" in cmd_str
         assert "--converted" in cmd_str
         # Output should use _cnv.vcf.gz suffix
-        cnv_vcf = str(pipeline.output_vcf).replace(
-            ".vcf.gz", "_cnv.vcf.gz"
-        )
+        cnv_vcf = str(pipeline.output_vcf).replace(".vcf.gz", "_cnv.vcf.gz")
         assert cnv_vcf in cmd_str
 
     def test_cnv_with_skip_model_apply(self):
@@ -735,9 +898,7 @@ class TestSentieonPangenome:
         pipeline = self.create_pipeline()
         pipeline.call_svs = True
         pipeline.skip_model_apply = True
-        first_job_names, _ = self._get_all_job_names(
-            pipeline.build_dag()
-        )
+        first_job_names, _ = self._get_all_job_names(pipeline.build_dag())
         assert "model-apply" not in first_job_names
 
         pipeline.sample_sex = SampleSex.FEMALE
@@ -748,4 +909,3 @@ class TestSentieonPangenome:
         assert "cnv-model-apply" in job_names
         assert "indel2cnv" in job_names
         assert "combine-cnv" in job_names
-

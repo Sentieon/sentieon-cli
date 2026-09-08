@@ -319,6 +319,46 @@ def cmd_pyexec_sad_lad_update(
     return Pipeline(Command(*cmd))
 
 
+def cmd_pyexec_indel2cnv(
+    out_vcf: pathlib.Path,
+    in_vcf: pathlib.Path,
+    reference: pathlib.Path,
+    indel2cnv_script: pathlib.Path,
+    threads: int,
+) -> Pipeline:
+    """Convert PangenomeSV INDELs to CNV calls"""
+    cmd = [
+        sys.executable,
+        str(indel2cnv_script),
+        str(reference),
+        str(in_vcf),
+        str(out_vcf),
+        "-t",
+        str(threads),
+    ]
+    return Pipeline(Command(*cmd))
+
+
+def cmd_pyexec_combine_cnv(
+    out_vcf: pathlib.Path,
+    cnv_vcf: pathlib.Path,
+    converted_vcf: pathlib.Path,
+    combine_script: pathlib.Path,
+) -> Pipeline:
+    """Combine CNVscope and converted SV calls"""
+    cmd = [
+        sys.executable,
+        str(combine_script),
+        "--cnv",
+        str(cnv_vcf),
+        "--converted",
+        str(converted_vcf),
+        "-o",
+        str(out_vcf),
+    ]
+    return Pipeline(Command(*cmd))
+
+
 def hybrid_stage1_hap(
     out_hap_bam: pathlib.Path,
     stage1_driver: BaseDriver,
@@ -1122,16 +1162,37 @@ def cmd_segdup_caller(
     sex: Optional[str] = None,
     genes: Optional[str] = None,
     overrides: Optional[List[str]] = None,
+    lr_alignments: Optional[pathlib.Path] = None,
+    lr_bundle: Optional[pathlib.Path] = None,
 ) -> Pipeline:
+    """Call variants in difficult segmental duplications.
+
+    Long reads are optional; segdup-caller needs both the long-read
+    alignment and the long-read model bundle to use them.
+    """
+    if (lr_alignments is None) != (lr_bundle is None):
+        raise ValueError(
+            "segdup-caller needs both `lr_alignments` and `lr_bundle` to "
+            "call with long reads"
+        )
+
     cmd = [
         "segdup-caller",
         "--short",
         str(sr_alignments),
-        "--reference",
-        str(reference),
-        "--sr_model",
-        str(sr_bundle),
     ]
+    if lr_alignments is not None:
+        cmd.extend(["--long", str(lr_alignments)])
+    cmd.extend(
+        [
+            "--reference",
+            str(reference),
+            "--sr_model",
+            str(sr_bundle),
+        ]
+    )
+    if lr_bundle is not None:
+        cmd.extend(["--lr_model", str(lr_bundle)])
     if input_vcf is not None:
         cmd.extend(["--input_vcf", str(input_vcf)])
     if sex is not None:

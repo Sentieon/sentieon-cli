@@ -25,6 +25,7 @@ from sentieon_cli.shard import (
 )
 from sentieon_cli.util import (
     SampleSex,
+    caller_sex_arg,
     cnvscope_sex_args,
     sample_sex_arg,
 )
@@ -208,6 +209,19 @@ def test_cnvscope_sex_args_for_a_female_sample():
 def test_cnvscope_sex_args_without_a_known_sex(sex, messages):
     assert cnvscope_sex_args(sex, None) == (None, None)
     assert any("diploid" in msg for msg in messages)
+
+
+# The ExpansionHunter and segdup-caller `--sex` argument
+
+
+def test_caller_sex_arg_for_a_male_sample():
+    assert caller_sex_arg(SampleSex.MALE) == "male"
+
+
+@pytest.mark.parametrize("sex", [SampleSex.FEMALE, SampleSex.UNKNOWN, None])
+def test_caller_sex_arg_for_every_other_sample(sex):
+    # The two callers take only "male" or "female"
+    assert caller_sex_arg(sex) == "female"
 
 
 def test_cnvscope_algo_emits_the_sex_arguments():

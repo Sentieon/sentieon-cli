@@ -2,8 +2,10 @@
 Unit tests for the CNVscope stage
 """
 
+from importlib.resources import files
 import logging
 import pathlib
+import sys
 from typing import List
 
 import packaging.version
@@ -11,7 +13,11 @@ import pytest
 
 from sentieon_cli.dag import DAG
 from sentieon_cli.stages.base import StageContext, rm_job
-from sentieon_cli.stages.cnv import CNV_MIN_VERSIONS, CNVscopeStage
+from sentieon_cli.stages.cnv import (
+    CNV_MIN_VERSIONS,
+    CNVscopeStage,
+    PangenomeCNVStage,
+)
 from sentieon_cli.util import SampleSex
 
 PACKAGE_LOGGER = "sentieon_cli"
@@ -222,3 +228,147 @@ class TestDagWiring:
         assert result.jobs == [result.cnvscope_job, result.apply_job]
         assert result.terminal == {result.apply_job}
         assert result.cnv_vcf == cnv_vcf
+
+
+def make_pangenome_stage(
+    tmp_path: pathlib.Path, **kwargs
+) -> PangenomeCNVStage:
+    """A PangenomeCNVStage over the short-read alignment and the SV VCF"""
+    defaults = dict(
+        ctx=make_ctx(tmp_path),
+        inputs=[tmp_path / "sample.cram"],
+        model=tmp_path / "bundle" / "cnv.model",
+        sv_vcf=tmp_path / "output_sv.vcf.gz",
+    )
+    defaults.update(kwargs)
+    return PangenomeCNVStage(**defaults)  # type: ignore[arg-type]
+
+
+def script_path(name: str) -> str:
+    """The packaged helper script, unresolved as the stage builds it"""
+    return str(files("sentieon_cli.scripts").joinpath(name))
+
+
+class TestPangenomeCNVStage:
+    """CNVscope, CNVModelApply, indel2cnv and combine_cnv together"""
+
+    def test_job_names_threads_and_task(self, tmp_path):
+        result = make_pangenome_stage(tmp_path).add_to(DAG())
+
+        assert [job.name for job in result.jobs] == [
+            "cnvscope",
+            "cnv-model-apply",
+            "indel2cnv",
+            "combine-cnv",
+        ]
+        assert [job.threads for job in result.jobs] == [4, 4, 0, 0]
+        for job in result.jobs:
+            assert job.task_name == "cnv"
+
+    def test_derived_paths(self, tmp_path):
+        result = make_pangenome_stage(tmp_path).add_to(DAG())
+
+        # The intermediates live in the temporary directory; the CNV VCF
+        # and the probes file sit next to the output VCF
+        cnvscope_shell = str(result.cnvscope_job.shell)
+        assert f"{tmp_path}/sample-cnvscope.vcf.gz" in cnvscope_shell
+        assert f"--dump_probes {tmp_path}/output_cnv.probes" in cnvscope_shell
+
+        apply_shell = str(result.apply_job.shell)
+        assert f"--vcf {tmp_path}/sample-cnvscope.vcf.gz" in apply_shell
+        assert f"{tmp_path}/sample-cnv_model_apply.vcf.gz" in apply_shell
+
+        assert result.cnv_vcf == tmp_path / "output_cnv.vcf.gz"
+
+    def test_indel2cnv_command(self, tmp_path):
+        result = make_pangenome_stage(tmp_path).add_to(DAG())
+
+        assert str(result.indel2cnv_job.shell) == (
+            f"{sys.executable} {script_path('indel2cnv.py')} "
+            f"{tmp_path}/ref.fa {tmp_path}/output_sv.vcf.gz "
+            f"{tmp_path}/sample-sv_cnv.vcf.gz -t 4"
+        )
+
+    def test_combine_cnv_command(self, tmp_path):
+        result = make_pangenome_stage(tmp_path).add_to(DAG())
+
+        assert str(result.combine_job.shell) == (
+            f"{sys.executable} {script_path('combine_cnv.py')} "
+            f"--cnv {tmp_path}/sample-cnv_model_apply.vcf.gz "
+            f"--converted {tmp_path}/sample-sv_cnv.vcf.gz "
+            f"-o {tmp_path}/output_cnv.vcf.gz"
+        )
+
+    def test_upstream_lands_on_the_entry_jobs(self, tmp_path):
+        dag = DAG()
+        upstream = rm_job([tmp_path / "upstream"], "upstream")
+        dag.add_job(upstream)
+
+        result = make_pangenome_stage(tmp_path).add_to(dag, [upstream])
+
+        assert dag.waiting_jobs[result.cnvscope_job] == {upstream}
+        assert dag.waiting_jobs[result.indel2cnv_job] == {upstream}
+        assert dag.waiting_jobs[result.apply_job] == {result.cnvscope_job}
+        assert dag.waiting_jobs[result.combine_job] == {
+            result.apply_job,
+            result.indel2cnv_job,
+        }
+
+    def test_entry_jobs_are_roots_without_upstream(self, tmp_path):
+        dag = DAG()
+        result = make_pangenome_stage(tmp_path).add_to(dag)
+
+        assert result.cnvscope_job in dag.ready_jobs
+        assert result.indel2cnv_job in dag.ready_jobs
+
+    def test_interval_and_replace_rg_reach_cnvscope_only(self, tmp_path):
+        bed = tmp_path / "regions.bed"
+        result = make_pangenome_stage(
+            tmp_path,
+            interval=bed,
+            replace_rg=[["rg1=ID:rg1\\tSM:sample"]],
+        ).add_to(DAG())
+
+        cnvscope_shell = str(result.cnvscope_job.shell)
+        assert f"--interval {bed}" in cnvscope_shell
+        assert "--replace_rg 'rg1=ID:rg1\\tSM:sample'" in cnvscope_shell
+        for job in (
+            result.apply_job,
+            result.indel2cnv_job,
+            result.combine_job,
+        ):
+            assert "--interval" not in str(job.shell)
+            assert "--replace_rg" not in str(job.shell)
+
+    def test_sex_arguments_reach_cnvscope(self, tmp_path):
+        par_bed = tmp_path / "par.bed"
+        result = make_pangenome_stage(
+            tmp_path, sample_sex=SampleSex.MALE, par_bed=par_bed
+        ).add_to(DAG())
+
+        shell = str(result.cnvscope_job.shell)
+        assert "--sex M" in shell
+        assert f"--par {par_bed}" in shell
+
+    def test_female_sample_needs_no_par(self, tmp_path):
+        result = make_pangenome_stage(
+            tmp_path,
+            sample_sex=SampleSex.FEMALE,
+            par_bed=tmp_path / "par.bed",
+        ).add_to(DAG())
+
+        shell = str(result.cnvscope_job.shell)
+        assert "--sex F" in shell
+        assert "--par" not in shell
+
+    def test_result_fields(self, tmp_path):
+        result = make_pangenome_stage(tmp_path).add_to(DAG())
+
+        assert result.jobs == [
+            result.cnvscope_job,
+            result.apply_job,
+            result.indel2cnv_job,
+            result.combine_job,
+        ]
+        assert result.terminal == {result.combine_job}
+        assert result.cnv_vcf == tmp_path / "output_cnv.vcf.gz"
