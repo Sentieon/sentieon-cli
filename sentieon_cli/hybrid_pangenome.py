@@ -40,8 +40,12 @@ from .stages.alignment import (
     find_unzip,
 )
 from .stages.base import StageContext
+from .stages.cnv import CNV_MIN_VERSIONS
 from .stages.dedup import DedupStage
+from .stages.expansion import EXPANSION_MIN_VERSIONS
 from .stages.metrics import MetricsPaths, MetricsStage
+from .stages.ploidy import PloidyStage
+from .stages.segdup import SEGDUP_MIN_VERSIONS
 from .stages.small_variants import (
     ApplySpec,
     DNAscopeStage,
@@ -119,10 +123,18 @@ class HybridPangenome(BasePangenome):
                 "flags": ["-b", "--bed"],
                 "help": (
                     "Region BED file. Supplying this file will limit "
-                    "small-variant calling to the intervals inside the BED "
-                    "file."
+                    "small-variant and CNV calling to the intervals inside "
+                    "the BED file."
                 ),
                 "type": path_arg(exists=True, is_file=True),
+            },
+            "call_cnvs": {
+                "help": (
+                    "Call copy number variants with CNVscope and the "
+                    "PangenomeSV output. Requires a model bundle with a "
+                    "'cnv.model' file."
+                ),
+                "action": "store_true",
             },
             "lr_align_input": {
                 "help": (
@@ -208,6 +220,7 @@ class HybridPangenome(BasePangenome):
         self.pop_vcf: Optional[pathlib.Path] = None
         self.readgroup: Optional[str] = None
         self.bed: Optional[pathlib.Path] = None
+        self.call_cnvs = False
         self.lr_align_input = False
         self.lr_input_ref: Optional[pathlib.Path] = None
         self.pangenome_contig_prefix = "GRCh38#0#"
@@ -228,6 +241,21 @@ class HybridPangenome(BasePangenome):
         self.skip_pop_vcf_id_check = False
         self.skip_small_variants = False
         self.skip_svs = False
+        # The single long-read alignment, stashed by `build_dag` for the
+        # second, sex-aware DAG
+        self.lr_alignment: Optional[pathlib.Path] = None
+
+    def _cnv_in_second_dag(self) -> bool:
+        """CNV calling runs in the second, sex-aware DAG"""
+        return self.call_cnvs and self.has_cnv_model
+
+    def _needs_second_dag(self) -> bool:
+        """The run has jobs that depend on the estimated sample sex"""
+        return bool(
+            self.expansion_catalog
+            or self.segdup_caller is not None
+            or self._cnv_in_second_dag()
+        )
 
     def validate(self) -> None:
         """Validate pipeline inputs"""
@@ -269,6 +297,11 @@ class HybridPangenome(BasePangenome):
             self.validate_bwa_index()
         self.collect_readgroups()
         self.validate_readgroups()
+
+        self.validate_segdup()
+        self.validate_expansion()
+        self.validate_t1k()
+        self.validate_cnv()
 
         require_versions(
             HYBRID_PANGENOME_MIN_VERSIONS, skip=self.skip_version_check
@@ -336,8 +369,85 @@ class HybridPangenome(BasePangenome):
                     sys.exit(2)
 
         # After the version gate and the contig checks, so the tool choice
-        # is only logged for runs that proceed
+        # is only logged for runs that proceed. The `reference_build` it
+        # sets is the value `validate_cnv` already resolved.
         self.resolve_gfa2fa_tool()
+
+    def validate_segdup(self) -> None:
+        """Validate the arguments used by segdup-caller"""
+        if self.segdup_caller is None:
+            return
+
+        if len(self.sr_aln) > 1:
+            self.logger.error(
+                "`--segdup_caller` accepts only a single `--sr_aln` "
+                "BAM/CRAM file."
+            )
+            sys.exit(2)
+
+        if len(self.lr_aln) > 1:
+            self.logger.error(
+                "`--segdup_caller` accepts only a single `--lr_aln` "
+                "BAM/CRAM file."
+            )
+            sys.exit(2)
+
+        if self.skip_small_variants:
+            self.logger.error(
+                "`--segdup_caller` requires the small-variant VCF as "
+                "`--input_vcf` and cannot be combined with "
+                "`--skip_small_variants`."
+            )
+            sys.exit(2)
+
+        require_versions(SEGDUP_MIN_VERSIONS, skip=self.skip_version_check)
+
+    def validate_expansion(self) -> None:
+        """Validate the arguments used by ExpansionHunter"""
+        if self.expansion_catalog is None:
+            return
+
+        if len(self.sr_aln) > 1:
+            self.logger.error(
+                "`--expansion_catalog` accepts only a single `--sr_aln` "
+                "BAM/CRAM file."
+            )
+            sys.exit(2)
+
+        require_versions(EXPANSION_MIN_VERSIONS, skip=self.skip_version_check)
+
+    def validate_cnv(self) -> None:
+        """Validate the arguments used for sex-aware CNV calling"""
+        if self.call_cnvs and self.skip_svs:
+            self.logger.error(
+                "`--call_cnvs` requires SV calling and cannot be combined "
+                "with `--skip_svs`."
+            )
+            sys.exit(2)
+
+        # `validate_bundle` has already set `self.has_cnv_model`
+        if self.call_cnvs and not self.has_cnv_model:
+            self.logger.error(
+                "`--call_cnvs` requires a model bundle with a 'cnv.model' "
+                "file."
+            )
+            sys.exit(2)
+
+        if self.call_cnvs and self.bed is None:
+            self.logger.warning(
+                "No `--bed` supplied; CNVscope will run on every contig in "
+                "the reference, including decoy and unplaced contigs"
+            )
+
+        cnv_will_run = self._cnv_in_second_dag()
+        self.resolve_cnv_par_bed(self.fai_data, self.par_bed, cnv_will_run)
+        if not cnv_will_run:
+            return
+
+        # A PAR BED file is required for CNV calling, whatever the sex
+        self.validate_cnv_par(True)
+
+        require_versions(CNV_MIN_VERSIONS, skip=self.skip_version_check)
 
     def validate_sr_inputs(self) -> None:
         """Validate the short-read input arguments.
@@ -425,6 +535,10 @@ class HybridPangenome(BasePangenome):
             required_members.add("bwa.model")
         if self.lr_align_input:
             required_members.add("minimap2_lr.model")
+        if self.segdup_caller is not None:
+            # segdup-caller reads `<lr_model>/diploid_model` and the
+            # pipeline passes this bundle as its `--lr_model`
+            required_members.add("diploid_model")
         missing_members = required_members - bundle_members
         if missing_members:
             self.logger.error(
@@ -432,6 +546,8 @@ class HybridPangenome(BasePangenome):
                 ", ".join(sorted(missing_members)),
             )
             sys.exit(2)
+
+        self.has_cnv_model = "cnv.model" in bundle_members
 
         bundle_vcf_id = bundle_info.get("SentieonVcfID")
         if (
@@ -853,14 +969,39 @@ class HybridPangenome(BasePangenome):
 
             calling_bams = [out_bwa_aln, out_lift_aln] + calling_lr
             calling_dependencies = {bwa_dedup_job, lift_dedup_job}
+            sr_alignments = [out_bwa_aln]
+            sr_deps: Set[Job] = {bwa_dedup_job}
         else:
             # Aligned short reads are used as-is; duplicate, secondary, and
             # supplementary reads are excluded from the lifted alignment
             # during read extraction
             calling_bams = list(self.sr_aln) + [out_lift_aln] + calling_lr
             calling_dependencies = {mm2_job}
+            sr_alignments = list(self.sr_aln)
+            sr_deps = set()
         calling_dependencies |= realign_jobs
         replace_rg = self.build_replace_rg()
+
+        # Stash the short-read inputs for the second, sex-aware DAG. The
+        # `replace_rg` rows follow the calling input order, so the
+        # short-read rows are the leading ones; all-empty rows are dropped.
+        sr_replace_rg = replace_rg[: len(sr_alignments)]
+        self.sr_alignments = sr_alignments
+        self.sr_replace_rg = sr_replace_rg if any(sr_replace_rg) else None
+        self.lr_alignment = calling_lr[0] if len(calling_lr) == 1 else None
+
+        # Estimate the sample ploidy and sex. The JSON output is always
+        # written; `--sample_sex` takes precedence for the sex used by the
+        # sex-aware callers.
+        ploidy_result = PloidyStage(
+            ctx=ctx,
+            inputs=[sr_alignments[0]],
+            reference_build=self.reference_build,
+        ).add_to(dag, sr_deps)
+        self.ploidy_json = ploidy_result.ploidy_json
+
+        # T1K HLA/KIR calling from the short reads
+        self.add_t1k(dag, ctx, sr_alignments, sr_deps)
 
         if not self.skip_svs:
             pangenomesv_job = self.build_pangenomesv_job(

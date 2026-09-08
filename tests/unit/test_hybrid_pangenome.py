@@ -160,6 +160,7 @@ class TestHybridPangenome:
             "locuscollector-lift",
             "dedup-lift",
             "metrics",
+            "estimate-ploidy",
             "pangenome-sv",
             "dnascope",
             "model-apply",
@@ -645,6 +646,7 @@ class TestHybridPangenome:
             "vg-haplotypes",
             "graph-update",
             "mm2-lift",
+            "estimate-ploidy",
             "pangenome-sv",
             "dnascope",
             "model-apply",
@@ -717,9 +719,7 @@ class TestHybridPangenome:
             "extract-kmc"
         }
         assert "extract-kmc" in self._get_dep_names(dag, all_jobs, "mm2-lift")
-        assert self._get_dep_names(dag, all_jobs, "dnascope") == {
-            "mm2-lift"
-        }
+        assert self._get_dep_names(dag, all_jobs, "dnascope") == {"mm2-lift"}
 
     def test_aligned_lift_output(self):
         """The lifted alignment is the final short-read output"""
@@ -1035,3 +1035,436 @@ class TestHybridPangenome:
         assert pipeline.lr_readgroups == [[{"ID": "lr-rg1", "SM": "sample1"}]]
         pipeline.validate_readgroups()
         assert pipeline.sample_sm == "sample1"
+
+    # Ploidy estimation
+
+    def test_estimate_ploidy_job_with_fastq_input(self):
+        """Ploidy is estimated from the deduplicated bwa alignment"""
+        pipeline = self.create_pipeline()
+        dag = pipeline.build_dag()
+        _, all_jobs = self._get_all_job_names(dag)
+
+        bwa_aln = str(self.mock_vcf).replace(".vcf.gz", "_bwa_deduped.cram")
+        job = self._get_job(all_jobs, "estimate-ploidy")
+        assert "estimate_ploidy.py" in str(job.shell)
+        assert f"-i {bwa_aln}" in str(job.shell)
+        assert job.task_name == "ploidy"
+        assert job.threads == 0
+        assert self._get_dep_names(dag, all_jobs, "estimate-ploidy") == {
+            "dedup-bwa"
+        }
+
+    def test_estimate_ploidy_job_with_aligned_input(self):
+        """Aligned short reads are used as-is, without dependencies"""
+        pipeline = self.create_aligned_pipeline()
+        dag = pipeline.build_dag()
+        _, all_jobs = self._get_all_job_names(dag)
+
+        job = self._get_job(all_jobs, "estimate-ploidy")
+        assert f"-i {self.mock_sr_bam}" in str(job.shell)
+        assert self._get_dep_names(dag, all_jobs, "estimate-ploidy") == set()
+
+    def test_ploidy_json_stashed(self):
+        """The ploidy JSON path is stashed for the second DAG"""
+        pipeline = self.create_pipeline()
+        pipeline.build_dag()
+
+        assert pipeline.ploidy_json == pathlib.Path(
+            str(self.mock_vcf).replace(".vcf.gz", "_ploidy.json")
+        )
+
+    def test_estimate_ploidy_with_skip_small_variants(self):
+        """Ploidy estimation runs before the small-variant early return"""
+        pipeline = self.create_pipeline()
+        pipeline.skip_small_variants = True
+        job_names, _ = self._get_all_job_names(pipeline.build_dag())
+
+        assert "estimate-ploidy" in job_names
+
+    # T1K HLA/KIR genotyping
+
+    def enable_t1k(self, pipeline):
+        """Supply the T1K reference files"""
+        for attr, name in (
+            ("t1k_hla_seq", "hla_seq.fa"),
+            ("t1k_hla_coord", "hla_coord.fa"),
+            ("t1k_kir_seq", "kir_seq.fa"),
+            ("t1k_kir_coord", "kir_coord.fa"),
+        ):
+            path = self.mock_dir / name
+            path.touch()
+            setattr(pipeline, attr, path)
+        return pipeline
+
+    def test_no_t1k_jobs_by_default(self):
+        """T1K runs only when its reference files are supplied"""
+        pipeline = self.create_pipeline()
+        job_names, _ = self._get_all_job_names(pipeline.build_dag())
+
+        assert not [name for name in job_names if name.startswith("t1k")]
+
+    def test_t1k_jobs_with_fastq_input(self):
+        """T1K genotypes the deduplicated short reads"""
+        pipeline = self.enable_t1k(self.create_pipeline())
+        dag = pipeline.build_dag()
+        job_names, all_jobs = self._get_all_job_names(dag)
+
+        for name in (
+            "t1k-hla-extract",
+            "t1k-hla",
+            "t1k-kir-extract",
+            "t1k-kir",
+        ):
+            assert name in job_names, f"missing job: {name}"
+
+        bwa_aln = str(self.mock_vcf).replace(".vcf.gz", "_bwa_deduped.cram")
+        extract = self._get_job(all_jobs, "t1k-hla-extract")
+        assert str(extract.shell) == (
+            f"sentieon driver --input {bwa_aln} "
+            f"--reference {self.mock_ref} --thread_count {pipeline.cores} "
+            "--interval chr6:28510020-33480577 "
+            f"--algo ReadWriter {self.mock_dir}/sample_hla.bam"
+        )
+        assert str(self._get_job(all_jobs, "t1k-hla").shell) == (
+            f"run-t1k --abnormalUnmapFlag -t {pipeline.cores} "
+            "--preset hla-wgs "
+            f"-f {self.mock_dir}/hla_seq.fa "
+            f"-c {self.mock_dir}/hla_coord.fa "
+            f"--od {self.mock_dir}/output_hla "
+            f"-b {self.mock_dir}/sample_hla.bam"
+        )
+        assert str(self._get_job(all_jobs, "t1k-kir").shell) == (
+            f"run-t1k --abnormalUnmapFlag -t {pipeline.cores} "
+            "--preset kir-wgs "
+            f"-f {self.mock_dir}/kir_seq.fa "
+            f"-c {self.mock_dir}/kir_coord.fa "
+            f"--od {self.mock_dir}/output_kir "
+            f"-b {self.mock_dir}/sample_kir.bam"
+        )
+
+        assert self._get_dep_names(dag, all_jobs, "t1k-hla") == {
+            "t1k-hla-extract"
+        }
+        assert self._get_dep_names(dag, all_jobs, "t1k-hla-extract") == {
+            "dedup-bwa"
+        }
+
+    def test_t1k_jobs_with_aligned_input(self):
+        """T1K extracts from the `--sr_aln` input without dependencies"""
+        pipeline = self.enable_t1k(self.create_aligned_pipeline())
+        dag = pipeline.build_dag()
+        _, all_jobs = self._get_all_job_names(dag)
+
+        extract = self._get_job(all_jobs, "t1k-kir-extract")
+        assert str(extract.shell) == (
+            f"sentieon driver --input {self.mock_sr_bam} "
+            f"--reference {self.mock_ref} --thread_count {pipeline.cores} "
+            "--interval chr19:53100000-55800000 "
+            f"--algo ReadWriter {self.mock_dir}/sample_kir.bam"
+        )
+        assert self._get_dep_names(dag, all_jobs, "t1k-kir-extract") == set()
+        assert self._get_dep_names(dag, all_jobs, "t1k-kir") == {
+            "t1k-kir-extract"
+        }
+
+    # The second-DAG stashes
+
+    def test_stashes_with_fastq_input(self):
+        """The bwa alignment is stashed without a `--replace_rg` row"""
+        pipeline = self.create_pipeline()
+        pipeline.build_dag()
+
+        bwa_aln = pathlib.Path(
+            str(self.mock_vcf).replace(".vcf.gz", "_bwa_deduped.cram")
+        )
+        assert pipeline.sr_alignments == [bwa_aln]
+        assert pipeline.sr_replace_rg is None
+        assert pipeline.lr_alignment == self.mock_lr_bam
+
+    def test_stashes_with_aligned_input(self):
+        """The `--sr_aln` input is stashed with its `--replace_rg` row"""
+        pipeline = self.create_aligned_pipeline()
+        pipeline.build_dag()
+
+        assert pipeline.sr_alignments == [self.mock_sr_bam]
+        assert pipeline.sr_replace_rg == [
+            [pipeline._replace_rg_arg({"ID": "sr-rg1", "SM": "sample1"}, "0")]
+        ]
+        assert pipeline.sr_replace_rg == [
+            [r"sr-rg1=ID:sr-rg1\tSM:sample1\tLR:0"]
+        ]
+
+    def test_lr_alignment_stash_with_realignment(self):
+        """The realigned long-read alignment is stashed"""
+        pipeline = self.create_lr_realign_pipeline()
+        pipeline.build_dag()
+
+        assert pipeline.lr_alignment == pathlib.Path(
+            str(self.mock_vcf).replace(".vcf.gz", "_mm2_sorted_0.cram")
+        )
+
+    def test_lr_alignment_stash_with_two_inputs(self):
+        """segdup-caller takes a single long-read alignment"""
+        lr_bam2 = self.mock_dir / "longreads2.bam"
+        lr_bam2.touch()
+
+        pipeline = self.create_pipeline()
+        pipeline.lr_aln = [self.mock_lr_bam, lr_bam2]
+        pipeline.lr_readgroups = [
+            [{"ID": "lr-rg1", "SM": "sample1"}],
+            [{"ID": "lr-rg2", "SM": "sample1"}],
+        ]
+        pipeline.build_dag()
+
+        assert pipeline.lr_alignment is None
+
+    def test_build_second_dag_not_implemented_yet(self):
+        """The sex-aware callers do not build jobs yet"""
+        pipeline = self.create_pipeline()
+        pipeline.build_dag()
+
+        assert pipeline.build_second_dag() is None
+
+    # Second-DAG gates
+
+    @pytest.mark.parametrize(
+        "call_cnvs,has_cnv_model,expected",
+        [
+            (False, False, False),
+            (False, True, False),
+            (True, False, False),
+            (True, True, True),
+        ],
+    )
+    def test_cnv_in_second_dag(self, call_cnvs, has_cnv_model, expected):
+        """CNVs are called with `--call_cnvs` and a bundle CNV model"""
+        pipeline = self.create_pipeline()
+        pipeline.call_cnvs = call_cnvs
+        pipeline.has_cnv_model = has_cnv_model
+
+        assert pipeline._cnv_in_second_dag() is expected
+
+    def test_needs_second_dag(self):
+        """Each sex-aware caller requires the second DAG"""
+        pipeline = self.create_pipeline()
+        assert pipeline._needs_second_dag() is False
+
+        pipeline = self.create_pipeline()
+        pipeline.expansion_catalog = self.mock_bed
+        assert pipeline._needs_second_dag() is True
+
+        pipeline = self.create_pipeline()
+        pipeline.segdup_caller = []
+        assert pipeline._needs_second_dag() is True
+
+        pipeline = self.create_pipeline()
+        pipeline.call_cnvs = True
+        pipeline.has_cnv_model = True
+        assert pipeline._needs_second_dag() is True
+
+        # `--call_cnvs` without a CNV model is rejected during validation
+        pipeline = self.create_pipeline()
+        pipeline.call_cnvs = True
+        assert pipeline._needs_second_dag() is False
+
+    # Optional caller validation
+
+    def test_validate_segdup_single_input(self):
+        """One short-read and one long-read alignment are accepted"""
+        pipeline = self.create_aligned_pipeline()
+        pipeline.segdup_caller = []
+
+        pipeline.validate_segdup()  # no SystemExit
+
+    def test_validate_segdup_two_sr_inputs(self):
+        """segdup-caller takes a single `--sr_aln` file"""
+        pipeline = self.create_aligned_pipeline()
+        pipeline.segdup_caller = []
+        pipeline.sr_aln = [self.mock_sr_bam, self.mock_sr_bam]
+
+        with pytest.raises(SystemExit) as excinfo:
+            pipeline.validate_segdup()
+        assert excinfo.value.code == 2
+
+    def test_validate_segdup_two_lr_inputs(self):
+        """segdup-caller takes a single `--lr_aln` file"""
+        pipeline = self.create_pipeline()
+        pipeline.segdup_caller = ["CFH"]
+        pipeline.lr_aln = [self.mock_lr_bam, self.mock_lr_bam]
+
+        with pytest.raises(SystemExit) as excinfo:
+            pipeline.validate_segdup()
+        assert excinfo.value.code == 2
+
+    def test_validate_segdup_skip_small_variants(self):
+        """segdup-caller reads the small-variant VCF"""
+        pipeline = self.create_pipeline()
+        pipeline.segdup_caller = []
+        pipeline.skip_small_variants = True
+
+        with pytest.raises(SystemExit) as excinfo:
+            pipeline.validate_segdup()
+        assert excinfo.value.code == 2
+
+    def test_validate_segdup_without_the_argument(self):
+        """Nothing is validated without `--segdup_caller`"""
+        pipeline = self.create_pipeline()
+        pipeline.skip_small_variants = True
+
+        pipeline.validate_segdup()  # no SystemExit
+
+    def test_validate_expansion_two_sr_inputs(self):
+        """ExpansionHunter takes a single `--sr_aln` file"""
+        pipeline = self.create_aligned_pipeline()
+        pipeline.expansion_catalog = self.mock_bed
+        pipeline.sr_aln = [self.mock_sr_bam, self.mock_sr_bam]
+
+        with pytest.raises(SystemExit) as excinfo:
+            pipeline.validate_expansion()
+        assert excinfo.value.code == 2
+
+    def test_validate_expansion_single_input(self):
+        """A single short-read alignment is accepted"""
+        pipeline = self.create_aligned_pipeline()
+        pipeline.expansion_catalog = self.mock_bed
+
+        pipeline.validate_expansion()  # no SystemExit
+
+    def test_validate_cnv_requires_sv_calling(self):
+        """indel2cnv reads the PangenomeSV output"""
+        pipeline = self.create_pipeline()
+        pipeline.call_cnvs = True
+        pipeline.has_cnv_model = True
+        pipeline.skip_svs = True
+
+        with pytest.raises(SystemExit) as excinfo:
+            pipeline.validate_cnv()
+        assert excinfo.value.code == 2
+
+    def test_validate_cnv_requires_a_cnv_model(self):
+        """`--call_cnvs` needs a bundle with a 'cnv.model' file"""
+        pipeline = self.create_pipeline()
+        pipeline.call_cnvs = True
+        pipeline.has_cnv_model = False
+
+        with pytest.raises(SystemExit) as excinfo:
+            pipeline.validate_cnv()
+        assert excinfo.value.code == 2
+
+    def test_validate_cnv_requires_a_par_bed(self):
+        # The mock reference is not a recognized build, so no packaged
+        # PAR BED file can be selected and validation stops the run
+        pipeline = self.create_pipeline()
+        pipeline.call_cnvs = True
+        pipeline.has_cnv_model = True
+
+        with pytest.raises(SystemExit) as excinfo:
+            pipeline.validate_cnv()
+        assert excinfo.value.code == 2
+
+    def test_validate_cnv_accepts_the_par_bed_argument(self):
+        par_bed = self.mock_dir / "par.bed"
+        par_bed.write_text("chrX\t10000\t2781479\n")
+
+        pipeline = self.create_pipeline()
+        pipeline.call_cnvs = True
+        pipeline.has_cnv_model = True
+        pipeline.par_bed = par_bed
+
+        pipeline.validate_cnv()  # no SystemExit
+
+        assert pipeline.cnv_par_bed == par_bed
+
+    def test_validate_cnv_needs_no_par_bed_without_call_cnvs(self):
+        pipeline = self.create_pipeline()
+        pipeline.has_cnv_model = True
+
+        pipeline.validate_cnv()  # no SystemExit
+
+        assert pipeline.cnv_par_bed is None
+
+    def test_validate_cnv_warns_without_a_bed(self):
+        """CNVscope runs across every contig without `--bed`"""
+        par_bed = self.mock_dir / "par.bed"
+        par_bed.write_text("chrX\t10000\t2781479\n")
+
+        pipeline = self.create_pipeline()
+        pipeline.call_cnvs = True
+        pipeline.has_cnv_model = True
+        pipeline.par_bed = par_bed
+        pipeline.bed = None
+
+        pipeline.validate_cnv()
+
+        assert any(
+            "No `--bed` supplied" in str(call.args[0])
+            for call in pipeline.logger.warning.call_args_list
+        )
+
+    def test_validate_cnv_does_not_warn_with_a_bed(self):
+        par_bed = self.mock_dir / "par.bed"
+        par_bed.write_text("chrX\t10000\t2781479\n")
+
+        pipeline = self.create_pipeline()
+        pipeline.call_cnvs = True
+        pipeline.has_cnv_model = True
+        pipeline.par_bed = par_bed
+
+        pipeline.validate_cnv()
+
+        pipeline.logger.warning.assert_not_called()
+
+    # Model bundle validation
+
+    def bundle_pipeline(self, monkeypatch, members):
+        """A pipeline whose bundle holds `members`"""
+        pipeline = self.create_pipeline()
+        pipeline.skip_pop_vcf_id_check = True
+
+        def fake_ar_load(path):
+            if str(path).endswith("bundle_info.json"):
+                return b'{"pipeline": "Hybrid pangenome"}'
+            return list(members)
+
+        monkeypatch.setattr(hybrid_pangenome, "ar_load", fake_ar_load)
+        return pipeline
+
+    BUNDLE_MEMBERS = [
+        "dnascope.model",
+        "longreadsv.model",
+        "minimap2.model",
+        "extract.model",
+        "bwa.model",
+    ]
+
+    def test_validate_bundle_sets_has_cnv_model(self, monkeypatch):
+        pipeline = self.bundle_pipeline(
+            monkeypatch, self.BUNDLE_MEMBERS + ["cnv.model"]
+        )
+        pipeline.validate_bundle()
+        assert pipeline.has_cnv_model is True
+
+        pipeline = self.bundle_pipeline(monkeypatch, self.BUNDLE_MEMBERS)
+        pipeline.validate_bundle()
+        assert pipeline.has_cnv_model is False
+
+    def test_validate_bundle_requires_the_diploid_model(self, monkeypatch):
+        """segdup-caller reads the bundle's `diploid_model`"""
+        pipeline = self.bundle_pipeline(monkeypatch, self.BUNDLE_MEMBERS)
+        pipeline.segdup_caller = []
+
+        with pytest.raises(SystemExit) as excinfo:
+            pipeline.validate_bundle()
+        assert excinfo.value.code == 2
+
+        pipeline = self.bundle_pipeline(
+            monkeypatch, self.BUNDLE_MEMBERS + ["diploid_model"]
+        )
+        pipeline.segdup_caller = []
+        pipeline.validate_bundle()  # no SystemExit
+
+    def test_validate_bundle_diploid_model_not_required_by_default(
+        self, monkeypatch
+    ):
+        pipeline = self.bundle_pipeline(monkeypatch, self.BUNDLE_MEMBERS)
+        pipeline.validate_bundle()  # no SystemExit
