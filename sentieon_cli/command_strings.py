@@ -1247,6 +1247,20 @@ def cmd_vg_paths_fasta(
     return Pipeline(Command(*cmd), file_output=output_fasta)
 
 
+def cmd_vg_paths_ref_fasta(
+    output_fasta: pathlib.Path,
+    gfa_file: pathlib.Path,
+    ref_name: str,
+) -> Pipeline:
+    """Extract a graph's reference paths as FASTA.
+
+    A slower stand-in for `pgutil gfa2fa`, for driver releases whose
+    `gfa2fa` handles only GRCh38 pangenomes.
+    """
+    cmd = ["vg", "paths", "-x", str(gfa_file), "-Q", ref_name, "-F"]
+    return Pipeline(Command(*cmd), file_output=output_fasta)
+
+
 def cmd_minimap2_lift(
     out_bam: pathlib.Path,
     sample_fasta: pathlib.Path,

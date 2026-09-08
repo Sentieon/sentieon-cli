@@ -87,6 +87,45 @@ def tmp():
     return tmp_dir
 
 
+def executable_version(cmd: str) -> Optional[packaging.version.Version]:
+    """The version reported by `<cmd> --version`.
+
+    Returns `None`, after logging the reason, when the command cannot be
+    run or its output is not a version.
+    """
+    cmd_list: List[str] = cmd.split()
+    cmd_list.append("--version")
+    try:
+        cmd_version_str = (
+            sp.check_output(cmd_list).decode("utf-8", "ignore").strip()
+        )
+    except (sp.CalledProcessError, OSError) as e:
+        logger.error(
+            "Error: could not determine the version of '%s': %s", cmd, e
+        )
+        return None
+    if cmd_list[0] == "sentieon":
+        cmd_version_str = cmd_version_str.split("-")[-1]
+    elif cmd_list[0] == "pbsv":
+        cmd_version_str = cmd_version_str.split(" ")[1]
+    elif cmd_list[0] == "hificnv":
+        cmd_version_str = cmd_version_str.split(" ")[1].split("-")[0]
+    else:
+        # handle, e.g. bcftools which outputs multiple lines.
+        cmd_version_str = (
+            cmd_version_str.split("\n")[0].split()[-1].split("-")[0]
+        )
+    try:
+        return packaging.version.Version(cmd_version_str)
+    except packaging.version.InvalidVersion:
+        logger.error(
+            "Error: could not parse the version of '%s': '%s'",
+            cmd,
+            cmd_version_str,
+        )
+        return None
+
+
 def check_version(
     cmd: str,
     version: Optional[packaging.version.Version],
@@ -101,28 +140,9 @@ def check_version(
     if version is None:
         return True
 
-    cmd_list.append("--version")
-    try:
-        cmd_version_str = (
-            sp.check_output(cmd_list).decode("utf-8", "ignore").strip()
-        )
-    except (sp.CalledProcessError, OSError) as e:
-        logger.error(
-            "Error: could not determine the version of '%s': %s", cmd, e
-        )
+    cmd_version = executable_version(cmd)
+    if cmd_version is None:
         return False
-    if cmd_list[0] == "sentieon":
-        cmd_version_str = cmd_version_str.split("-")[-1]
-    elif cmd_list[0] == "pbsv":
-        cmd_version_str = cmd_version_str.split(" ")[1]
-    elif cmd_list[0] == "hificnv":
-        cmd_version_str = cmd_version_str.split(" ")[1].split("-")[0]
-    else:
-        # handle, e.g. bcftools which outputs multiple lines.
-        cmd_version_str = (
-            cmd_version_str.split("\n")[0].split()[-1].split("-")[0]
-        )
-    cmd_version = packaging.version.Version(cmd_version_str)
     if cmd_version < version:
         logger.error(
             "Error: the pipeline requires %s version '%s' or later "

@@ -28,6 +28,7 @@ from .job import Job
 from .logging import get_logger
 from .shard import (
     GRCH38_CONTIGS,
+    detect_reference_build,
     determine_shards_from_fai,
     parse_fai,
     vcf_contigs,
@@ -52,6 +53,7 @@ from .stages.transfer import TransferConfig
 from .util import (
     __version__,
     check_kmc_patch,
+    executable_version,
     parse_rg_line,
     path_arg,
     require_versions,
@@ -67,6 +69,11 @@ HYBRID_PANGENOME_MIN_VERSIONS = {
     "samtools": packaging.version.Version("1.16"),
     "bedtools": None,
 }
+
+# The last driver release whose `pgutil gfa2fa` handles only GRCh38
+# pangenomes. Non-GRCh38 runs on it (and older) extract the graph's
+# reference paths with `vg paths` instead, which is much slower.
+PGUTIL_GFA2FA_GRCH38_ONLY_VERSION = packaging.version.Version("202503.04")
 
 # LongReadSV settings for finding graph update regions
 LONGREADSV_MIN_SV_SIZE = 20
@@ -207,6 +214,7 @@ class HybridPangenome(BasePangenome):
         self.pangenome_ref_name = "GRCh38"
         self.rgsm: Optional[str] = None
         self.extract_model_name = "extract.model"
+        self.gfa2fa_with_vg = False
         self.skip_metrics = False
         self.skip_multiqc = False
         self.sr_aln: List[pathlib.Path] = []
@@ -326,6 +334,10 @@ class HybridPangenome(BasePangenome):
                         mismatch_contigs_s,
                     )
                     sys.exit(2)
+
+        # After the version gate and the contig checks, so the tool choice
+        # is only logged for runs that proceed
+        self.resolve_gfa2fa_tool()
 
     def validate_sr_inputs(self) -> None:
         """Validate the short-read input arguments.
@@ -596,6 +608,49 @@ class HybridPangenome(BasePangenome):
                 )
                 sys.exit(2)
 
+    def resolve_gfa2fa_tool(self) -> None:
+        """Choose the tool that converts the updated graph to FASTA.
+
+        `pgutil gfa2fa` handles only GRCh38 pangenomes up to driver
+        release `PGUTIL_GFA2FA_GRCH38_ONLY_VERSION`; other references on
+        those releases fall back to `vg paths`. When the driver version
+        is unknown (`--skip_version_check`, or the probe fails) a
+        non-GRCh38 reference also uses `vg paths`, the tool that works
+        with every release.
+        """
+        self.reference_build = detect_reference_build(self.fai_data)
+        self.gfa2fa_with_vg = False
+        if self.reference_build == "hg38":
+            return
+
+        driver_version = (
+            None
+            if self.skip_version_check
+            else executable_version("sentieon driver")
+        )
+        if (
+            driver_version is not None
+            and driver_version > PGUTIL_GFA2FA_GRCH38_ONLY_VERSION
+        ):
+            return
+
+        self.gfa2fa_with_vg = True
+        if driver_version is None:
+            self.logger.info(
+                "The reference is not GRCh38 and the `sentieon driver` "
+                "version is not known. The pangenome FASTA will be "
+                "generated with `vg paths`, which works with every "
+                "driver release but is slower than `pgutil gfa2fa`."
+            )
+        else:
+            self.logger.info(
+                "The reference is not GRCh38 and `sentieon driver` "
+                "version '%s' supports only GRCh38 pangenomes in "
+                "`pgutil gfa2fa`. The pangenome FASTA will be generated "
+                "with `vg paths`, which is slower.",
+                driver_version,
+            )
+
     def configure(self) -> None:
         """Configure pipeline parameters"""
         pass
@@ -731,11 +786,8 @@ class HybridPangenome(BasePangenome):
         dag.add_job(update_job, {update_raw_job, sv_bed_job})
 
         # FASTA generation from the updated graph
-        gfa2fa_job = Job(
-            cmds.cmd_pgutil_gfa2fa(pangenome_fasta, ref_fai, pangenome_gfa),
-            "gfa2fa",
-            0,
-            task_name="pangenome",
+        gfa2fa_job = self.build_gfa2fa_job(
+            pangenome_fasta, pangenome_gfa, ref_fai
         )
         dag.add_job(gfa2fa_job, {update_job})
         faidx_job = Job(
@@ -1045,6 +1097,29 @@ class HybridPangenome(BasePangenome):
             name,
             self.cores,
             task_name="pangenome-update",
+        )
+
+    def build_gfa2fa_job(
+        self,
+        pangenome_fasta: pathlib.Path,
+        pangenome_gfa: pathlib.Path,
+        ref_fai: pathlib.Path,
+    ) -> Job:
+        """Generate the FASTA sequences of the updated graph"""
+        shell = (
+            cmds.cmd_vg_paths_ref_fasta(
+                pangenome_fasta, pangenome_gfa, self.pangenome_ref_name
+            )
+            if self.gfa2fa_with_vg
+            else cmds.cmd_pgutil_gfa2fa(
+                pangenome_fasta, ref_fai, pangenome_gfa
+            )
+        )
+        return Job(
+            shell,
+            "gfa2fa",
+            0,
+            task_name="pangenome",
         )
 
     def build_minimap2_lift_job(

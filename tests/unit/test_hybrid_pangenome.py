@@ -8,6 +8,7 @@ import sys
 import tempfile
 from unittest.mock import MagicMock
 
+import packaging.version
 import pytest
 
 # Add the parent directory to the path to import sentieon_cli
@@ -16,6 +17,7 @@ sys.path.insert(
 )
 
 from sentieon_cli import command_strings as cmds
+from sentieon_cli import hybrid_pangenome
 from sentieon_cli.hybrid_pangenome import HybridPangenome
 from sentieon_cli.command_strings import LONGREAD_SV_BED_AWK
 from sentieon_cli.dag import DAG
@@ -354,6 +356,102 @@ class TestHybridPangenome:
         faidx_cmd = str(self._get_job(all_jobs, "faidx").shell)
         assert "samtools faidx" in faidx_cmd
         assert "sample-pangenome.fa" in faidx_cmd
+
+    def test_gfa2fa_with_vg_paths(self):
+        """`vg paths` replaces `pgutil gfa2fa` when selected"""
+        pipeline = self.create_pipeline()
+        pipeline.gfa2fa_with_vg = True
+        dag = pipeline.build_dag()
+        _, all_jobs = self._get_all_job_names(dag)
+
+        gfa = self.mock_dir / "sample-pangenome.gfa"
+        fasta = self.mock_dir / "sample-pangenome.fa"
+        gfa2fa_cmd = str(self._get_job(all_jobs, "gfa2fa").shell)
+        assert gfa2fa_cmd == (f"vg paths -x {gfa} -Q GRCh38 -F >'{fasta}'")
+        assert "pgutil gfa2fa" not in gfa2fa_cmd
+
+        # The DAG shape is unchanged
+        assert self._get_dep_names(dag, all_jobs, "faidx") == {"gfa2fa"}
+        assert "faidx" in self._get_dep_names(dag, all_jobs, "mm2-lift")
+
+    def test_gfa2fa_with_vg_paths_chm13(self):
+        """`vg paths` extracts the paths of the configured reference"""
+        pipeline = self.create_pipeline()
+        pipeline.gfa2fa_with_vg = True
+        pipeline.pangenome_ref_name = "CHM13"
+        dag = pipeline.build_dag()
+        _, all_jobs = self._get_all_job_names(dag)
+
+        gfa2fa_cmd = str(self._get_job(all_jobs, "gfa2fa").shell)
+        assert "-Q CHM13" in gfa2fa_cmd
+
+    def test_resolve_gfa2fa_tool_hg38(self, monkeypatch):
+        """A GRCh38 reference keeps `pgutil gfa2fa`, unprobed"""
+        pipeline = self.create_pipeline()
+        pipeline.skip_version_check = False
+        pipeline.fai_data = {
+            "chr1": {"length": 248956422},
+            "chr2": {"length": 242193529},
+            "chrX": {"length": 156040895},
+        }
+        probe = MagicMock()
+        monkeypatch.setattr(hybrid_pangenome, "executable_version", probe)
+
+        pipeline.resolve_gfa2fa_tool()
+        assert pipeline.reference_build == "hg38"
+        assert pipeline.gfa2fa_with_vg is False
+        probe.assert_not_called()
+
+    def test_resolve_gfa2fa_tool_old_driver(self, monkeypatch):
+        """A non-GRCh38 reference on the GRCh38-only driver uses vg"""
+        pipeline = self.create_pipeline()
+        pipeline.skip_version_check = False
+        monkeypatch.setattr(
+            hybrid_pangenome,
+            "executable_version",
+            lambda cmd: packaging.version.Version("202503.04"),
+        )
+
+        pipeline.resolve_gfa2fa_tool()
+        assert pipeline.reference_build is None
+        assert pipeline.gfa2fa_with_vg is True
+
+    def test_resolve_gfa2fa_tool_new_driver(self, monkeypatch):
+        """A newer driver keeps `pgutil gfa2fa` for any reference"""
+        pipeline = self.create_pipeline()
+        pipeline.skip_version_check = False
+        monkeypatch.setattr(
+            hybrid_pangenome,
+            "executable_version",
+            lambda cmd: packaging.version.Version("202503.05"),
+        )
+
+        pipeline.resolve_gfa2fa_tool()
+        assert pipeline.gfa2fa_with_vg is False
+
+    def test_resolve_gfa2fa_tool_skip_version_check(self, monkeypatch):
+        """`--skip_version_check` does not probe and prefers vg"""
+        pipeline = self.create_pipeline()
+        pipeline.skip_version_check = True
+        probe = MagicMock()
+        monkeypatch.setattr(hybrid_pangenome, "executable_version", probe)
+
+        pipeline.resolve_gfa2fa_tool()
+        assert pipeline.gfa2fa_with_vg is True
+        probe.assert_not_called()
+
+    def test_resolve_gfa2fa_tool_probe_failure(self, monkeypatch):
+        """An unknown driver version prefers vg"""
+        pipeline = self.create_pipeline()
+        pipeline.skip_version_check = False
+        monkeypatch.setattr(
+            hybrid_pangenome,
+            "executable_version",
+            lambda cmd: None,
+        )
+
+        pipeline.resolve_gfa2fa_tool()
+        assert pipeline.gfa2fa_with_vg is True
 
     def test_calling_inputs_and_replace_rg(self):
         """PangenomeSV and DNAscope use the bwa, lifted, and long reads,
