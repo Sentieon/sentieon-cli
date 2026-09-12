@@ -30,7 +30,6 @@ from .shard import (
     detect_reference_build,
     determine_shards_from_fai,
     parse_fai,
-    vcf_contigs,
 )
 from .shell_pipeline import Command, Pipeline
 from .stages.alignment import (
@@ -61,7 +60,6 @@ from .util import (
     path_arg,
     require_versions,
     total_memory,
-    vcf_id,
 )
 
 HYBRID_PANGENOME_MIN_VERSIONS = {
@@ -244,10 +242,7 @@ class HybridPangenome(BasePangenome):
         # Before `validate_bundle`, which picks the bundle's
         # `extract.<pangenome_ref_name>.model` member by the resolved name
         self.resolve_pangenome_reference()
-        self.pop_vcf_contigs = {}
-        if self.pop_vcf:
-            self.pop_vcf_contigs = vcf_contigs(self.pop_vcf, self.dry_run)
-            self.logger.debug("VCF contigs are: %s", self.pop_vcf_contigs)
+        self.load_pop_vcf_header(self.pop_vcf)
 
         self.validate_bundle()
         self.validate_output_vcf()
@@ -302,7 +297,7 @@ class HybridPangenome(BasePangenome):
                 "across decoy and unplaced contigs."
             )
 
-        self.validate_grch38_contigs()
+        self.validate_pangenome_contig_lengths()
 
         # After the version gate and the contig checks, so the tool choice
         # is only logged for runs that proceed. The `reference_build` it
@@ -486,18 +481,8 @@ class HybridPangenome(BasePangenome):
         self.has_cnv_model = "cnv.model" in bundle_members
 
         bundle_vcf_id = bundle_info.get("SentieonVcfID")
-        if (
-            bundle_vcf_id
-            and not self.skip_pop_vcf_id_check
-            and not self.dry_run
-        ):
-            assert self.pop_vcf is not None
-            pop_vcf_id = vcf_id(self.pop_vcf)
-            if bundle_vcf_id != pop_vcf_id:
-                self.logger.error(
-                    "The ID of the `--pop_vcf` does not match the model bundle"
-                )
-                sys.exit(2)
+        if bundle_vcf_id and not self.skip_pop_vcf_id_check:
+            self.check_pop_vcf_id(bundle_vcf_id)
 
     def collect_readgroups(self) -> None:
         """Collect readgroup tags from the inputs"""

@@ -4,43 +4,14 @@ Sharding functionality for Sentieon pipelines
 
 import pathlib
 import re
-import subprocess as sp
-from typing import Dict, List, NamedTuple, Optional
+from typing import Dict, Iterable, List, NamedTuple, Optional
 
 from importlib.resources import files
 
 from .logging import get_logger
+from .util import VcfHeaderError, read_vcf_header
 
 logger = get_logger(__name__)
-
-
-GRCH38_CONTIGS: Dict[str, int] = {
-    "chr1": 248956422,
-    "chr2": 242193529,
-    "chr3": 198295559,
-    "chr4": 190214555,
-    "chr5": 181538259,
-    "chr6": 170805979,
-    "chr7": 159345973,
-    "chr8": 145138636,
-    "chr9": 138394717,
-    "chr10": 133797422,
-    "chr11": 135086622,
-    "chr12": 133275309,
-    "chr13": 114364328,
-    "chr14": 107043718,
-    "chr15": 101991189,
-    "chr16": 90338345,
-    "chr17": 83257441,
-    "chr18": 80373285,
-    "chr19": 58617616,
-    "chr20": 64444167,
-    "chr21": 46709983,
-    "chr22": 50818468,
-    "chrX": 156040895,
-    "chrY": 57227415,
-    "chrM": 16569,
-}
 
 
 # Signature contigs used to recognize the common human reference builds.
@@ -192,29 +163,16 @@ def determine_shards_from_fai(
     return shards
 
 
-def vcf_contigs(
-    in_vcf: pathlib.Path, dry_run=False
+def parse_vcf_contigs(
+    header: Iterable[str],
 ) -> Dict[str, Optional[int]]:
-    """Report the contigs in the input VCF"""
-    if dry_run:
-        return {
-            "chr1": 100,
-            "chr2": 200,
-            "chr3": 300,
-        }
+    """The ID and length of every `##contig` line of a VCF header.
+
+    A `##contig` line without a `length` maps to `None`.
+    """
     kvpat = re.compile(r'(.*?)=(".*?"|.*?)(?:,|$)')
-    cmd = ["bcftools", "view", "-h", str(in_vcf)]
-    p = sp.run(cmd, capture_output=True, text=True)
-    if p.returncode != 0:
-        logger.error(
-            "`%s` failed with return code %d: %s",
-            " ".join(cmd),
-            p.returncode,
-            p.stderr.strip(),
-        )
-        return {}
     contigs: Dict[str, Optional[int]] = {}
-    for line in p.stdout.split("\n"):
+    for line in header:
         if not line.startswith("##contig"):
             continue
         s = line.index("<")
@@ -224,3 +182,17 @@ def vcf_contigs(
         length: Optional[str] = d.get("length", None)
         contigs[ctg] = int(length) if length else None
     return contigs
+
+
+def vcf_contigs(in_vcf: pathlib.Path) -> Dict[str, Optional[int]]:
+    """Report the contigs in the input VCF.
+
+    Returns an empty dictionary, and logs why, when the header could not
+    be read.
+    """
+    try:
+        header = read_vcf_header(in_vcf)
+    except (VcfHeaderError, OSError) as err:
+        logger.error("%s", err)
+        return {}
+    return parse_vcf_contigs(header)

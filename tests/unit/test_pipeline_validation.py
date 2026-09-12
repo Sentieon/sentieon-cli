@@ -23,14 +23,8 @@ from sentieon_cli.pangenome_meta import (
     PangenomeReference,
 )
 from sentieon_cli.sentieon_pangenome import SentieonPangenome
-from sentieon_cli.shard import GRCH38_CONTIGS
-from sentieon_cli.util import set_bwt_max_mem
+from sentieon_cli.util import VcfHeaderError, set_bwt_max_mem
 from tests.utils.test_helpers import create_mock_args
-
-# A reference index that satisfies the GRCh38 contig-length check
-GRCH38_CONTIGS_AS_FAI = {
-    ctg: {"length": length} for ctg, length in GRCH38_CONTIGS.items()
-}
 
 
 class TestDNAscopePipelineValidation:
@@ -794,53 +788,222 @@ class TestResolvePangenomeReference:
 @pytest.mark.parametrize(
     "cls", PANGENOME_PIPELINES, ids=lambda c: c.__name__
 )
-class TestGrch38ContigChecks:
-    """The GRCh38 contig-length check only runs for GRCh38 pangenomes"""
+class TestPangenomeContigLengthChecks:
+    """`BasePangenome.validate_pangenome_contig_lengths` in both pipelines.
 
-    def _pipeline(self, cls, **attributes):
+    The pop VCF is compared with the reference FASTA rather than with a
+    table of GRCh38 lengths, so the check covers every backbone.
+    """
+
+    def _pipeline(self, cls, reference=GRCH38_REFERENCE, **attributes):
         pipeline = cls()
         pipeline.logger = MagicMock()
-        pipeline.pangenome_ref_name = "GRCh38"
-        pipeline.fai_data = dict(GRCH38_CONTIGS_AS_FAI)
-        pipeline.pop_vcf_contigs = dict(GRCH38_CONTIGS)
+        pipeline.pangenome_reference = reference
+        pipeline.pangenome_ref_name = (
+            None if reference is None else reference.ref_name
+        )
+        pipeline.fai_data = {
+            "chr1": {"length": 1000},
+            "chr2": {"length": 2000},
+        }
+        pipeline.pop_vcf_contigs = {"chr1": 1000, "chr2": 2000}
         for key, value in attributes.items():
             setattr(pipeline, key, value)
         return pipeline
 
-    def test_matching_contigs_pass(self, cls):
-        self._pipeline(cls).validate_grch38_contigs()
-
-    def test_a_wrong_contig_length_exits(self, cls):
+    def test_matching_lengths_pass(self, cls):
         pipeline = self._pipeline(cls)
-        pipeline.fai_data["chr1"] = {"length": 1}
+        pipeline.validate_pangenome_contig_lengths()
+        pipeline.logger.error.assert_not_called()
+        # The INFO line reports how many backbone contigs were compared
+        assert pipeline.logger.info.call_args[0][1] == 2
+
+    def test_a_mismatching_length_exits(self, cls):
+        pipeline = self._pipeline(cls)
+        pipeline.pop_vcf_contigs["chr2"] = 2001
         with pytest.raises(SystemExit) as excinfo:
-            pipeline.validate_grch38_contigs()
+            pipeline.validate_pangenome_contig_lengths()
         assert excinfo.value.code == 2
+        reported = pipeline.logger.error.call_args[0][-1]
+        assert "chr2" in reported
+        assert "2000" in reported and "2001" in reported
+
+    def test_a_contig_missing_from_the_pop_vcf_exits(self, cls):
+        pipeline = self._pipeline(cls)
+        del pipeline.pop_vcf_contigs["chr2"]
+        with pytest.raises(SystemExit) as excinfo:
+            pipeline.validate_pangenome_contig_lengths()
+        assert excinfo.value.code == 2
+        assert "absent" in pipeline.logger.error.call_args[0][-1]
+
+    def test_a_contig_without_a_length_exits(self, cls):
+        pipeline = self._pipeline(cls)
+        pipeline.pop_vcf_contigs["chr2"] = None
+        with pytest.raises(SystemExit) as excinfo:
+            pipeline.validate_pangenome_contig_lengths()
+        assert excinfo.value.code == 2
+        assert "no length" in pipeline.logger.error.call_args[0][-1]
 
     def test_skip_contig_checks_bypasses_the_check(self, cls):
         pipeline = self._pipeline(cls, skip_contig_checks=True)
-        pipeline.fai_data["chr1"] = {"length": 1}
-        pipeline.validate_grch38_contigs()
+        pipeline.pop_vcf_contigs["chr1"] = 1
+        pipeline.validate_pangenome_contig_lengths()
+        pipeline.logger.error.assert_not_called()
 
-    def test_a_non_grch38_pangenome_skips_the_check(self, cls):
-        """A CHM13 reference has different contig lengths"""
-        pipeline = self._pipeline(cls, pangenome_ref_name="CHM13")
-        pipeline.fai_data = {"chr1": {"length": 1}}
-        pipeline.pop_vcf_contigs = {}
-        pipeline.validate_grch38_contigs()
-        assert "GRCh38" in pipeline.logger.info.call_args[0][0]
-
-    def test_a_wrong_pop_vcf_contig_exits(self, cls):
-        pipeline = self._pipeline(cls)
-        pipeline.pop_vcf_contigs = {}
+    def test_the_name_check_flag_does_not_bypass_the_check(self, cls):
+        """Only `--skip_contig_checks` turns this check off"""
+        pipeline = self._pipeline(cls, skip_pangenome_name_checks=True)
+        pipeline.pop_vcf_contigs["chr1"] = 1
         with pytest.raises(SystemExit) as excinfo:
-            pipeline.validate_grch38_contigs()
+            pipeline.validate_pangenome_contig_lengths()
         assert excinfo.value.code == 2
 
-    def test_a_dry_run_skips_the_pop_vcf_check(self, cls):
+    def test_a_chm13_backbone_is_checked(self, cls):
+        """The old GRCh38-only check skipped every other backbone"""
+        pipeline = self._pipeline(cls, reference=CHM13_REFERENCE)
+        pipeline.pop_vcf_contigs["chr1"] = 248956422
+        with pytest.raises(SystemExit) as excinfo:
+            pipeline.validate_pangenome_contig_lengths()
+        assert excinfo.value.code == 2
+        assert "CHM13" in pipeline.logger.error.call_args[0]
+
+    def test_a_matching_chm13_backbone_passes(self, cls):
+        pipeline = self._pipeline(cls, reference=CHM13_REFERENCE)
+        pipeline.validate_pangenome_contig_lengths()
+        pipeline.logger.error.assert_not_called()
+
+    def test_empty_pop_vcf_contigs_warn_and_skip(self, cls):
+        pipeline = self._pipeline(cls, pop_vcf_contigs={})
+        pipeline.validate_pangenome_contig_lengths()
+        pipeline.logger.warning.assert_called()
+        pipeline.logger.error.assert_not_called()
+
+    def test_empty_pop_vcf_contigs_only_debug_in_a_dry_run(self, cls):
+        pipeline = self._pipeline(cls, pop_vcf_contigs={}, dry_run=True)
+        pipeline.validate_pangenome_contig_lengths()
+        pipeline.logger.warning.assert_not_called()
+        pipeline.logger.debug.assert_called()
+
+    def test_an_undetected_backbone_checks_the_shared_contigs(self, cls):
+        """Without graph metadata, the fai/pop VCF intersection is used"""
+        pipeline = self._pipeline(cls, reference=None)
+        pipeline.pangenome_ref_name = "GRCh38"
+        pipeline.pop_vcf_contigs = {"chr1": 1001, "chr3": 30}
+        with pytest.raises(SystemExit) as excinfo:
+            pipeline.validate_pangenome_contig_lengths()
+        assert excinfo.value.code == 2
+        reported = pipeline.logger.error.call_args[0][-1]
+        assert "chr1" in reported and "chr2" not in reported
+
+    def test_a_contig_missing_from_the_fai_is_not_reported_twice(self, cls):
+        """`check_pangenome_reference_fasta` already reported it"""
+        pipeline = self._pipeline(cls)
+        del pipeline.fai_data["chr2"]
+        del pipeline.pop_vcf_contigs["chr2"]
+        pipeline.validate_pangenome_contig_lengths()
+        pipeline.logger.error.assert_not_called()
+        assert pipeline.logger.info.call_args[0][1] == 1
+
+
+@pytest.mark.parametrize(
+    "cls", PANGENOME_PIPELINES, ids=lambda c: c.__name__
+)
+class TestPopVcfHeader:
+    """`load_pop_vcf_header` and `check_pop_vcf_id` in both pipelines"""
+
+    HEADER = (
+        "##fileformat=VCFv4.2\n"
+        "##SentieonVcfID=population-test-20260101\n"
+        "##contig=<ID=chr1,length=1000>\n"
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+    )
+
+    def _pipeline(self, cls, **attributes):
+        pipeline = cls()
+        pipeline.logger = MagicMock()
+        for key, value in attributes.items():
+            setattr(pipeline, key, value)
+        return pipeline
+
+    def _pop_vcf(self, tmp_path, text=None):
+        pop_vcf = tmp_path / "pop.vcf.gz"
+        pop_vcf.write_text(self.HEADER if text is None else text)
+        return pop_vcf
+
+    def test_the_header_and_the_contigs_are_parsed(self, cls, tmp_path):
+        pipeline = self._pipeline(cls)
+        pipeline.load_pop_vcf_header(self._pop_vcf(tmp_path))
+        assert pipeline.pop_vcf_contigs == {"chr1": 1000}
+        assert pipeline.pop_vcf_header is not None
+
+    def test_no_pop_vcf_leaves_both_empty(self, cls):
+        pipeline = self._pipeline(cls)
+        pipeline.load_pop_vcf_header(None)
+        assert pipeline.pop_vcf_contigs == {}
+        assert pipeline.pop_vcf_header is None
+
+    def test_a_dry_run_falls_back_on_an_unparsable_pop_vcf(
+        self, cls, tmp_path
+    ):
+        """Unit tests and dry runs supply placeholder files"""
         pipeline = self._pipeline(cls, dry_run=True)
-        pipeline.pop_vcf_contigs = {}
-        pipeline.validate_grch38_contigs()
+        placeholder = tmp_path / "placeholder.vcf.gz"
+        placeholder.touch()
+        pipeline.load_pop_vcf_header(placeholder)
+        assert pipeline.pop_vcf_header is None
+        assert pipeline.pop_vcf_contigs == {}
+        pipeline.logger.debug.assert_called()
+        pipeline.logger.error.assert_not_called()
+
+    def test_an_unparsable_pop_vcf_exits_outside_a_dry_run(
+        self, cls, tmp_path
+    ):
+        pipeline = self._pipeline(cls)
+        placeholder = tmp_path / "placeholder.vcf.gz"
+        placeholder.touch()
+        with pytest.raises(SystemExit) as excinfo:
+            pipeline.load_pop_vcf_header(placeholder)
+        assert excinfo.value.code == 2
+
+    def test_a_missing_pop_vcf_exits_outside_a_dry_run(self, cls, tmp_path):
+        pipeline = self._pipeline(cls)
+        with pytest.raises(SystemExit) as excinfo:
+            pipeline.load_pop_vcf_header(tmp_path / "absent.vcf.gz")
+        assert excinfo.value.code == 2
+
+    def test_a_matching_vcf_id_passes(self, cls, tmp_path):
+        pipeline = self._pipeline(cls)
+        pipeline.load_pop_vcf_header(self._pop_vcf(tmp_path))
+        pipeline.check_pop_vcf_id("population-test-20260101")
+        pipeline.logger.error.assert_not_called()
+
+    def test_a_mismatching_vcf_id_exits_in_a_dry_run(self, cls, tmp_path):
+        """The ID check no longer waits for a real run"""
+        pipeline = self._pipeline(cls, dry_run=True)
+        pipeline.load_pop_vcf_header(self._pop_vcf(tmp_path))
+        with pytest.raises(SystemExit) as excinfo:
+            pipeline.check_pop_vcf_id("population-other-20240101")
+        assert excinfo.value.code == 2
+
+    def test_an_unread_header_skips_the_vcf_id_check(self, cls):
+        pipeline = self._pipeline(cls, dry_run=True)
+        pipeline.check_pop_vcf_id("population-test-20260101")
+        pipeline.logger.error.assert_not_called()
+        pipeline.logger.debug.assert_called()
+
+    def test_an_unparsable_header_does_not_raise_in_a_dry_run(
+        self, cls, tmp_path
+    ):
+        """The whole fall-back path, as a `--dry_run` walks it"""
+        pipeline = self._pipeline(cls, dry_run=True)
+        with patch(
+            "sentieon_cli.base_pangenome.read_vcf_header",
+            side_effect=VcfHeaderError("no VCF header"),
+        ):
+            pipeline.load_pop_vcf_header(tmp_path / "pop.vcf.gz")
+        pipeline.check_pop_vcf_id("population-test-20260101")
+        pipeline.validate_pangenome_contig_lengths()
+        pipeline.logger.error.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -51,12 +51,10 @@ from .util import (
     path_arg,
     require_versions,
     total_memory,
-    vcf_id,
 )
 from .shard import (
     determine_shards_from_fai,
     parse_fai,
-    vcf_contigs,
 )
 
 SENT_PANGENOME_MIN_VERSIONS = {
@@ -175,10 +173,7 @@ class SentieonPangenome(BasePangenome):
         # Before `validate_bundle`, which picks the bundle's
         # `extract.<pangenome_ref_name>.model` member by the resolved name
         self.resolve_pangenome_reference()
-        self.pop_vcf_contigs = {}
-        if self.pop_vcf:
-            self.pop_vcf_contigs = vcf_contigs(self.pop_vcf, self.dry_run)
-            self.logger.debug("VCF contigs are: %s", self.pop_vcf_contigs)
+        self.load_pop_vcf_header(self.pop_vcf)
 
         self.validate_bundle()
         self.validate_fastq_rg()
@@ -227,7 +222,7 @@ class SentieonPangenome(BasePangenome):
                 "across decoy and unplaced contigs."
             )
 
-        self.validate_grch38_contigs()
+        self.validate_pangenome_contig_lengths()
 
     def validate_segdup(self) -> None:
         if self.segdup_caller is None:
@@ -284,7 +279,7 @@ class SentieonPangenome(BasePangenome):
         require_versions(CNV_MIN_VERSIONS, skip=self.skip_version_check)
 
     def validate_bundle(self) -> None:
-        pop_vcf = self.required(self.pop_vcf, "pop_vcf")
+        self.required(self.pop_vcf, "pop_vcf")
         gbz = self.required(self.gbz, "gbz")
         bundle_info_bytes = ar_load(
             str(self.model_bundle) + "/bundle_info.json"
@@ -357,13 +352,8 @@ class SentieonPangenome(BasePangenome):
                 "PangenomeSV will still run."
             )
 
-        if not self.skip_pop_vcf_id_check and not self.dry_run:
-            pop_vcf_id = vcf_id(pop_vcf)
-            if bundle_vcf_id != pop_vcf_id:
-                self.logger.error(
-                    "The ID of the `--pop_vcf` does not match the model bundle"
-                )
-                sys.exit(2)
+        if not self.skip_pop_vcf_id_check:
+            self.check_pop_vcf_id(bundle_vcf_id)
 
     def validate_fastq_rg(self) -> None:
         if len(self.r1_fastq) != len(self.r2_fastq):

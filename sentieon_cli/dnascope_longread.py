@@ -303,7 +303,7 @@ class DNAscopeLRPipeline(BasePipeline):
         self.fai_data = parse_fai(pathlib.Path(str(self.reference) + ".fai"))
         self.pop_vcf_contigs: Dict[str, Optional[int]] = {}
         if self.pop_vcf:
-            self.pop_vcf_contigs = vcf_contigs(self.pop_vcf, self.dry_run)
+            self.pop_vcf_contigs = vcf_contigs(self.pop_vcf)
             self.logger.debug("VCF contigs are: %s", self.pop_vcf_contigs)
         self.shards = determine_shards_from_fai(
             self.fai_data, 10 * 1000 * 1000

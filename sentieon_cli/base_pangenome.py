@@ -6,7 +6,7 @@ import argparse
 import copy
 import pathlib
 import sys
-from typing import Dict, Iterable, List, Optional, Sequence, Set
+from typing import Dict, Iterable, List, Optional, Sequence
 
 from . import command_strings as cmds
 from .dag import DAG
@@ -29,7 +29,7 @@ from .pangenome_meta import (
     read_hapl_header,
 )
 from .pipeline import BasePipeline
-from .shard import GRCH38_CONTIGS, detect_reference_build
+from .shard import detect_reference_build, parse_vcf_contigs
 from .stages.base import StageContext
 from .stages.cnv import PangenomeCNVResult, PangenomeCNVStage
 from .stages.expansion import ExpansionHunterResult, ExpansionHunterStage
@@ -42,7 +42,14 @@ from .stages.t1k import (
     T1KResult,
     T1KStage,
 )
-from .util import path_arg, require_versions, sample_sex_arg
+from .util import (
+    VcfHeaderError,
+    path_arg,
+    read_vcf_header,
+    require_versions,
+    sample_sex_arg,
+    vcf_id_from_header,
+)
 
 # The pangenome reference of the graphs the pipelines shipped with, used
 # when a graph's own metadata cannot be read
@@ -245,8 +252,11 @@ class BasePangenome(BasePipeline):
         self.pangenome_reference: Optional[PangenomeReference] = None
         self.skip_contig_checks = False
         self.skip_pangenome_name_checks = False
-        # Parsed by `validate`; declared here for the shared checks
+        # Parsed by `validate`; declared here for the shared checks.
+        # `pop_vcf_header` stays `None` when the `--pop_vcf` header
+        # could not be read, which only a dry run survives.
         self.fai_data: Dict[str, Dict[str, int]] = {}
+        self.pop_vcf_header: Optional[List[str]] = None
         self.pop_vcf_contigs: Dict[str, Optional[int]] = {}
         # Stashed by `build_dag` for the second, sex-aware DAG
         self.ploidy_json: Optional[pathlib.Path] = None
@@ -490,49 +500,144 @@ class BasePangenome(BasePipeline):
                 detected.n_paths,
             )
 
-    def validate_grch38_contigs(self) -> None:
-        """Check the reference and pop VCF contig lengths against GRCh38.
+    def load_pop_vcf_header(self, pop_vcf: Optional[pathlib.Path]) -> None:
+        """Parse the `--pop_vcf` header.
 
-        The lengths only describe GRCh38; other pangenome references are
-        covered by the reference FASTA checks in
-        `resolve_pangenome_reference` instead.
+        Sets `pop_vcf_header` and `pop_vcf_contigs`. The header is read
+        in dry runs too, so a dry run checks the pop VCF the way the real
+        run will. Dry runs (and the unit tests behind them) are given
+        placeholder files, so an unreadable header is only logged there
+        and leaves both attributes empty; a real run cannot continue
+        without the annotations the pop VCF carries.
+        """
+        self.pop_vcf_header = None
+        self.pop_vcf_contigs = {}
+        if pop_vcf is None:
+            return
+        try:
+            header = read_vcf_header(pop_vcf)
+        except (VcfHeaderError, OSError) as err:
+            if self.dry_run:
+                self.logger.debug(
+                    "Could not read the header of the `--pop_vcf` '%s': %s",
+                    pop_vcf,
+                    err,
+                )
+                return
+            self.logger.error(
+                "Could not read the header of the `--pop_vcf` '%s': %s",
+                pop_vcf,
+                err,
+            )
+            sys.exit(2)
+        self.pop_vcf_header = header
+        self.pop_vcf_contigs = parse_vcf_contigs(header)
+        self.logger.debug("VCF contigs are: %s", self.pop_vcf_contigs)
+
+    def check_pop_vcf_id(self, bundle_vcf_id: str) -> None:
+        """Compare the `--pop_vcf` ID with the one the bundle expects.
+
+        Called from `validate_bundle` in both pipelines, dry runs
+        included, so a dry run catches a pop VCF that does not belong
+        with the model bundle. Only a dry run reaches this without a
+        header: `load_pop_vcf_header` has already failed the real run.
+        """
+        if self.pop_vcf_header is None:
+            self.logger.debug(
+                "The `--pop_vcf` header could not be read, so its "
+                "SentieonVcfID was not compared with the model bundle's"
+            )
+            return
+        pop_vcf_id = vcf_id_from_header(self.pop_vcf_header)
+        if bundle_vcf_id != pop_vcf_id:
+            self.logger.error(
+                "The ID of the `--pop_vcf` does not match the model "
+                "bundle. The bundle expects '%s' and the `--pop_vcf` "
+                "carries '%s'.",
+                bundle_vcf_id,
+                pop_vcf_id,
+            )
+            sys.exit(2)
+
+    def validate_pangenome_contig_lengths(self) -> None:
+        """Check the `--pop_vcf` contig lengths against the reference.
+
+        `DNAModelApply` transfers the pop VCF's annotations by position,
+        so a pop VCF built against another reference silently annotates
+        the wrong sites. Every contig of the pangenome backbone
+        reference must therefore carry the same length in the
+        `--pop_vcf` header as in the reference FASTA index, whatever the
+        build: the lengths come from the two files rather than from a
+        table of GRCh38 lengths.
+
+        The backbone contigs come from the graph's own metadata. When
+        that could not be read -- a dry run with a placeholder graph, or
+        a real run driven by the hidden `--pangenome_ref_name` override
+        -- the check falls back to the contigs the index and the pop VCF
+        share. That fallback cannot report a contig missing from the pop
+        VCF, but it still catches a pop VCF from another build.
+
+        `--skip_pangenome_name_checks` does not downgrade this check;
+        only the hidden `--skip_contig_checks` flag bypasses it.
         """
         if self.skip_contig_checks:
             return
-        if self.pangenome_ref_name != DEFAULT_PANGENOME_REF_NAME:
-            self.logger.info(
-                "The pangenome reference is '%s', so the GRCh38 "
-                "contig-length check is skipped",
+
+        if not self.pop_vcf_contigs:
+            message = (
+                "No `--pop_vcf` contigs are known, so their lengths were "
+                "not checked against the reference FASTA"
+            )
+            if self.dry_run:
+                self.logger.debug(message)
+            else:
+                self.logger.warning(message)
+            return
+
+        if self.pangenome_reference is not None:
+            contigs: List[str] = list(self.pangenome_reference.contigs)
+        else:
+            contigs = sorted(set(self.fai_data) & set(self.pop_vcf_contigs))
+
+        checked = 0
+        mismatched: List[str] = []
+        for ctg in contigs:
+            fai_length = self.fai_data.get(ctg, {}).get("length")
+            if fai_length is None:
+                # `check_pangenome_reference_fasta` has already reported
+                # a backbone contig that the reference index is missing
+                continue
+            checked += 1
+            if ctg not in self.pop_vcf_contigs:
+                found = "absent"
+            else:
+                pop_length = self.pop_vcf_contigs[ctg]
+                if pop_length == fai_length:
+                    continue
+                found = "no length" if pop_length is None else str(pop_length)
+            mismatched.append(
+                f"{ctg} (reference {fai_length}, pop VCF {found})"
+            )
+
+        if mismatched:
+            self.logger.error(
+                "%d of the %d contig(s) of the pangenome reference '%s' do "
+                "not have the reference FASTA's length in the `--pop_vcf`: "
+                "%s. The `--pop_vcf` must be built against the same "
+                "reference as the `--gbz` pangenome.",
+                len(mismatched),
+                checked,
                 self.pangenome_ref_name,
-            )
-            return
-
-        # Check the fai file contigs
-        mismatch_contigs: Set[str] = set()
-        for ctg, length in GRCH38_CONTIGS.items():
-            fai_length = self.fai_data.get(ctg, {}).get("length", -1)
-            if length != fai_length:
-                mismatch_contigs.add(ctg)
-        if mismatch_contigs:
-            self.logger.error(
-                "Reference contigs with unexpected lengths: %s",
-                ", ".join(mismatch_contigs),
+                ", ".join(mismatched[:10]),
             )
             sys.exit(2)
 
-        # Check the pop VCF file contigs
-        if self.dry_run:
-            return
-        mismatch_contigs = set()
-        for ctg, length in GRCH38_CONTIGS.items():
-            if length != self.pop_vcf_contigs.get(ctg, -1):
-                mismatch_contigs.add(ctg)
-        if mismatch_contigs:
-            self.logger.error(
-                "Pop VCF contigs with unexpected lengths: %s",
-                ", ".join(mismatch_contigs),
-            )
-            sys.exit(2)
+        self.logger.info(
+            "The `--pop_vcf` and the reference FASTA agree on the length of "
+            "all %d contig(s) of the pangenome reference '%s'",
+            checked,
+            self.pangenome_ref_name,
+        )
 
     def ref_name(self) -> str:
         """The resolved pangenome reference name.
