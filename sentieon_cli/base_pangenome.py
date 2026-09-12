@@ -2,10 +2,11 @@
 A base class for pangenome pipelines
 """
 
+import argparse
 import copy
 import pathlib
 import sys
-from typing import Iterable, List, Optional, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence, Set
 
 from . import command_strings as cmds
 from .dag import DAG
@@ -21,7 +22,14 @@ from .driver import (
     WgsMetricsAlgo,
 )
 from .job import Job
+from .pangenome_meta import (
+    PangenomeMetadataError,
+    PangenomeReference,
+    detect_pangenome_reference,
+    read_hapl_header,
+)
 from .pipeline import BasePipeline
+from .shard import GRCH38_CONTIGS, detect_reference_build
 from .stages.base import StageContext
 from .stages.cnv import PangenomeCNVResult, PangenomeCNVStage
 from .stages.expansion import ExpansionHunterResult, ExpansionHunterStage
@@ -35,6 +43,19 @@ from .stages.t1k import (
     T1KStage,
 )
 from .util import path_arg, require_versions, sample_sex_arg
+
+# The pangenome reference of the graphs the pipelines shipped with, used
+# when a graph's own metadata cannot be read
+DEFAULT_PANGENOME_REF_NAME = "GRCh38"
+DEFAULT_PANGENOME_CONTIG_PREFIX = "GRCh38#0#"
+
+# The linear reference build that each pangenome backbone reference
+# implies. Contig names alone cannot tell the builds apart, as both name
+# their chromosomes chr1..chrM.
+PANGENOME_REFERENCE_BUILDS: Dict[str, str] = {
+    "GRCh38": "hg38",
+    "CHM13": "chm13",
+}
 
 
 class BasePangenome(BasePipeline):
@@ -173,6 +194,23 @@ class BasePangenome(BasePipeline):
                     f"passed to T1K (default: {DEFAULT_T1K_KIR_LOCUS})."
                 ),
             },
+            # Hidden arguments. The pangenome reference name and contig
+            # prefix are read from the `--gbz` file; these override the
+            # detected values for a graph the detection cannot handle.
+            "pangenome_ref_name": {
+                "help": argparse.SUPPRESS,
+            },
+            "pangenome_contig_prefix": {
+                "help": argparse.SUPPRESS,
+            },
+            "skip_contig_checks": {
+                "help": argparse.SUPPRESS,
+                "action": "store_true",
+            },
+            "skip_pangenome_name_checks": {
+                "help": argparse.SUPPRESS,
+                "action": "store_true",
+            },
         }
     )
 
@@ -199,6 +237,17 @@ class BasePangenome(BasePipeline):
         self.t1k_kir_coord: Optional[pathlib.Path] = None
         self.t1k_kir_locus: str = DEFAULT_T1K_KIR_LOCUS
         self.has_cnv_model = False
+        # The pangenome reference, resolved from the graph's metadata by
+        # `resolve_pangenome_reference`. The two arguments are hidden
+        # overrides, so they stay `None` unless the user supplies them.
+        self.pangenome_ref_name: Optional[str] = None
+        self.pangenome_contig_prefix: Optional[str] = None
+        self.pangenome_reference: Optional[PangenomeReference] = None
+        self.skip_contig_checks = False
+        self.skip_pangenome_name_checks = False
+        # Parsed by `validate`; declared here for the shared checks
+        self.fai_data: Dict[str, Dict[str, int]] = {}
+        self.pop_vcf_contigs: Dict[str, Optional[int]] = {}
         # Stashed by `build_dag` for the second, sex-aware DAG
         self.ploidy_json: Optional[pathlib.Path] = None
         self.sr_alignments: List[pathlib.Path] = []
@@ -229,6 +278,297 @@ class BasePangenome(BasePipeline):
             return
 
         require_versions(T1K_MIN_VERSIONS, skip=self.skip_version_check)
+
+    def resolve_pangenome_reference(self) -> None:
+        """Resolve the pangenome reference name and contig prefix.
+
+        Both values are read from the `--gbz` file's own metadata. The
+        hidden `--pangenome_ref_name` and `--pangenome_contig_prefix`
+        arguments override the detected values, and disagreeing with the
+        graph is an error unless `--skip_pangenome_name_checks` is set.
+
+        The check matters because a wrong reference name is silent: `vg
+        haplotypes --set-reference` only warns, writes a sampled graph
+        with no reference paths, `vg convert -Q` then writes a GFA with
+        no `SN:Z:` rGFA tags, and `pgutil lift` exits 0 with every read
+        unmapped.
+
+        Called from `validate` once the reference index is parsed and
+        before `validate_bundle`, which selects the model bundle's
+        `extract.<name>.model` member by the resolved name.
+        """
+        gbz = self.required(self.gbz, "gbz")
+        supplied_name = self.pangenome_ref_name
+        supplied_prefix = self.pangenome_contig_prefix
+
+        detected: Optional[PangenomeReference] = None
+        try:
+            detected = detect_pangenome_reference(gbz)
+        except (PangenomeMetadataError, OSError) as err:
+            self._undetected_pangenome_reference(gbz, err)
+
+        if detected is None:
+            self.pangenome_ref_name = (
+                supplied_name or DEFAULT_PANGENOME_REF_NAME
+            )
+            self.pangenome_contig_prefix = (
+                supplied_prefix or DEFAULT_PANGENOME_CONTIG_PREFIX
+            )
+        else:
+            self._check_pangenome_overrides(detected)
+            self.pangenome_reference = detected
+            self.pangenome_ref_name = supplied_name or detected.ref_name
+            self.pangenome_contig_prefix = (
+                supplied_prefix or detected.contig_prefix
+            )
+
+        self.logger.info(
+            "Using pangenome reference '%s' (contig prefix '%s')",
+            self.pangenome_ref_name,
+            self.pangenome_contig_prefix,
+        )
+
+        if detected is not None:
+            self.check_pangenome_reference_fasta(detected)
+        self.check_pangenome_hapl(detected)
+
+    def _undetected_pangenome_reference(
+        self, gbz: pathlib.Path, err: Exception
+    ) -> None:
+        """Handle a `--gbz` file whose reference could not be detected.
+
+        Dry runs (and the unit tests behind them) parse placeholder files,
+        so they fall back to the historical defaults. A real run needs
+        both overrides to continue without the detected values.
+        """
+        if self.dry_run:
+            self.logger.debug(
+                "Could not read the pangenome metadata of '%s': %s", gbz, err
+            )
+            return
+        if self.pangenome_ref_name and self.pangenome_contig_prefix:
+            self.logger.warning(
+                "Could not read the pangenome metadata of '%s': %s. Using "
+                "the supplied `--pangenome_ref_name` and "
+                "`--pangenome_contig_prefix`.",
+                gbz,
+                err,
+            )
+            return
+        self.logger.error(
+            "Could not read the pangenome metadata of '%s': %s. Supply "
+            "both `--pangenome_ref_name` and `--pangenome_contig_prefix` "
+            "to run without the detected values.",
+            gbz,
+            err,
+        )
+        sys.exit(2)
+
+    def _check_pangenome_overrides(self, detected: PangenomeReference) -> None:
+        """Compare the supplied overrides with the detected values"""
+        overrides = (
+            (
+                "--pangenome_ref_name",
+                self.pangenome_ref_name,
+                detected.ref_name,
+            ),
+            (
+                "--pangenome_contig_prefix",
+                self.pangenome_contig_prefix,
+                detected.contig_prefix,
+            ),
+        )
+        mismatched = False
+        for flag, supplied, found in overrides:
+            if supplied is None or supplied == found:
+                continue
+            mismatched = True
+            if self.skip_pangenome_name_checks:
+                self.logger.warning(
+                    "The supplied `%s` value '%s' does not match the value "
+                    "detected in the pangenome graph, '%s'. Using the "
+                    "supplied value.",
+                    flag,
+                    supplied,
+                    found,
+                )
+            else:
+                self.logger.error(
+                    "The supplied `%s` value '%s' does not match the value "
+                    "detected in the pangenome graph, '%s'. Drop the "
+                    "argument to use the detected value.",
+                    flag,
+                    supplied,
+                    found,
+                )
+        if mismatched and not self.skip_pangenome_name_checks:
+            sys.exit(2)
+
+    def _pangenome_check_failed(self, msg: str, *args: object) -> None:
+        """Fail a pangenome consistency check.
+
+        `--skip_pangenome_name_checks` downgrades every one of these
+        checks to a warning.
+        """
+        if self.skip_pangenome_name_checks:
+            self.logger.warning(msg, *args)
+            return
+        self.logger.error(msg, *args)
+        sys.exit(2)
+
+    def check_pangenome_reference_fasta(
+        self, detected: PangenomeReference
+    ) -> None:
+        """Check the reference FASTA against the pangenome backbone.
+
+        Every contig of the backbone reference must be in the reference
+        index, and the build the backbone implies must match the build
+        detected from the index. Both checks are needed: contig names
+        alone cannot tell GRCh38 from CHM13.
+        """
+        missing = [ctg for ctg in detected.contigs if ctg not in self.fai_data]
+        if missing:
+            self._pangenome_check_failed(
+                "%d contig(s) of the pangenome reference '%s' are missing "
+                "from the reference FASTA index: %s",
+                len(missing),
+                detected.ref_name,
+                ", ".join(missing[:10]),
+            )
+
+        expected_build = PANGENOME_REFERENCE_BUILDS.get(detected.ref_name)
+        fai_build = detect_reference_build(self.fai_data)
+        if expected_build is None or fai_build is None:
+            self.logger.info(
+                "The pangenome reference is '%s' and the reference FASTA "
+                "build is '%s'; the two were not compared",
+                detected.ref_name,
+                fai_build,
+            )
+            return
+        if expected_build != fai_build:
+            self._pangenome_check_failed(
+                "The pangenome reference '%s' expects the '%s' reference "
+                "build, but the `--reference` FASTA is '%s'",
+                detected.ref_name,
+                expected_build,
+                fai_build,
+            )
+
+    def check_pangenome_hapl(
+        self, detected: Optional[PangenomeReference]
+    ) -> None:
+        """Check the `--hapl` file against the `--gbz` graph.
+
+        A mismatched top-level chain count is only a warning: the count
+        equals the backbone's path count for every graph seen so far, but
+        it is a property of the snarl decomposition rather than a
+        guarantee.
+        """
+        hapl = self.required(self.hapl, "hapl")
+        try:
+            header = read_hapl_header(hapl)
+        except (PangenomeMetadataError, OSError) as err:
+            if self.dry_run:
+                self.logger.debug(
+                    "Could not read the haplotype file '%s': %s", hapl, err
+                )
+                return
+            self._pangenome_check_failed("%s", err)
+            return
+
+        if detected is None:
+            return
+        if header.top_level_chains != detected.n_paths:
+            self.logger.warning(
+                "The `--hapl` file '%s' has %d top-level chains, but the "
+                "pangenome reference '%s' has %d paths. The `--gbz` and "
+                "`--hapl` files may not be a matching pair.",
+                hapl,
+                header.top_level_chains,
+                detected.ref_name,
+                detected.n_paths,
+            )
+
+    def validate_grch38_contigs(self) -> None:
+        """Check the reference and pop VCF contig lengths against GRCh38.
+
+        The lengths only describe GRCh38; other pangenome references are
+        covered by the reference FASTA checks in
+        `resolve_pangenome_reference` instead.
+        """
+        if self.skip_contig_checks:
+            return
+        if self.pangenome_ref_name != DEFAULT_PANGENOME_REF_NAME:
+            self.logger.info(
+                "The pangenome reference is '%s', so the GRCh38 "
+                "contig-length check is skipped",
+                self.pangenome_ref_name,
+            )
+            return
+
+        # Check the fai file contigs
+        mismatch_contigs: Set[str] = set()
+        for ctg, length in GRCH38_CONTIGS.items():
+            fai_length = self.fai_data.get(ctg, {}).get("length", -1)
+            if length != fai_length:
+                mismatch_contigs.add(ctg)
+        if mismatch_contigs:
+            self.logger.error(
+                "Reference contigs with unexpected lengths: %s",
+                ", ".join(mismatch_contigs),
+            )
+            sys.exit(2)
+
+        # Check the pop VCF file contigs
+        if self.dry_run:
+            return
+        mismatch_contigs = set()
+        for ctg, length in GRCH38_CONTIGS.items():
+            if length != self.pop_vcf_contigs.get(ctg, -1):
+                mismatch_contigs.add(ctg)
+        if mismatch_contigs:
+            self.logger.error(
+                "Pop VCF contigs with unexpected lengths: %s",
+                ", ".join(mismatch_contigs),
+            )
+            sys.exit(2)
+
+    def ref_name(self) -> str:
+        """The resolved pangenome reference name.
+
+        `resolve_pangenome_reference` always sets it; this narrows the
+        optional attribute for the consumers of the graph.
+        """
+        return self.required(self.pangenome_ref_name, "pangenome_ref_name")
+
+    def contig_prefix(self) -> str:
+        """The resolved pangenome contig prefix"""
+        return self.required(
+            self.pangenome_contig_prefix, "pangenome_contig_prefix"
+        )
+
+    def build_check_gbz_job(self, sample_gbz: pathlib.Path) -> Job:
+        """Check the sampled pangenome before anything consumes it"""
+        return Job(
+            cmds.cmd_check_pangenome_gbz(
+                sample_gbz, self.ref_name(), self.contig_prefix()
+            ),
+            "check-sample-gbz",
+            1,
+            task_name="pangenome",
+        )
+
+    def build_check_gfa_job(self, sample_gfa: pathlib.Path) -> Job:
+        """Check the converted GFA before anything consumes it"""
+        return Job(
+            cmds.cmd_check_pangenome_gfa(
+                sample_gfa, self.ref_name(), self.contig_prefix()
+            ),
+            "check-sample-gfa",
+            1,
+            task_name="pangenome",
+        )
 
     def output_path(self, suffix: str) -> pathlib.Path:
         """A path next to the output VCF, with `.vcf.gz` replaced"""

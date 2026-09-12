@@ -8,7 +8,8 @@ import tempfile
 import sys
 import os
 import json
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 # Add the parent directory to the path so we can import sentieon_cli
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
@@ -16,8 +17,20 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 from sentieon_cli.dnascope import DNAscopePipeline
 from sentieon_cli.dnascope_longread import DNAscopeLRPipeline
 from sentieon_cli.dnascope_hybrid import DNAscopeHybridPipeline
+from sentieon_cli.hybrid_pangenome import HybridPangenome
+from sentieon_cli.pangenome_meta import (
+    PangenomeMetadataError,
+    PangenomeReference,
+)
+from sentieon_cli.sentieon_pangenome import SentieonPangenome
+from sentieon_cli.shard import GRCH38_CONTIGS
 from sentieon_cli.util import set_bwt_max_mem
 from tests.utils.test_helpers import create_mock_args
+
+# A reference index that satisfies the GRCh38 contig-length check
+GRCH38_CONTIGS_AS_FAI = {
+    ctg: {"length": length} for ctg, length in GRCH38_CONTIGS.items()
+}
 
 
 class TestDNAscopePipelineValidation:
@@ -512,6 +525,322 @@ class TestValidateBwaIndex:
         with pytest.raises(SystemExit) as excinfo:
             self.pipeline.validate_bwa_index()
         assert excinfo.value.code == 2
+
+
+PANGENOME_PIPELINES = [SentieonPangenome, HybridPangenome]
+
+GRCH38_REFERENCE = PangenomeReference(
+    ref_name="GRCh38",
+    contig_prefix="GRCh38#0#",
+    contigs=["chr1", "chr2"],
+    reference_samples=["GRCh38", "CHM13"],
+    n_paths=2,
+)
+CHM13_REFERENCE = PangenomeReference(
+    ref_name="CHM13",
+    contig_prefix="CHM13#0#",
+    contigs=["chr1", "chr2"],
+    reference_samples=["CHM13", "GRCh38"],
+    n_paths=2,
+)
+
+
+@pytest.mark.parametrize(
+    "cls", PANGENOME_PIPELINES, ids=lambda c: c.__name__
+)
+class TestResolvePangenomeReference:
+    """`BasePangenome.resolve_pangenome_reference` in both pipelines.
+
+    The reference name and contig prefix come from the graph's own
+    metadata, so a graph built against the wrong reference cannot reach
+    `vg haplotypes --set-reference`, which would silently drop every
+    reference path.
+    """
+
+    def _pipeline(self, cls, tmp_path, **attributes):
+        pipeline = cls()
+        pipeline.logger = MagicMock()
+        pipeline.gbz = tmp_path / "graph.gbz"
+        pipeline.hapl = tmp_path / "graph.hapl"
+        pipeline.gbz.touch()
+        pipeline.hapl.touch()
+        pipeline.fai_data = {"chr1": {"length": 10}, "chr2": {"length": 10}}
+        for key, value in attributes.items():
+            setattr(pipeline, key, value)
+        return pipeline
+
+    def _detect(self, reference):
+        return patch(
+            "sentieon_cli.base_pangenome.detect_pangenome_reference",
+            return_value=reference,
+        )
+
+    def _build(self, build):
+        return patch(
+            "sentieon_cli.base_pangenome.detect_reference_build",
+            return_value=build,
+        )
+
+    def _hapl(self, chains=2):
+        return patch(
+            "sentieon_cli.base_pangenome.read_hapl_header",
+            return_value=SimpleNamespace(top_level_chains=chains),
+        )
+
+    def test_the_detected_reference_populates_both_attributes(
+        self, cls, tmp_path
+    ):
+        pipeline = self._pipeline(cls, tmp_path)
+        with self._detect(GRCH38_REFERENCE), self._build("hg38"), (
+            self._hapl()
+        ):
+            pipeline.resolve_pangenome_reference()
+        assert pipeline.pangenome_ref_name == "GRCh38"
+        assert pipeline.pangenome_contig_prefix == "GRCh38#0#"
+        assert pipeline.pangenome_reference is GRCH38_REFERENCE
+
+    def test_a_chm13_graph_resolves_to_the_chm13_prefix(
+        self, cls, tmp_path
+    ):
+        pipeline = self._pipeline(cls, tmp_path)
+        with self._detect(CHM13_REFERENCE), self._build("chm13"), (
+            self._hapl()
+        ):
+            pipeline.resolve_pangenome_reference()
+        assert pipeline.pangenome_ref_name == "CHM13"
+        assert pipeline.pangenome_contig_prefix == "CHM13#0#"
+
+    def test_a_matching_override_is_accepted(self, cls, tmp_path):
+        pipeline = self._pipeline(
+            cls,
+            tmp_path,
+            pangenome_ref_name="GRCh38",
+            pangenome_contig_prefix="GRCh38#0#",
+        )
+        with self._detect(GRCH38_REFERENCE), self._build("hg38"), (
+            self._hapl()
+        ):
+            pipeline.resolve_pangenome_reference()
+        assert pipeline.pangenome_ref_name == "GRCh38"
+
+    def test_a_mismatched_name_override_exits(self, cls, tmp_path):
+        pipeline = self._pipeline(cls, tmp_path, pangenome_ref_name="hg38")
+        with self._detect(GRCH38_REFERENCE), self._build("hg38"), (
+            self._hapl()
+        ):
+            with pytest.raises(SystemExit) as excinfo:
+                pipeline.resolve_pangenome_reference()
+        assert excinfo.value.code == 2
+        pipeline.logger.error.assert_called()
+
+    def test_a_mismatched_prefix_override_exits(self, cls, tmp_path):
+        pipeline = self._pipeline(
+            cls, tmp_path, pangenome_contig_prefix="GRCh38#1#"
+        )
+        with self._detect(GRCH38_REFERENCE), self._build("hg38"), (
+            self._hapl()
+        ):
+            with pytest.raises(SystemExit) as excinfo:
+                pipeline.resolve_pangenome_reference()
+        assert excinfo.value.code == 2
+
+    def test_the_skip_flag_honors_a_mismatched_override(
+        self, cls, tmp_path
+    ):
+        pipeline = self._pipeline(
+            cls,
+            tmp_path,
+            pangenome_ref_name="hg38",
+            skip_pangenome_name_checks=True,
+        )
+        with self._detect(GRCH38_REFERENCE), self._build("hg38"), (
+            self._hapl()
+        ):
+            pipeline.resolve_pangenome_reference()
+        assert pipeline.pangenome_ref_name == "hg38"
+        assert pipeline.pangenome_contig_prefix == "GRCh38#0#"
+        pipeline.logger.warning.assert_called()
+        pipeline.logger.error.assert_not_called()
+
+    def test_a_contig_missing_from_the_fai_exits(self, cls, tmp_path):
+        pipeline = self._pipeline(cls, tmp_path)
+        pipeline.fai_data = {"chr1": {"length": 10}}
+        with self._detect(GRCH38_REFERENCE), self._build("hg38"), (
+            self._hapl()
+        ):
+            with pytest.raises(SystemExit) as excinfo:
+                pipeline.resolve_pangenome_reference()
+        assert excinfo.value.code == 2
+        message = pipeline.logger.error.call_args[0]
+        assert "missing from the reference FASTA index" in message[0]
+        assert "chr2" in message
+
+    def test_the_skip_flag_downgrades_a_missing_contig(self, cls, tmp_path):
+        pipeline = self._pipeline(
+            cls, tmp_path, skip_pangenome_name_checks=True
+        )
+        pipeline.fai_data = {"chr1": {"length": 10}}
+        with self._detect(GRCH38_REFERENCE), self._build("hg38"), (
+            self._hapl()
+        ):
+            pipeline.resolve_pangenome_reference()
+        pipeline.logger.warning.assert_called()
+
+    def test_a_reference_build_mismatch_exits(self, cls, tmp_path):
+        """A CHM13 graph with an hg38 reference FASTA.
+
+        Contig names alone cannot catch this: both builds name their
+        chromosomes chr1..chrM.
+        """
+        pipeline = self._pipeline(cls, tmp_path)
+        with self._detect(CHM13_REFERENCE), self._build("hg38"), (
+            self._hapl()
+        ):
+            with pytest.raises(SystemExit) as excinfo:
+                pipeline.resolve_pangenome_reference()
+        assert excinfo.value.code == 2
+        assert "reference build" in pipeline.logger.error.call_args[0][0]
+
+    def test_an_unknown_reference_build_is_only_logged(self, cls, tmp_path):
+        pipeline = self._pipeline(cls, tmp_path)
+        with self._detect(GRCH38_REFERENCE), self._build(None), (
+            self._hapl()
+        ):
+            pipeline.resolve_pangenome_reference()
+        assert pipeline.pangenome_ref_name == "GRCh38"
+        pipeline.logger.error.assert_not_called()
+
+    def test_a_hapl_chain_count_mismatch_only_warns(self, cls, tmp_path):
+        pipeline = self._pipeline(cls, tmp_path)
+        with self._detect(GRCH38_REFERENCE), self._build("hg38"), (
+            self._hapl(chains=195)
+        ):
+            pipeline.resolve_pangenome_reference()
+        assert pipeline.pangenome_ref_name == "GRCh38"
+        pipeline.logger.warning.assert_called()
+
+    def test_an_unreadable_hapl_exits(self, cls, tmp_path):
+        pipeline = self._pipeline(cls, tmp_path)
+        hapl_error = PangenomeMetadataError("not a vg haplotypes file")
+        with self._detect(GRCH38_REFERENCE), self._build("hg38"), patch(
+            "sentieon_cli.base_pangenome.read_hapl_header",
+            side_effect=hapl_error,
+        ):
+            with pytest.raises(SystemExit) as excinfo:
+                pipeline.resolve_pangenome_reference()
+        assert excinfo.value.code == 2
+
+    def test_a_dry_run_falls_back_to_the_defaults(self, cls, tmp_path):
+        """Mock graph files cannot be parsed, but dry runs still work"""
+        pipeline = self._pipeline(cls, tmp_path, dry_run=True)
+        error = PangenomeMetadataError("not a GBZ pangenome file")
+        with patch(
+            "sentieon_cli.base_pangenome.detect_pangenome_reference",
+            side_effect=error,
+        ):
+            pipeline.resolve_pangenome_reference()
+        assert pipeline.pangenome_ref_name == "GRCh38"
+        assert pipeline.pangenome_contig_prefix == "GRCh38#0#"
+        assert pipeline.pangenome_reference is None
+
+    def test_a_dry_run_keeps_the_overrides(self, cls, tmp_path):
+        pipeline = self._pipeline(
+            cls,
+            tmp_path,
+            dry_run=True,
+            pangenome_ref_name="CHM13",
+            pangenome_contig_prefix="CHM13#0#",
+        )
+        error = PangenomeMetadataError("not a GBZ pangenome file")
+        with patch(
+            "sentieon_cli.base_pangenome.detect_pangenome_reference",
+            side_effect=error,
+        ):
+            pipeline.resolve_pangenome_reference()
+        assert pipeline.pangenome_ref_name == "CHM13"
+        assert pipeline.pangenome_contig_prefix == "CHM13#0#"
+
+    def test_an_unreadable_graph_exits_outside_a_dry_run(
+        self, cls, tmp_path
+    ):
+        pipeline = self._pipeline(cls, tmp_path)
+        error = PangenomeMetadataError("not a GBZ pangenome file")
+        with patch(
+            "sentieon_cli.base_pangenome.detect_pangenome_reference",
+            side_effect=error,
+        ):
+            with pytest.raises(SystemExit) as excinfo:
+                pipeline.resolve_pangenome_reference()
+        assert excinfo.value.code == 2
+
+    def test_both_overrides_survive_an_unreadable_graph(self, cls, tmp_path):
+        pipeline = self._pipeline(
+            cls,
+            tmp_path,
+            pangenome_ref_name="CHM13",
+            pangenome_contig_prefix="CHM13#0#",
+        )
+        error = PangenomeMetadataError("not a GBZ pangenome file")
+        with patch(
+            "sentieon_cli.base_pangenome.detect_pangenome_reference",
+            side_effect=error,
+        ), self._hapl():
+            pipeline.resolve_pangenome_reference()
+        assert pipeline.pangenome_ref_name == "CHM13"
+        assert pipeline.pangenome_contig_prefix == "CHM13#0#"
+        pipeline.logger.warning.assert_called()
+
+
+@pytest.mark.parametrize(
+    "cls", PANGENOME_PIPELINES, ids=lambda c: c.__name__
+)
+class TestGrch38ContigChecks:
+    """The GRCh38 contig-length check only runs for GRCh38 pangenomes"""
+
+    def _pipeline(self, cls, **attributes):
+        pipeline = cls()
+        pipeline.logger = MagicMock()
+        pipeline.pangenome_ref_name = "GRCh38"
+        pipeline.fai_data = dict(GRCH38_CONTIGS_AS_FAI)
+        pipeline.pop_vcf_contigs = dict(GRCH38_CONTIGS)
+        for key, value in attributes.items():
+            setattr(pipeline, key, value)
+        return pipeline
+
+    def test_matching_contigs_pass(self, cls):
+        self._pipeline(cls).validate_grch38_contigs()
+
+    def test_a_wrong_contig_length_exits(self, cls):
+        pipeline = self._pipeline(cls)
+        pipeline.fai_data["chr1"] = {"length": 1}
+        with pytest.raises(SystemExit) as excinfo:
+            pipeline.validate_grch38_contigs()
+        assert excinfo.value.code == 2
+
+    def test_skip_contig_checks_bypasses_the_check(self, cls):
+        pipeline = self._pipeline(cls, skip_contig_checks=True)
+        pipeline.fai_data["chr1"] = {"length": 1}
+        pipeline.validate_grch38_contigs()
+
+    def test_a_non_grch38_pangenome_skips_the_check(self, cls):
+        """A CHM13 reference has different contig lengths"""
+        pipeline = self._pipeline(cls, pangenome_ref_name="CHM13")
+        pipeline.fai_data = {"chr1": {"length": 1}}
+        pipeline.pop_vcf_contigs = {}
+        pipeline.validate_grch38_contigs()
+        assert "GRCh38" in pipeline.logger.info.call_args[0][0]
+
+    def test_a_wrong_pop_vcf_contig_exits(self, cls):
+        pipeline = self._pipeline(cls)
+        pipeline.pop_vcf_contigs = {}
+        with pytest.raises(SystemExit) as excinfo:
+            pipeline.validate_grch38_contigs()
+        assert excinfo.value.code == 2
+
+    def test_a_dry_run_skips_the_pop_vcf_check(self, cls):
+        pipeline = self._pipeline(cls, dry_run=True)
+        pipeline.pop_vcf_contigs = {}
+        pipeline.validate_grch38_contigs()
 
 
 if __name__ == "__main__":

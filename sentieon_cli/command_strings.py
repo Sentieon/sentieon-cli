@@ -319,6 +319,63 @@ def cmd_pyexec_sad_lad_update(
     return Pipeline(Command(*cmd))
 
 
+PANGENOME_META_MODULE = "sentieon_cli.pangenome_meta"
+
+# `sentieon_cli/__init__.py` imports every pipeline, so `pangenome_meta` is
+# already in `sys.modules` when `-m` re-executes it as `__main__`. The
+# duplicate module is harmless -- the script holds no state -- but runpy
+# warns about it on the stderr of every check job, so runpy's own warnings
+# are silenced rather than left to clutter the job logs.
+PANGENOME_META_WARNING_FILTER = "ignore::RuntimeWarning:runpy"
+
+
+def cmd_pangenome_meta(
+    subcommand: str,
+    input_flag: str,
+    input_file: pathlib.Path,
+    reference_name: str,
+    contig_prefix: str,
+) -> Pipeline:
+    """Run a `sentieon_cli.pangenome_meta` check on a pangenome file"""
+    cmd = [
+        sys.executable,
+        "-W",
+        PANGENOME_META_WARNING_FILTER,
+        "-m",
+        PANGENOME_META_MODULE,
+        subcommand,
+        input_flag,
+        str(input_file),
+        "--reference_name",
+        reference_name,
+        "--contig_prefix",
+        contig_prefix,
+    ]
+    return Pipeline(Command(*cmd))
+
+
+def cmd_check_pangenome_gbz(
+    gbz: pathlib.Path,
+    reference_name: str,
+    contig_prefix: str,
+) -> Pipeline:
+    """Check that a sampled pangenome kept its reference paths"""
+    return cmd_pangenome_meta(
+        "check-gbz", "--gbz", gbz, reference_name, contig_prefix
+    )
+
+
+def cmd_check_pangenome_gfa(
+    gfa: pathlib.Path,
+    reference_name: str,
+    contig_prefix: str,
+) -> Pipeline:
+    """Check that a pangenome GFA carries the reference's rGFA tags"""
+    return cmd_pangenome_meta(
+        "check-gfa", "--gfa", gfa, reference_name, contig_prefix
+    )
+
+
 def cmd_pyexec_indel2cnv(
     out_vcf: pathlib.Path,
     in_vcf: pathlib.Path,
@@ -1275,8 +1332,8 @@ def cmd_bwa_extract(
 def cmd_vg_convert_gfa(
     output_gfa: pathlib.Path,
     input_gbz: pathlib.Path,
-    reference_name="GRCh38",
-    threads=1,
+    reference_name: str = "GRCh38",
+    threads: int = 1,
 ) -> Pipeline:
     """Convert GBZ to GFA"""
     cmd = [

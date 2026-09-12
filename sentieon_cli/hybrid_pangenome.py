@@ -27,7 +27,6 @@ from .driver import (
 from .job import Job
 from .logging import get_logger
 from .shard import (
-    GRCH38_CONTIGS,
     detect_reference_build,
     determine_shards_from_fai,
     parse_fai,
@@ -151,16 +150,6 @@ class HybridPangenome(BasePangenome):
                 ),
                 "type": path_arg(exists=True, is_file=True),
             },
-            "pangenome_contig_prefix": {
-                "default": "GRCh38#0#",
-                "help": (
-                    "Prefix to strip from pangenome contig names (GRCh38#0#)"
-                ),
-            },
-            "pangenome_ref_name": {
-                "default": "GRCh38",
-                "help": "Reference name in the pangenome (GRCh38).",
-            },
             "rgsm": {
                 "help": (
                     "Overwrite the SM tag of the input readgroups for "
@@ -185,15 +174,7 @@ class HybridPangenome(BasePangenome):
                 "type": path_arg(exists=True, is_file=True),
             },
             # Hidden arguments
-            "skip_contig_checks": {
-                "help": argparse.SUPPRESS,
-                "action": "store_true",
-            },
             "skip_model_apply": {
-                "help": argparse.SUPPRESS,
-                "action": "store_true",
-            },
-            "skip_pangenome_name_checks": {
                 "help": argparse.SUPPRESS,
                 "action": "store_true",
             },
@@ -223,8 +204,6 @@ class HybridPangenome(BasePangenome):
         self.call_cnvs = False
         self.lr_align_input = False
         self.lr_input_ref: Optional[pathlib.Path] = None
-        self.pangenome_contig_prefix = "GRCh38#0#"
-        self.pangenome_ref_name = "GRCh38"
         self.rgsm: Optional[str] = None
         self.extract_model_name = "extract.model"
         self.gfa2fa_with_vg = False
@@ -235,9 +214,7 @@ class HybridPangenome(BasePangenome):
         self.sr_readgroups: List[List[Dict[str, str]]] = []
         self.lr_readgroups: List[List[Dict[str, str]]] = []
         self.sample_sm = ""
-        self.skip_contig_checks = False
         self.skip_model_apply = False
-        self.skip_pangenome_name_checks = False
         self.skip_pop_vcf_id_check = False
         self.skip_small_variants = False
         self.skip_svs = False
@@ -264,7 +241,10 @@ class HybridPangenome(BasePangenome):
         self.shards = determine_shards_from_fai(
             self.fai_data, 10 * 1000 * 1000
         )
-        self.pop_vcf_contigs: Dict[str, Optional[int]] = {}
+        # Before `validate_bundle`, which picks the bundle's
+        # `extract.<pangenome_ref_name>.model` member by the resolved name
+        self.resolve_pangenome_reference()
+        self.pop_vcf_contigs = {}
         if self.pop_vcf:
             self.pop_vcf_contigs = vcf_contigs(self.pop_vcf, self.dry_run)
             self.logger.debug("VCF contigs are: %s", self.pop_vcf_contigs)
@@ -322,51 +302,7 @@ class HybridPangenome(BasePangenome):
                 "across decoy and unplaced contigs."
             )
 
-        if not self.skip_pangenome_name_checks:
-            if not str(self.gbz).endswith("grch38.gbz"):
-                self.logger.error(
-                    "The `--gbz` file does not have the expected suffix. "
-                    "Check that you are using a GRCh38 pangenome."
-                )
-                sys.exit(2)
-
-            if not str(self.hapl).endswith("grch38.hapl"):
-                self.logger.error(
-                    "The `--hapl` file does not have the expected suffix. "
-                    "Check that you are using a GRCh38 pangenome."
-                )
-                sys.exit(2)
-
-        if not self.skip_contig_checks:
-            # Check the fai file contigs
-            mismatch_contigs: Set[str] = set()
-            for ctg, length in GRCH38_CONTIGS.items():
-                d = self.fai_data.get(ctg, {})
-                fai_length = d.get("length", -1)
-                if length != fai_length:
-                    mismatch_contigs.add(ctg)
-            if mismatch_contigs:
-                mismatch_contigs_s = ", ".join(mismatch_contigs)
-                self.logger.error(
-                    "Reference contigs with unexpected lengths: %s",
-                    mismatch_contigs_s,
-                )
-                sys.exit(2)
-
-            # Check the pop VCF file contigs
-            if not self.dry_run:
-                mismatch_contigs = set()
-                for ctg, length in GRCH38_CONTIGS.items():
-                    vcf_length = self.pop_vcf_contigs.get(ctg, -1)
-                    if length != vcf_length:
-                        mismatch_contigs.add(ctg)
-                if mismatch_contigs:
-                    mismatch_contigs_s = ", ".join(mismatch_contigs)
-                    self.logger.error(
-                        "Pop VCF contigs with unexpected lengths: %s",
-                        mismatch_contigs_s,
-                    )
-                    sys.exit(2)
+        self.validate_grch38_contigs()
 
         # After the version gate and the contig checks, so the tool choice
         # is only logged for runs that proceed. The `reference_build` it
@@ -860,9 +796,19 @@ class HybridPangenome(BasePangenome):
         haplotypes_job = self.build_haplotypes_job(sample_pangenome, kmer_file)
         dag.add_job(haplotypes_job, haplotype_dependencies)
 
+        # Confirm the sampled pangenome kept its reference paths before
+        # anything consumes it
+        check_gbz_job = self.build_check_gbz_job(sample_pangenome)
+        dag.add_job(check_gbz_job, {haplotypes_job})
+
         # convert the sample pangenome to GFA
         gfa_job = self.build_gfa_job(hap_raw_gfa, sample_pangenome)
-        dag.add_job(gfa_job, {haplotypes_job})
+        dag.add_job(gfa_job, {check_gbz_job})
+
+        # Confirm the GFA carries the reference's rGFA tags, without which
+        # `pgutil lift` leaves every read unmapped
+        check_gfa_job = self.build_check_gfa_job(hap_raw_gfa)
+        dag.add_job(check_gfa_job, {gfa_job})
 
         # Graph update without the SV BED
         update_raw_job = self.build_graph_update_job(
@@ -871,7 +817,7 @@ class HybridPangenome(BasePangenome):
             calling_lr,
             name="graph-update-raw",
         )
-        dag.add_job(update_raw_job, {gfa_job} | realign_jobs)
+        dag.add_job(update_raw_job, {check_gfa_job} | realign_jobs)
 
         # Call SVs from the long reads and collect graph update regions
         longreadsv_result = LongReadSVStage(
@@ -1224,7 +1170,7 @@ class HybridPangenome(BasePangenome):
                     "--include-reference",
                     "--diploid-sampling",
                     "--set-reference",
-                    self.pangenome_ref_name,
+                    self.ref_name(),
                 ],
             ),
             "vg-haplotypes",
@@ -1242,7 +1188,7 @@ class HybridPangenome(BasePangenome):
                 output_gfa,
                 input_gbz,
                 threads=self.cores,
-                reference_name=self.pangenome_ref_name,
+                reference_name=self.ref_name(),
             ),
             "vg-convert-gfa",
             0,
@@ -1269,7 +1215,7 @@ class HybridPangenome(BasePangenome):
                 out_gfa,
                 gfa_file=in_gfa,
                 target_bed=bed,
-                prefix=self.pangenome_contig_prefix,
+                prefix=self.contig_prefix(),
             )
         )
         return Job(
@@ -1334,7 +1280,7 @@ class HybridPangenome(BasePangenome):
                 self.model_bundle.joinpath("minimap2.model"),
                 threads=self.cores,
                 mm2_xargs=["--secondary=yes"],
-                lift_prefix=self.pangenome_contig_prefix,
+                lift_prefix=self.contig_prefix(),
             ),
             "mm2-lift",
             self.cores,
@@ -1395,7 +1341,7 @@ class HybridPangenome(BasePangenome):
                 out_vcf,
                 gfa_file=pangenome_gfa,
                 min_af=PANGENOME_SV_MIN_AF,
-                prefix=self.pangenome_contig_prefix,
+                prefix=self.contig_prefix(),
             )
         )
         return Job(

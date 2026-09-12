@@ -21,6 +21,10 @@ class TestSentieonPangenomeKMCIntegration(unittest.TestCase):
         pipeline.reference = "ref"
         pipeline.pop_vcf = "pop"
         pipeline.gbz = "ref.grch38.gbz"
+        pipeline.hapl = "ref.grch38.hapl"
+        # The mock graph files cannot be parsed; a dry run falls back to
+        # the default pangenome reference
+        pipeline.dry_run = True
 
         # Mock dependencies
         pipeline.logger = MagicMock()
@@ -56,6 +60,9 @@ class TestSentieonPangenomeKMCIntegration(unittest.TestCase):
         pipeline.validate_ref = MagicMock()
         pipeline.collect_readgroups = MagicMock()
         pipeline.bed = "bed"
+        pipeline.gbz = "ref.grch38.gbz"
+        pipeline.hapl = "ref.grch38.hapl"
+        pipeline.dry_run = True
 
         pipeline.logger = MagicMock()
 
