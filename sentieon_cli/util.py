@@ -4,6 +4,7 @@ Utility functions
 
 import argparse
 from enum import Enum
+import gzip
 from importlib.metadata import PackageNotFoundError, version
 import multiprocessing as mp
 import os
@@ -13,7 +14,16 @@ import shutil
 import subprocess as sp
 import sys
 import tempfile
-from typing import Callable, Dict, List, Mapping, Optional, Tuple
+from typing import (
+    IO,
+    Callable,
+    Dict,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Tuple,
+)
 
 import packaging.version
 
@@ -32,6 +42,9 @@ PRELOAD_SEP_PAT = re.compile(PRELOAD_SEP)
 NUMA_NODE_PAT = re.compile(r"^NUMA node. CPU\(s\):\s+(?P<cpus>.*)$")
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
+
+# The first two bytes of a gzip (and so of a BGZF) file
+GZIP_MAGIC = b"\x1f\x8b"
 
 
 class SampleSex(Enum):
@@ -360,23 +373,75 @@ def parse_rg_line(rg_line: str) -> Dict[str, str]:
     return parsed
 
 
-def vcf_id(in_vcf: pathlib.Path) -> Optional[str]:
-    """Collect the SentieonVcfID header"""
-    cmd = ["bcftools", "view", "-h", str(in_vcf)]
-    p = sp.run(cmd, capture_output=True, text=True)
-    if p.returncode != 0:
-        logger.error(
-            "`%s` failed with return code %d: %s",
-            " ".join(cmd),
-            p.returncode,
-            p.stderr.strip(),
-        )
-        return None
-    for line in p.stdout.split("\n"):
+class VcfHeaderError(ValueError):
+    """A VCF header could not be read"""
+
+
+def _open_vcf_text(in_vcf: pathlib.Path) -> IO[str]:
+    """Open a VCF for reading, transparently decompressing it.
+
+    The first two bytes decide: a BGZF file is a gzip file, and a VCF is
+    routinely named without regard to how it is compressed.
+    """
+    with open(in_vcf, "rb") as raw:
+        compressed = raw.read(len(GZIP_MAGIC)) == GZIP_MAGIC
+    if compressed:
+        return gzip.open(in_vcf, "rt")
+    return open(in_vcf, "rt")
+
+
+def read_vcf_header(in_vcf: pathlib.Path) -> List[str]:
+    """Read the header lines of a VCF file.
+
+    Lines are read until the first one that is not a header line, so the
+    body of the file is never touched: the header of a whole-genome
+    population VCF parses in milliseconds, with no `bcftools` on the
+    PATH and no subprocess.
+
+    Raises:
+        VcfHeaderError: the file holds no VCF header, or its header
+            could not be decompressed or decoded.
+        OSError: the file does not exist or could not be read.
+    """
+    header: List[str] = []
+    try:
+        with _open_vcf_text(in_vcf) as fh:
+            for line in fh:
+                if not line.startswith("#"):
+                    break
+                header.append(line.rstrip("\n"))
+                if line.startswith("#CHROM"):
+                    break
+    except (gzip.BadGzipFile, EOFError, UnicodeDecodeError) as err:
+        raise VcfHeaderError(
+            f"{in_vcf}: the VCF header could not be read ({err})"
+        ) from err
+    if not header:
+        raise VcfHeaderError(f"{in_vcf}: the file has no VCF header")
+    return header
+
+
+def vcf_id_from_header(header: Iterable[str]) -> Optional[str]:
+    """The `##SentieonVcfID` of VCF header lines, `None` when absent"""
+    for line in header:
         if line.startswith("##SentieonVcfID="):
             i = line.index("=")
             return line[i + 1 :]  # noqa: E203
     return None
+
+
+def vcf_id(in_vcf: pathlib.Path) -> Optional[str]:
+    """Collect the SentieonVcfID header.
+
+    Returns `None` when the header has no ID and when it could not be
+    read at all; an unreadable header is logged.
+    """
+    try:
+        header = read_vcf_header(in_vcf)
+    except (VcfHeaderError, OSError) as err:
+        logger.error("%s", err)
+        return None
+    return vcf_id_from_header(header)
 
 
 def check_kmc_patch(kmc_cmd: str = "kmc") -> bool:

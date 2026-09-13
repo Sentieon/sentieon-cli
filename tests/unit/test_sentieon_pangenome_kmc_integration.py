@@ -21,6 +21,11 @@ class TestSentieonPangenomeKMCIntegration(unittest.TestCase):
         pipeline.reference = "ref"
         pipeline.pop_vcf = "pop"
         pipeline.gbz = "ref.grch38.gbz"
+        pipeline.hapl = "ref.grch38.hapl"
+        # The mock graph and pop VCF files cannot be parsed; a dry run
+        # falls back to the default pangenome reference and to an
+        # empty set of pop VCF contigs
+        pipeline.dry_run = True
 
         # Mock dependencies
         pipeline.logger = MagicMock()
@@ -35,7 +40,6 @@ class TestSentieonPangenomeKMCIntegration(unittest.TestCase):
         with patch("sentieon_cli.util.check_version", return_value=True), \
              patch("sentieon_cli.sentieon_pangenome.parse_fai", return_value={}), \
              patch("sentieon_cli.sentieon_pangenome.determine_shards_from_fai", return_value=[]), \
-             patch("sentieon_cli.sentieon_pangenome.vcf_contigs", return_value={}), \
              patch("sentieon_cli.sentieon_pangenome.check_kmc_patch", return_value=True) as mock_check, \
              patch("sys.exit") as mock_exit:
             
@@ -56,13 +60,15 @@ class TestSentieonPangenomeKMCIntegration(unittest.TestCase):
         pipeline.validate_ref = MagicMock()
         pipeline.collect_readgroups = MagicMock()
         pipeline.bed = "bed"
+        pipeline.gbz = "ref.grch38.gbz"
+        pipeline.hapl = "ref.grch38.hapl"
+        pipeline.dry_run = True
 
         pipeline.logger = MagicMock()
 
         with patch("sentieon_cli.util.check_version", return_value=True), \
              patch("sentieon_cli.sentieon_pangenome.parse_fai", return_value={}), \
              patch("sentieon_cli.sentieon_pangenome.determine_shards_from_fai", return_value=[]), \
-             patch("sentieon_cli.sentieon_pangenome.vcf_contigs", return_value={}), \
              patch("sentieon_cli.sentieon_pangenome.check_kmc_patch", return_value=False) as mock_check, \
              patch("sys.exit") as mock_exit:
             

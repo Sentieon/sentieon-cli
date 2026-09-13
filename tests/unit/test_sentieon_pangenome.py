@@ -75,6 +75,10 @@ class TestSentieonPangenome:
         pipeline.skip_pop_vcf_id_check = True
         pipeline.tmp_dir = self.mock_dir
 
+        # The pangenome reference, normally resolved by validate()
+        pipeline.pangenome_ref_name = "GRCh38"
+        pipeline.pangenome_contig_prefix = "GRCh38#0#"
+
         # Mock parsing fai
         pipeline.fai_data = {"chr1": {"length": 1000}}
         pipeline.shards = [MagicMock()]
@@ -606,6 +610,81 @@ class TestSentieonPangenome:
         cmd_str = str(dnascope_job.shell)
         assert "--algo PangenomeSV" in cmd_str
         assert "--algo DNAscope" not in cmd_str
+
+    def test_pangenome_check_jobs(self):
+        """The graph checks sit between vg and everything downstream.
+
+        A wrong `--pangenome_ref_name` is silent in `vg`: the sampled
+        graph loses its reference paths and the GFA loses its rGFA tags,
+        and `pgutil lift` then leaves every read unmapped.
+        """
+        pipeline = self.create_pipeline()
+        dag = pipeline.build_dag()
+        job_names, all_jobs = self._get_all_job_names(dag)
+
+        assert "check-sample-gbz" in job_names
+        assert "check-sample-gfa" in job_names
+
+        check_gbz = next(j for j in all_jobs if j.name == "check-sample-gbz")
+        check_gfa = next(j for j in all_jobs if j.name == "check-sample-gfa")
+        haplotypes = next(j for j in all_jobs if j.name == "vg-haplotypes")
+        gfa = next(j for j in all_jobs if j.name == "vg-convert-gfa")
+        fasta = next(j for j in all_jobs if j.name == "vg-paths-fasta")
+        mm2 = next(j for j in all_jobs if j.name == "mm2-lift")
+
+        assert self._get_deps(dag, check_gbz) == {haplotypes}
+        assert self._get_deps(dag, gfa) == {check_gbz}
+        assert self._get_deps(dag, fasta) == {check_gbz}
+        assert self._get_deps(dag, check_gfa) == {gfa}
+        assert check_gfa in self._get_deps(dag, mm2)
+        assert "vg-convert-gfa" not in self._get_dep_names(dag, mm2)
+
+        # The checks share the log group of the jobs they guard
+        assert check_gbz.task_name == haplotypes.task_name
+        assert check_gfa.task_name == gfa.task_name
+
+    def test_pangenome_check_commands(self):
+        """The checks run the resolved name and prefix"""
+        pipeline = self.create_pipeline()
+        pipeline.pangenome_ref_name = "CHM13"
+        pipeline.pangenome_contig_prefix = "CHM13#0#"
+        dag = pipeline.build_dag()
+        _, all_jobs = self._get_all_job_names(dag)
+
+        gbz_cmd = str(
+            next(j for j in all_jobs if j.name == "check-sample-gbz").shell
+        )
+        assert "sentieon_cli.pangenome_meta check-gbz" in gbz_cmd
+        # runpy's duplicate-module warning is kept out of the job logs
+        assert "-W ignore::RuntimeWarning:runpy" in gbz_cmd
+        assert f"--gbz {self.mock_dir}/sample_pangenome.gbz" in gbz_cmd
+        assert "--reference_name CHM13" in gbz_cmd
+        # The `#` characters are shell-quoted in the rendered command
+        assert "--contig_prefix 'CHM13#0#'" in gbz_cmd
+
+        gfa_cmd = str(
+            next(j for j in all_jobs if j.name == "check-sample-gfa").shell
+        )
+        assert "sentieon_cli.pangenome_meta check-gfa" in gfa_cmd
+        assert f"--gfa {self.mock_dir}/sample-hap.gfa" in gfa_cmd
+        assert "--reference_name CHM13" in gfa_cmd
+        assert "--contig_prefix 'CHM13#0#'" in gfa_cmd
+
+    def test_the_resolved_reference_name_reaches_vg(self):
+        """`vg haplotypes` and `vg convert` use the resolved name"""
+        pipeline = self.create_pipeline()
+        pipeline.pangenome_ref_name = "CHM13"
+        dag = pipeline.build_dag()
+        _, all_jobs = self._get_all_job_names(dag)
+
+        haplotypes = str(
+            next(j for j in all_jobs if j.name == "vg-haplotypes").shell
+        )
+        assert "--set-reference CHM13" in haplotypes
+        convert = str(
+            next(j for j in all_jobs if j.name == "vg-convert-gfa").shell
+        )
+        assert "-Q CHM13" in convert
 
     def _get_all_job_names(self, dag):
         """Helper to get all job names from a DAG"""

@@ -1,0 +1,28 @@
+H	VN:Z:1.1
+S	s1	ACGTACGTAC
+S	s2	GGGGGGGGGG
+S	s3	TTTTTTTTTT
+S	s4	CCCCCCCCCC
+S	s5	AAAAAAAAAA
+S	s6	ACACACACAC
+S	s7	TGTGTGTGTG
+S	s8	GATTACAGAT
+L	s1	+	s2	+	0M
+L	s1	+	s3	+	0M
+L	s2	+	s4	+	0M
+L	s3	+	s4	+	0M
+L	s5	+	s6	+	0M
+L	s5	+	s7	+	0M
+L	s6	+	s8	+	0M
+L	s7	+	s8	+	0M
+W	GRCh38	0	chr1	0	30	>s1>s2>s4
+W	GRCh38	0	chr2	0	30	>s5>s6>s8
+W	CHM13	0	chr1	0	20	>s1>s3
+W	CHM13	0	chr1	20	30	>s4
+W	CHM13	0	chr2	0	30	>s5>s7>s8
+W	HG01	1	chr1	0	30	>s1>s3>s4
+W	HG01	2	chr1	0	30	>s1>s2>s4
+W	HG01	1	chr2	0	30	>s5>s6>s8
+W	HG01	2	chr2	0	30	>s5>s7>s8
+W	HG02	1	chr1	0	30	>s1>s2>s4
+W	HG02	2	chr2	0	30	>s5>s6>s8

@@ -118,6 +118,8 @@ class TestHybridPangenome:
         pipeline.tmp_dir = self.mock_dir
 
         # State normally set by validate()
+        pipeline.pangenome_ref_name = "GRCh38"
+        pipeline.pangenome_contig_prefix = "GRCh38#0#"
         pipeline.fai_data = {"chr1": {"length": 1000}}
         pipeline.shards = [MagicMock()]
         pipeline.shards[0].contig = "chr1"
@@ -514,6 +516,74 @@ class TestHybridPangenome:
         assert sv_vcf in cmd_str
         # SV calling is not restricted to the small-variant BED
         assert f"--interval {self.mock_bed}" not in cmd_str
+
+    def test_pangenome_check_jobs(self):
+        """The graph checks sit between vg and everything downstream.
+
+        A wrong `--pangenome_ref_name` is silent in `vg`: the sampled
+        graph loses its reference paths and the GFA loses its rGFA tags,
+        and `pgutil lift` then leaves every read unmapped.
+        """
+        pipeline = self.create_pipeline()
+        dag = pipeline.build_dag()
+        job_names, all_jobs = self._get_all_job_names(dag)
+
+        assert "check-sample-gbz" in job_names
+        assert "check-sample-gfa" in job_names
+
+        assert self._get_dep_names(dag, all_jobs, "check-sample-gbz") == {
+            "vg-haplotypes"
+        }
+        assert self._get_dep_names(dag, all_jobs, "vg-convert-gfa") == {
+            "check-sample-gbz"
+        }
+        assert self._get_dep_names(dag, all_jobs, "check-sample-gfa") == {
+            "vg-convert-gfa"
+        }
+        # The raw graph update is the only consumer of the converted GFA
+        assert self._get_dep_names(dag, all_jobs, "graph-update-raw") == {
+            "check-sample-gfa"
+        }
+
+        # The checks share the log group of the jobs they guard
+        haplotypes = self._get_job(all_jobs, "vg-haplotypes")
+        check_gbz = self._get_job(all_jobs, "check-sample-gbz")
+        check_gfa = self._get_job(all_jobs, "check-sample-gfa")
+        assert check_gbz.task_name == haplotypes.task_name
+        assert check_gfa.task_name == haplotypes.task_name
+
+    def test_pangenome_check_commands(self):
+        """The checks run the resolved name and prefix"""
+        pipeline = self.create_pipeline()
+        pipeline.pangenome_ref_name = "CHM13"
+        pipeline.pangenome_contig_prefix = "CHM13#0#"
+        dag = pipeline.build_dag()
+        _, all_jobs = self._get_all_job_names(dag)
+
+        gbz_cmd = str(self._get_job(all_jobs, "check-sample-gbz").shell)
+        assert "sentieon_cli.pangenome_meta check-gbz" in gbz_cmd
+        assert f"--gbz {self.mock_dir}/sample_pangenome.gbz" in gbz_cmd
+        assert "--reference_name CHM13" in gbz_cmd
+        # The `#` characters are shell-quoted in the rendered command
+        assert "--contig_prefix 'CHM13#0#'" in gbz_cmd
+
+        gfa_cmd = str(self._get_job(all_jobs, "check-sample-gfa").shell)
+        assert "sentieon_cli.pangenome_meta check-gfa" in gfa_cmd
+        assert f"--gfa {self.mock_dir}/sample-hap.raw.gfa" in gfa_cmd
+        assert "--reference_name CHM13" in gfa_cmd
+        assert "--contig_prefix 'CHM13#0#'" in gfa_cmd
+
+    def test_the_resolved_reference_name_reaches_vg(self):
+        """`vg haplotypes` and `vg convert` use the resolved name"""
+        pipeline = self.create_pipeline()
+        pipeline.pangenome_ref_name = "CHM13"
+        dag = pipeline.build_dag()
+        _, all_jobs = self._get_all_job_names(dag)
+
+        haplotypes = str(self._get_job(all_jobs, "vg-haplotypes").shell)
+        assert "--set-reference CHM13" in haplotypes
+        convert = str(self._get_job(all_jobs, "vg-convert-gfa").shell)
+        assert "-Q CHM13" in convert
 
     def test_pangenome_contig_prefix(self):
         """`--pangenome_contig_prefix` reaches every graph consumer"""
