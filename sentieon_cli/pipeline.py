@@ -4,28 +4,46 @@ A pipeline class
 
 from abc import ABC, abstractmethod
 import argparse
+import json
 import multiprocessing as mp
 import os
 import pathlib
 import shutil
 import sys
-from typing import Any, Dict, List, Optional
+import time
+from typing import Any, Dict, List, Optional, TypeVar
 
 import packaging.version
 
 from . import command_strings as cmds
 from .dag import DAG
+from .exceptions import DagExecutionError
 from .executor import BaseExecutor, DryRunExecutor, LocalExecutor
 from .job import Job
-from .logging import get_logger
+from .logging import get_logger, set_console_level
+from .run_logs import RunLogs
 from .scheduler import ThreadScheduler
-from .util import __version__, check_version, path_arg, tmp
+from .shard import (
+    detect_reference_build,
+    par_bed_for_build,
+)
+from .stages.base import StageContext
+from .stages.metrics import MetricsPaths
+from .util import (
+    SampleSex,
+    __version__,
+    path_arg,
+    tmp,
+    versions_available,
+)
 
 MULTIQC_MIN_VERSION = {
     "multiqc": packaging.version.Version("1.18"),
 }
 
 BWA_INDEX_SUFFIXES = (".amb", ".ann", ".bwt", ".pac", ".sa")
+
+T = TypeVar("T")
 
 
 class BasePipeline(ABC):
@@ -52,6 +70,13 @@ class BasePipeline(ABC):
             "help": "Print the commands without running them.",
             "action": "store_true",
         },
+        "log_dir": {
+            "help": (
+                "Directory for the run's log files. Defaults to the output "
+                "VCF with the '.vcf.gz' suffix replaced by '_logs'."
+            ),
+            "type": path_arg(),
+        },
         # Hidden arguments
         "retain_tmpdir": {
             "help": argparse.SUPPRESS,
@@ -71,17 +96,17 @@ class BasePipeline(ABC):
 
     @classmethod
     def add_arguments(cls, parser: argparse.ArgumentParser):
-        for k, kwargs in cls.params.items():
-            flags = ["--" + k]
+        # Build a fresh kwargs dict per argument so repeated calls do not
+        # mutate the shared class-level params/positionals specs.
+        for k, spec in cls.params.items():
+            kwargs = dict(spec)
+            flags = kwargs.pop("flags", ["--" + k])
             if "default" in kwargs and "type" not in kwargs:
                 kwargs["type"] = type(kwargs["default"])
-            if "flags" in kwargs:
-                flags = kwargs["flags"]
-                del kwargs["flags"]
             parser.add_argument(*flags, **kwargs)
 
-        for k, kwargs in cls.positionals.items():
-            parser.add_argument(k, **kwargs)
+        for k, spec in cls.positionals.items():
+            parser.add_argument(k, **dict(spec))
 
     def handle_arguments(self, args: argparse.Namespace):
         """Update self using the argparse object"""
@@ -104,13 +129,6 @@ class BasePipeline(ABC):
             if k in args.__dict__:
                 setattr(self, k, getattr(args, k))
 
-    def setup_logging(self, args: argparse.Namespace) -> None:
-        self.logger = get_logger(__name__)
-        if not self.logger.parent:
-            raise RuntimeError("Logger has no parent logger")
-        self.logger.parent.setLevel(args.loglevel)
-        self.logger.info("Starting sentieon-cli version: %s", __version__)
-
     def __init__(self) -> None:
         self.reference: Optional[pathlib.Path] = None
         self.cores = mp.cpu_count()
@@ -118,25 +136,95 @@ class BasePipeline(ABC):
         self.dry_run = False
         self.retain_tmpdir = False
         self.skip_version_check = False
+        self.log_dir: Optional[pathlib.Path] = None
         self.output_vcf: Optional[pathlib.Path] = None
+        self.run_logs: Optional[RunLogs] = None
+        self.sample_sex: Optional[SampleSex] = None
+        self.cnv_par_bed: Optional[pathlib.Path] = None
+        self.reference_build: Optional[str] = None
+
+    def setup_logging(self, args: argparse.Namespace) -> None:
+        """Configure console logging"""
+        self.logger = get_logger(__name__)
+        set_console_level(args.loglevel)
+
+    def start_run_logs(self) -> None:
+        """Create the run's log directory and start writing `run.log`.
+
+        Called after `validate`, so a run rejected for an invalid output path
+        neither creates directories nor clobbers a previous run's logs.
+        """
+        # File logging is skipped for dry-runs and when there is nothing to
+        # derive a log directory from (a bare pipeline, as used by tests).
+        if self.dry_run or (self.log_dir is None and self.output_vcf is None):
+            self.logger.info("Starting sentieon-cli version: %s", __version__)
+            return
+
+        log_dir = self.log_dir
+        if log_dir is None:
+            # Defensive: `validate` has already checked the output path, but
+            # not every pipeline's validation covers the suffix.
+            self.validate_output_suffix()
+            log_dir = pathlib.Path(
+                str(self.output_vcf).removesuffix(".vcf.gz") + "_logs"
+            )
+        run_logs = RunLogs(log_dir)
+        try:
+            run_logs.setup()
+        except OSError as exc:
+            self.logger.error(
+                "Could not prepare the log directory %s: %s", log_dir, exc
+            )
+            sys.exit(2)
+        self.run_logs = run_logs
+
+        # After the file handler is attached, so the banner reaches run.log
+        self.logger.info("Starting sentieon-cli version: %s", __version__)
+        self.logger.info("Writing logs to: %s", self.run_logs.log_dir)
+
+    def log_completion(self, success: bool, start_time: float) -> None:
+        """Report the outcome and duration of the run"""
+        self.logger.info(
+            "Finished sentieon-cli (status: %s, elapsed: %.1fs)",
+            "succeeded" if success else "failed",
+            time.monotonic() - start_time,
+        )
+        if not success and self.run_logs:
+            self.logger.info(
+                "Logs from this run are in: %s", self.run_logs.log_dir
+            )
 
     def main(self, args: argparse.Namespace) -> None:
         """Run the DNAscope pipeline"""
         self.handle_arguments(args)
         self.setup_logging(args)
-        self.validate()
-        self.configure()
+        start_time = time.monotonic()
+        success = False
+        try:
+            self.validate()
+            self.start_run_logs()
+            self.configure()
 
-        tmp_dir_str = tmp()
-        self.tmp_dir = pathlib.Path(tmp_dir_str)
+            tmp_dir_str = tmp()
+            self.tmp_dir = pathlib.Path(tmp_dir_str)
 
-        dag = self.build_dag()
-        executor = self.run(dag)
+            try:
+                dag = self.build_dag()
+                executor = self.run(dag)
+                self.check_execution(dag, executor)
 
-        if not self.retain_tmpdir:
-            shutil.rmtree(tmp_dir_str)
-
-        self.check_execution(dag, executor)
+                # Jobs that depend on the results of the first DAG, such
+                # as sex-aware calling after ploidy estimation
+                second_dag = self.build_second_dag()
+                if second_dag is not None:
+                    executor = self.run(second_dag)
+                    self.check_execution(second_dag, executor)
+            finally:
+                if not self.retain_tmpdir:
+                    shutil.rmtree(tmp_dir_str)
+            success = True
+        finally:
+            self.log_completion(success, start_time)
 
     def check_execution(
         self,
@@ -145,23 +233,72 @@ class BasePipeline(ABC):
     ):
         """Check the DAG and executor after a run"""
         if executor.jobs_with_errors:
-            raise ValueError("Execution failed")
+            failed = ", ".join(str(job) for job in executor.jobs_with_errors)
+            message = f"Execution failed for jobs: {failed}"
+            if self.run_logs:
+                message += f"\nTask logs are in: {self.run_logs.task_logs}"
+            raise DagExecutionError(message)
 
         if len(dag.waiting_jobs) > 0 or len(dag.ready_jobs) > 0:
-            raise ValueError(
+            raise DagExecutionError(
                 "The DAG has some unexecuted jobs\n"
                 f"Waiting jobs: {dag.waiting_jobs}\n"
                 f"Ready jobs: {dag.ready_jobs}\n"
             )
 
+    def required(self, value: Optional[T], name: str) -> T:
+        """Return `value`, ending the run when it was not supplied.
+
+        Narrows an optional pipeline attribute to its value, so callers do
+        not have to repeat the "missing argument" check.
+        """
+        if value is None:
+            self.logger.error("%s is required", name)
+            sys.exit(2)
+        return value
+
+    def stage_context(self) -> StageContext:
+        """The run-wide settings this pipeline's stages need.
+
+        Built fresh on every call, so it always reflects the pipeline's
+        current attributes. Only available once `main` has created the
+        run's temporary directory.
+        """
+        if self.reference is None:
+            self.logger.error("reference is required")
+            sys.exit(2)
+        if self.output_vcf is None:
+            self.logger.error("output_vcf is required")
+            sys.exit(2)
+        tmp_dir: Optional[pathlib.Path] = getattr(self, "tmp_dir", None)
+        if tmp_dir is None:
+            self.logger.error(
+                "The temporary directory has not been created yet; "
+                "`stage_context` is only available after `main` sets "
+                "`tmp_dir`"
+            )
+            sys.exit(2)
+        return StageContext(
+            reference=self.reference,
+            output_vcf=self.output_vcf,
+            tmp_dir=tmp_dir,
+            cores=self.cores,
+            dry_run=self.dry_run,
+            skip_version_check=self.skip_version_check,
+        )
+
     @abstractmethod
     def validate(self) -> None:
         pass
 
-    def validate_output_vcf(self) -> None:
+    def validate_output_suffix(self) -> None:
+        """Confirm the output VCF file name ends in '.vcf.gz'"""
         if not str(self.output_vcf).endswith(".vcf.gz"):
             self.logger.error("The output file should end with '.vcf.gz'")
             sys.exit(2)
+
+    def validate_output_vcf(self) -> None:
+        self.validate_output_suffix()
         assert self.output_vcf is not None
         parent = self.output_vcf.resolve().parent
         if not parent.is_dir():
@@ -207,25 +344,85 @@ class BasePipeline(ABC):
     def build_dag(self) -> DAG:
         pass
 
+    def build_second_dag(self) -> Optional[DAG]:
+        """Build a second DAG, run after the first one has finished.
+
+        Pipelines with jobs that depend on the results of the first DAG,
+        such as sex-aware calling after ploidy estimation, override this
+        hook. Returning `None` runs a single DAG.
+        """
+        return None
+
+    def get_sex(self, ploidy_json: pathlib.Path) -> None:
+        """Retrieve the sample sex"""
+        if self.sample_sex is not None:
+            # Supplied through `--sample_sex`
+            return
+        if self.dry_run:
+            self.logger.info("Setting sample sex to MALE for dry-run")
+            self.sample_sex = SampleSex.MALE
+            return
+        with open(ploidy_json) as fh:
+            data = json.load(fh)
+            sex = data["sex"]
+            if sex == "female":
+                self.sample_sex = SampleSex.FEMALE
+            elif sex == "male":
+                self.sample_sex = SampleSex.MALE
+            else:
+                self.sample_sex = SampleSex.UNKNOWN
+
+    def resolve_cnv_par_bed(
+        self,
+        fai_data: Dict[str, Dict[str, int]],
+        par_bed: Optional[pathlib.Path] = None,
+        cnv_will_run: bool = True,
+    ) -> None:
+        """Identify the reference build and select the PAR BED file.
+
+        `self.reference_build` is always identified, as the ploidy
+        estimation contigs follow it. The PAR BED file is only used by
+        CNV calling, so it is looked up only when CNVs will be called.
+        """
+        self.reference_build = detect_reference_build(fai_data)
+        if not cnv_will_run:
+            return
+        if par_bed is not None:
+            self.cnv_par_bed = par_bed
+            return
+        self.cnv_par_bed = par_bed_for_build(self.reference_build)
+
+    def validate_cnv_par(self, cnv_will_run: bool) -> None:
+        """Confirm a PAR BED file is available for CNV calling.
+
+        The check runs during validation, before any job starts, and does
+        not depend on the sample sex.
+        """
+        if not cnv_will_run or self.cnv_par_bed is not None:
+            return
+
+        self.logger.error(
+            "CNV calling uses a BED file of the pseudo-autosomal regions "
+            "(PAR), and no PAR BED file is available for this reference "
+            "genome. Please supply the `--par_bed` argument."
+        )
+        sys.exit(2)
+
     def multiqc(self) -> Optional[Job]:
         """Run MultiQC on the metrics files"""
 
-        if not self.skip_version_check:
-            if not all(
-                [
-                    check_version(cmd, min_version)
-                    for (cmd, min_version) in MULTIQC_MIN_VERSION.items()
-                ]
-            ):
-                self.logger.warning(
-                    "Skipping MultiQC. MultiQC version %s or later not found",
-                    MULTIQC_MIN_VERSION["multiqc"],
-                )
-                return None
+        if not versions_available(
+            MULTIQC_MIN_VERSION, skip=self.skip_version_check
+        ):
+            self.logger.warning(
+                "Skipping MultiQC. MultiQC version %s or later not found",
+                MULTIQC_MIN_VERSION["multiqc"],
+            )
+            return None
 
-        metrics_dir = pathlib.Path(
-            str(self.output_vcf).replace(".vcf.gz", "_metrics")
-        )
+        metrics_dir = MetricsPaths.from_output_vcf(
+            pathlib.Path(str(self.output_vcf))
+        ).metrics_dir
         multiqc_job = Job(
             cmds.cmd_multiqc(
                 metrics_dir,
@@ -234,6 +431,7 @@ class BasePipeline(ABC):
             ),
             "multiqc",
             0,
+            task_name="multiqc",
         )
         return multiqc_job
 
@@ -250,8 +448,17 @@ class BasePipeline(ABC):
         )
 
         self.logger.debug("Creating the executor")
-        Executor = DryRunExecutor if self.dry_run else LocalExecutor
-        executor = Executor(scheduler)
+        executor: BaseExecutor
+        if self.dry_run:
+            executor = DryRunExecutor(scheduler)
+        else:
+            # Handle Ctrl-C/SIGTERM by terminating running jobs gracefully;
+            # the handlers are installed only for the duration of the run.
+            executor = LocalExecutor(
+                scheduler,
+                install_signal_handlers=True,
+                run_logs=self.run_logs,
+            )
 
         self.logger.info("Starting execution")
         executor.execute()

@@ -7,7 +7,7 @@ import copy
 import json
 import pathlib
 import sys
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import packaging.version
 
@@ -18,40 +18,63 @@ from .archive import ar_load
 from . import command_strings as cmds
 from .dag import DAG
 from .driver import (
-    BaseDriver,
     Driver,
     DNAscope,
-    DNAModelApply,
     HybridStage1,
     HybridStage2,
     HybridStage3,
 )
-from .dnascope import call_cnvs, DNAscopePipeline
-from .dnascope_longread import DNAscopeLRPipeline
 from .job import Job
 from .pipeline import BasePipeline
 from .shell_pipeline import Command, Pipeline
+from .stages.alignment import (
+    BWA_FASTQ_MIN_VERSIONS,
+    MINIMAP2_REALIGN_MIN_VERSIONS,
+    AlignResult,
+    BwaFastqStage,
+    Minimap2RealignStage,
+    find_unzip,
+)
+from .stages.base import StageContext, driver_job, rm_job
+from .stages.cnv import CNV_MIN_VERSIONS, CNVscopeStage
+from .stages.metrics import MOSDEPTH_MIN_VERSIONS, MosdepthStage
+from .stages.ploidy import PloidyStage
+from .stages.preprocessing import (
+    ShortReadPreprocessingStage,
+    SrPreprocessingResult,
+)
+from .stages.small_variants import (
+    ApplySpec,
+    DNAscopeStage,
+    TransferApplyStage,
+    TransferSpec,
+)
+from .stages.sv import LONGREADSV_MIN_VERSIONS, LongReadSVStage
+from .stages.transfer import TransferConfig
 from .util import (
     __version__,
-    check_version,
     library_preloaded,
     parse_rg_line,
     path_arg,
+    require_versions,
+    sample_sex_arg,
+    set_bwt_max_mem,
     split_alignment,
     vcf_id,
+    versions_available,
 )
 from .shard import (
     determine_shards_from_fai,
     parse_fai,
     vcf_contigs,
 )
-from .transfer import build_transfer_jobs
 
 logger = get_logger(__name__)
 
 
 CALLING_MIN_VERSIONS = {
-    "sentieon driver": packaging.version.Version("202503.01"),
+    # 202503.04 writes unsorted BAM to `--hap_bam`, supporting stdout
+    "sentieon driver": packaging.version.Version("202503.04"),
     "bedtools": None,
     "bcftools": packaging.version.Version("1.22"),
     "samtools": packaging.version.Version("1.16"),
@@ -117,7 +140,7 @@ class RgInfo:
                     )
 
 
-class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
+class DNAscopeHybridPipeline(BasePipeline):
     """The DNAscope Hybrid pipeline"""
 
     params = copy.deepcopy(BasePipeline.params)
@@ -201,12 +224,29 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
                 ),
                 "type": path_arg(exists=True, is_file=True),
             },
+            "par_bed": {
+                "help": (
+                    "A BED file of the pseudo-autosomal regions (PAR), used "
+                    "for sex-aware CNV calling of male samples. Overrides the "
+                    "PAR BED file selected for the reference genome."
+                ),
+                "type": path_arg(exists=True, is_file=True),
+            },
             "pop_vcf": {
                 "flags": ["--pop_vcf"],
                 "help": (
                     "A VCF containing annotations for use with DNAModelApply."
                 ),
                 "type": path_arg(exists=True, is_file=True),
+            },
+            "sample_sex": {
+                "help": (
+                    "The sample sex, used for sex-aware CNV calling. "
+                    "Supplying this argument overrides the sex estimated "
+                    "from read coverage."
+                ),
+                "metavar": "{male,female}",
+                "type": sample_sex_arg,
             },
             "rgsm": {
                 "help": (
@@ -266,7 +306,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             "minimap2_args": {
                 # help="Extra arguments for sentieon minimap2",
                 "help": argparse.SUPPRESS,
-                "default": "-Y",
+                "default": "-YL",
             },
             "no_split_alignment": {
                 "help": argparse.SUPPRESS,
@@ -286,36 +326,58 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             "util_sort_args": {
                 # help="Extra arguments for sentieon util sort",
                 "help": argparse.SUPPRESS,
-                "default": "--cram_write_options version=3.0,compressor=rans",
+                "default": "",
             },
         }
     )
 
     def __init__(self) -> None:
         super().__init__()
+        # Required arguments
+        self.lr_aln: List[pathlib.Path] = []
+        self.model_bundle: Optional[pathlib.Path] = None
+        self.sr_aln: List[pathlib.Path] = []
         self.sr_r1_fastq: List[pathlib.Path] = []
         self.sr_r2_fastq: List[pathlib.Path] = []
         self.sr_readgroups: List[str] = []
-        self.sr_aln: List[pathlib.Path] = []
-        self.sr_duplicate_marking = "markdup"
-        self.lr_aln: List[pathlib.Path] = []
+        # Additional arguments
+        self.bam_format = False
+        self.bed: Optional[pathlib.Path] = None
+        self.dbsnp: Optional[pathlib.Path] = None
+        self.gvcf = False
         self.lr_align_input = False
         self.lr_input_ref: Optional[pathlib.Path] = None
+        self.par_bed: Optional[pathlib.Path] = None
         self.pop_vcf: Optional[pathlib.Path] = None
-        self.bam_format = False
         self.rgsm: Optional[str] = None
+        self.skip_cnv = False
+        self.skip_metrics = False
+        self.skip_mosdepth = False
+        self.skip_multiqc = False
+        self.skip_svs = False
+        self.sr_duplicate_marking = "markdup"
+        # Hidden arguments
+        self.bwa_args = ""
+        self.bwa_k = 100000000
+        self.bwt_max_mem: Optional[str] = None
         self.lr_fastq_taglist = "*"
-        self.sr_read_filter: Optional[str] = None
         self.lr_read_filter: Optional[str] = None
-        self.assay = "WGS"
+        self.minimap2_args = "-YL"
+        self.no_split_alignment = False
         self.skip_model_apply = False
         self.skip_pop_vcf_id_check = False
+        self.sr_read_filter: Optional[str] = None
+        self.util_sort_args = ""
+        # Stashed by `build_dag` for the second, sex-aware DAG
+        self.ploidy_json: Optional[pathlib.Path] = None
+        self.cnv_sr_aln: List[pathlib.Path] = []
+        self.cnv_replace_rg: Optional[List[List[str]]] = None
 
     def validate(self) -> None:
         self.fai_data = parse_fai(pathlib.Path(str(self.reference) + ".fai"))
         self.pop_vcf_contigs: Dict[str, Optional[int]] = {}
         if self.pop_vcf:
-            self.pop_vcf_contigs = vcf_contigs(self.pop_vcf, self.dry_run)
+            self.pop_vcf_contigs = vcf_contigs(self.pop_vcf)
             self.logger.debug("VCF contigs are: %s", self.pop_vcf_contigs)
         self.shards = determine_shards_from_fai(
             self.fai_data, 10 * 1000 * 1000
@@ -324,6 +386,8 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         self.validate_bundle()
         self.collect_readgroups()
         self.validate_readgroups()
+        # `validate_bundle` may have set `skip_cnv`
+        self.validate_cnv()
 
         self.validate_output_vcf()
         if not self.sr_aln and not self.sr_r1_fastq:
@@ -354,6 +418,21 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
 
         if self.sr_r1_fastq:
             self.validate_bwa_index()
+
+    def validate_cnv(self) -> None:
+        """Validate the arguments used for sex-aware CNV calling"""
+        self.resolve_cnv_par_bed(
+            self.fai_data, self.par_bed, not self.skip_cnv
+        )
+        if self.skip_cnv:
+            return
+
+        # A PAR BED file is required for CNV calling, whatever the sex
+        self.validate_cnv_par(True)
+
+        # CNV calling now runs in the second DAG, so the version of the
+        # driver is checked before the first DAG starts
+        require_versions(CNV_MIN_VERSIONS, skip=self.skip_version_check)
 
     def validate_bundle(self) -> None:
         bundle_info_bytes = ar_load(
@@ -501,7 +580,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             self.numa_nodes = split_alignment(self.cores)
         n_alignment_jobs = max(1, len(self.numa_nodes))
 
-        self.set_bwt_max_mem(0, n_alignment_jobs)
+        set_bwt_max_mem(0, n_alignment_jobs, override=self.bwt_max_mem)
 
     def configure_readgroups(self) -> None:
         self.lr_aln_readgroups = self.all_readgroups[0]
@@ -525,15 +604,8 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         self.logger.info("Building the DAG")
         dag = DAG()
 
-        if not self.output_vcf:
-            self.logger.error("output_vcf is required")
-            sys.exit(2)
-        if not self.reference:
-            self.logger.error("reference is required")
-            sys.exit(2)
-        if not self.model_bundle:
-            self.logger.error("model_bundle is required")
-            sys.exit(2)
+        self.required(self.model_bundle, "model_bundle")
+        ctx = self.stage_context()
 
         rg_info = RgInfo(
             self.lr_aln_readgroups,
@@ -547,225 +619,282 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
 
         # Short-read alignment
         sr_aln = self.sr_aln
-        (
-            aligned_fastq,
-            align_fastq_jobs,
-            fq_rm_job,
-        ) = self.sr_align_fastq()
-        for job in align_fastq_jobs:
-            dag.add_job(job)
-        sr_aln.extend(aligned_fastq)
+        fq_result = self.add_sr_fastq_alignment(dag, ctx)
+        align_fastq_jobs = set(fq_result.jobs)
+        sr_aln.extend(fq_result.outputs)
 
         # Short-read dedup
-        (
-            deduped,
-            lc_job,
-            dedup_job,
-            metrics_job,
-            rehead_job,
-        ) = self.dedup_and_metrics(
-            sample_input=sr_aln,
+        preprocessing = self.add_sr_preprocessing(
+            dag, ctx, sr_aln, set(align_fastq_jobs)
         )
-        sr_aln = deduped
-        if lc_job:
-            dag.add_job(lc_job, align_fastq_jobs)
-            if dedup_job:
-                dag.add_job(dedup_job, {lc_job})
-                if metrics_job and not self.skip_metrics:
-                    dag.add_job(metrics_job, {dedup_job})
-                    if rehead_job:
-                        dag.add_job(rehead_job, {metrics_job})
-                if fq_rm_job:
-                    dag.add_job(fq_rm_job, {dedup_job})
+        sr_aln = preprocessing.deduped
+        dedup_job = preprocessing.dedup_job
+        # The fastq alignment has cleanup paths only when it is an
+        # intermediate, which is exactly when duplicate marking -- and so
+        # `dedup_job` -- follows it
+        if dedup_job and fq_result.cleanup_paths:
+            dag.add_job(
+                rm_job(fq_result.cleanup_paths, "rm-fq-aln"), {dedup_job}
+            )
 
         # Long-read alignment
         realign_jobs: Set[Job] = set()
         lr_aln = self.lr_aln
         if self.lr_align_input:
-            lr_aln, realign_jobs = self.lr_align_inputs()
-            for job in realign_jobs:
-                dag.add_job(job)
+            realign_result = self.add_lr_realignment(dag, ctx)
+            lr_aln = realign_result.outputs
+            realign_jobs = set(realign_result.jobs)
 
         if not self.skip_mosdepth:
-            mosdepth_jobs = self.mosdepth(sample_input=lr_aln)
-            for job in mosdepth_jobs:
-                dag.add_job(job, realign_jobs)
+            self.add_mosdepth(dag, ctx, lr_aln, realign_jobs)
 
         if not self.skip_multiqc:
             multiqc_job = self.multiqc()
-            multiqc_dependencies: Set[Job] = set()
-            if lc_job:
-                multiqc_dependencies.add(lc_job)
-            if metrics_job:
-                multiqc_dependencies.add(metrics_job)
-            if rehead_job:
-                multiqc_dependencies.add(rehead_job)
-
             if multiqc_job:
-                dag.add_job(multiqc_job, multiqc_dependencies)
+                dag.add_job(multiqc_job, set(preprocessing.qc_jobs))
 
         if not self.skip_svs:
-            longreadsv_job = self.call_svs(
-                lr_aln, replace_rg=rg_info.replace_rg_args[0]
+            self.add_sv_calling(
+                dag,
+                ctx,
+                lr_aln,
+                rg_info.replace_rg_args[0],
+                realign_jobs,
             )
-            dag.add_job(longreadsv_job, realign_jobs)
 
         sr_preprocessing_jobs: Set[Job] = set()
         sr_preprocessing_jobs.update(align_fastq_jobs)
         if dedup_job:
             sr_preprocessing_jobs.add(dedup_job)
+        # Estimate the sample ploidy and sex. The JSON output is always
+        # written; `--sample_sex` takes precedence for the sex used by
+        # sex-aware CNV calling.
+        ploidy_result = PloidyStage(
+            ctx=ctx,
+            inputs=sr_aln,
+            reference_build=self.reference_build,
+        ).add_to(dag, sr_preprocessing_jobs)
+        self.ploidy_json = ploidy_result.ploidy_json
+
         if not self.skip_cnv:
-            cnvscope_job, cnvmodelapply_job = call_cnvs(
-                self.tmp_dir,
-                self.output_vcf,
-                self.reference,
-                sr_aln,
-                self.model_bundle,
-                self.bed,
-                self.cores,
-                self.skip_version_check,
-                replace_rg=(
-                    rg_info.replace_rg_args[1]
-                    if rg_info.replace_rg_args[1]
-                    else None
-                ),
+            # CNV calling is sex-aware and runs in the second DAG
+            self.cnv_sr_aln = sr_aln
+            self.cnv_replace_rg = (
+                rg_info.replace_rg_args[1]
+                if rg_info.replace_rg_args[1]
+                else None
             )
-            dag.add_job(cnvscope_job, sr_preprocessing_jobs)
-            dag.add_job(cnvmodelapply_job, {cnvscope_job})
 
-        (
-            call_job,
-            select_job,
-            mapq0_job,
-            mapq0_slop_job,
-            cat_merge_job,
-            rm_job1,
-            stage1_job,
-            rm_job2,
-            second_stage_job,
-            rm_job3,
-            third_stage_job,
-            rm_job4,
-            call2_job,
-            subset_job,
-            concat_job,
-            rm_job5,
-            anno_job,
-            transfer_jobs,
-            transfer_concat,
-            apply_job,
-            norm_job,
-        ) = self.call_variants(sr_aln, lr_aln, rg_info)
-        dag.add_job(call_job, realign_jobs | sr_preprocessing_jobs)
-        dag.add_job(select_job, {call_job})
-        dag.add_job(mapq0_job, realign_jobs | sr_preprocessing_jobs)
-        dag.add_job(mapq0_slop_job, {mapq0_job})
-        dag.add_job(cat_merge_job, {mapq0_slop_job, select_job})
-        dag.add_job(stage1_job, {cat_merge_job})
-        dag.add_job(second_stage_job, {stage1_job})
-        dag.add_job(third_stage_job, {second_stage_job})
-        dag.add_job(call2_job, {third_stage_job})
-        dag.add_job(subset_job, {second_stage_job})
-        dag.add_job(concat_job, {subset_job, call2_job})
-        dag.add_job(anno_job, {concat_job})
-
-        apply_dependencies = {anno_job}
-        if transfer_jobs and transfer_concat:
-            for job in transfer_jobs:
-                dag.add_job(job, {anno_job})
-            dag.add_job(transfer_concat, set(transfer_jobs))
-            apply_dependencies = {transfer_concat}
-
-        if apply_job:
-            dag.add_job(apply_job, apply_dependencies)
-        if apply_job and norm_job:
-            dag.add_job(norm_job, {apply_job})
-
-        # Remove intermediate files during processing
-        if not self.retain_tmpdir:
-            dag.add_job(rm_job1, {cat_merge_job})
-            dag.add_job(rm_job2, {stage1_job})
-            dag.add_job(rm_job3, {second_stage_job})
-            dag.add_job(rm_job4, {third_stage_job})
-            dag.add_job(rm_job5, {concat_job})
+        self.add_variant_calling(
+            dag,
+            ctx,
+            sr_aln,
+            lr_aln,
+            rg_info,
+            realign_jobs | sr_preprocessing_jobs,
+        )
 
         return dag
 
-    def call_variants(
+    def add_sr_fastq_alignment(
+        self, dag: DAG, ctx: StageContext
+    ) -> AlignResult:
+        """Align the short-read fastq files with bwa"""
+        bundle = self.required(self.model_bundle, "model_bundle")
+
+        if not self.sr_r1_fastq and not self.sr_readgroups:
+            return AlignResult(
+                jobs=[], terminal=set(), outputs=[], cleanup_paths=[]
+            )
+
+        require_versions(BWA_FASTQ_MIN_VERSIONS, skip=self.skip_version_check)
+
+        return BwaFastqStage(
+            ctx=ctx,
+            r1_fastq=self.sr_r1_fastq,
+            r2_fastq=self.sr_r2_fastq,
+            readgroups=self.sr_readgroups,
+            model_bundle=bundle,
+            numa_nodes=self.numa_nodes,
+            bam_format=self.bam_format,
+            duplicate_marking=self.sr_duplicate_marking,
+            unzip=find_unzip(self.logger),
+            bwa_args=self.bwa_args,
+            bwa_k=str(self.bwa_k),
+            util_sort_args=self.util_sort_args,
+        ).add_to(dag)
+
+    def add_sr_preprocessing(
         self,
+        dag: DAG,
+        ctx: StageContext,
+        sr_aln: List[pathlib.Path],
+        upstream: Set[Job],
+    ) -> SrPreprocessingResult:
+        """Mark duplicates and collect metrics from the short reads"""
+        return ShortReadPreprocessingStage(
+            ctx=ctx,
+            inputs=sr_aln,
+            duplicate_marking=self.sr_duplicate_marking,
+            consensus=False,
+            skip_metrics=self.skip_metrics,
+            assay="WGS",
+            bed=self.bed,
+            bam_format=self.bam_format,
+        ).add_to(dag, upstream)
+
+    def add_lr_realignment(self, dag: DAG, ctx: StageContext) -> AlignResult:
+        """Re-align the long-read input files with minimap2"""
+        bundle = self.required(self.model_bundle, "model_bundle")
+        require_versions(
+            MINIMAP2_REALIGN_MIN_VERSIONS, skip=self.skip_version_check
+        )
+
+        return Minimap2RealignStage(
+            ctx=ctx,
+            inputs=self.lr_aln,
+            model_bundle=bundle,
+            sample_name=ctx.output_vcf.name.replace(".vcf.gz", ""),
+            bam_format=self.bam_format,
+            input_ref=self.lr_input_ref,
+            fastq_taglist=self.lr_fastq_taglist,
+            minimap2_args=self.minimap2_args,
+            util_sort_args=self.util_sort_args,
+        ).add_to(dag)
+
+    def add_mosdepth(
+        self,
+        dag: DAG,
+        ctx: StageContext,
+        inputs: List[pathlib.Path],
+        upstream: Set[Job],
+    ) -> None:
+        """Run mosdepth for QC, when it is available"""
+        if not versions_available(
+            MOSDEPTH_MIN_VERSIONS, skip=self.skip_version_check
+        ):
+            self.logger.warning(
+                "Skipping mosdepth. mosdepth version %s or later not found",
+                MOSDEPTH_MIN_VERSIONS["mosdepth"],
+            )
+            return
+
+        MosdepthStage(ctx=ctx, inputs=inputs).add_to(dag, upstream)
+
+    def add_sv_calling(
+        self,
+        dag: DAG,
+        ctx: StageContext,
+        inputs: List[pathlib.Path],
+        replace_rg: Optional[List[List[str]]],
+        upstream: Set[Job],
+    ) -> None:
+        """Call SVs from the long reads with Sentieon LongReadSV"""
+        bundle = self.required(self.model_bundle, "model_bundle")
+        require_versions(LONGREADSV_MIN_VERSIONS, skip=self.skip_version_check)
+
+        LongReadSVStage(
+            ctx=ctx,
+            inputs=inputs,
+            model=bundle.joinpath("longreadsv.model"),
+            interval=self.bed,
+            replace_rg=replace_rg,
+        ).add_to(dag, upstream)
+
+    def build_second_dag(self) -> Optional[DAG]:
+        """Build the second DAG, for sex-aware CNV calling"""
+        if self.skip_cnv:
+            return None
+        bundle = self.required(self.model_bundle, "model_bundle")
+        assert self.ploidy_json is not None
+        ctx = self.stage_context()
+
+        self.get_sex(self.ploidy_json)
+
+        self.logger.info("Building the DNAscope Hybrid CNV DAG")
+        dag = DAG()
+        CNVscopeStage(
+            ctx=ctx,
+            inputs=self.cnv_sr_aln,
+            model=bundle.joinpath("cnv.model"),
+            cnvscope_vcf=ctx.tmp_dir.joinpath("cnvscope.vcf.gz"),
+            cnv_vcf=pathlib.Path(
+                str(ctx.output_vcf).replace(".vcf.gz", ".cnv.vcf.gz")
+            ),
+            sample_sex=self.sample_sex,
+            par_bed=self.cnv_par_bed,
+            dump_probes=pathlib.Path(
+                str(ctx.output_vcf).replace(".vcf.gz", ".cnv.probes")
+            ),
+            interval=self.bed,
+            replace_rg=self.cnv_replace_rg,
+        ).add_to(dag)
+        return dag
+
+    def add_cleanup(
+        self,
+        dag: DAG,
+        paths: List[pathlib.Path],
+        name: str,
+        upstream: Set[Job],
+    ) -> None:
+        """Remove intermediate files once `upstream` has finished.
+
+        A no-op under `--retain_tmpdir`, which keeps everything the run
+        wrote in the temporary directory.
+        """
+        if self.retain_tmpdir:
+            return
+        dag.add_job(rm_job(paths, name), upstream)
+
+    def add_variant_calling(
+        self,
+        dag: DAG,
+        ctx: StageContext,
         sr_aln: List[pathlib.Path],
         lr_aln: List[pathlib.Path],
         rg_info: RgInfo,
-        **_kwargs: Any,
-    ) -> Tuple[
-        Job,
-        Job,
-        Job,
-        Job,
-        Job,
-        Job,
-        Job,
-        Job,
-        Job,
-        Job,
-        Job,
-        Job,
-        Job,
-        Job,
-        Job,
-        Job,
-        Job,
-        Optional[List[Job]],
-        Optional[Job],
-        Optional[Job],
-        Optional[Job],
-    ]:
+        upstream: Set[Job],
+    ) -> None:
         """
         Call SNVs and indels using the DNAscope hybrid pipeline
+
+        A first calling pass over the input alignments picks the regions
+        that need realignment; the three hybrid-realignment stages realign
+        the short reads there; a second pass recalls those regions, and the
+        two call sets are merged, annotated and filtered.
         """
-        if not self.output_vcf:
-            self.logger.error("output_vcf is required")
-            sys.exit(2)
-        if not self.reference:
-            self.logger.error("reference is required")
-            sys.exit(2)
-        if not self.model_bundle:
-            self.logger.error("model_bundle is required")
-            sys.exit(2)
+        bundle = self.required(self.model_bundle, "model_bundle")
 
-        ref_fai = pathlib.Path(str(self.reference) + ".fai")
+        ref_fai = pathlib.Path(str(ctx.reference) + ".fai")
 
-        if not self.skip_version_check:
-            for cmd, min_version in CALLING_MIN_VERSIONS.items():
-                if not check_version(cmd, min_version):
-                    sys.exit(2)
+        require_versions(CALLING_MIN_VERSIONS, skip=self.skip_version_check)
+
+        hybrid_model = bundle.joinpath("hybrid.model")
 
         # First pass - combined variant calling
         vcf_suffix = ".g.vcf.gz" if self.gvcf else ".vcf.gz"
         combined_vcf = self.tmp_dir.joinpath("initial" + vcf_suffix)
         emit_mode = "gvcf" if self.gvcf else None
-        driver: BaseDriver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-            replace_rg=rg_info.replace_rg_args[0] + rg_info.replace_rg_args[1],
-            input=lr_aln + sr_aln,
+        call = DNAscopeStage(
+            ctx=ctx,
+            algos=[
+                DNAscope(
+                    combined_vcf,
+                    dbsnp=self.dbsnp,
+                    model=hybrid_model,
+                    pcr_indel_model="none",
+                    emit_mode=emit_mode,
+                )
+            ],
+            inputs=lr_aln + sr_aln,
             interval=self.bed,
             read_filter=rg_info.ultima_read_filter
             + rg_info.lr_rg_read_filter
             + rg_info.sr_rg_read_filter,
-        )
-        driver.add_algo(
-            DNAscope(
-                combined_vcf,
-                dbsnp=self.dbsnp,
-                model=self.model_bundle.joinpath("hybrid.model"),
-                pcr_indel_model="none",
-                emit_mode=emit_mode,
-            )
-        )
-        call_job = Job(
-            Pipeline(Command(*driver.build_cmd())), "calling-1", self.cores
-        )
+            replace_rg=rg_info.replace_rg_args[0] + rg_info.replace_rg_args[1],
+            name="dnascope-1",
+        ).add_to(dag, upstream)
 
         # Region selection
         hybrid_select = pathlib.Path(
@@ -782,27 +911,26 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             ),
             "hybrid-select",
             0,
+            task_name="region-selection",
         )
+        dag.add_job(select_job, call.terminal)
 
         mapq0_bed = self.tmp_dir.joinpath("hybrid_mapq0.bed")
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-            replace_rg=rg_info.replace_rg_args[0] + rg_info.replace_rg_args[1],
-            input=lr_aln + sr_aln,
+        mapq0_job = driver_job(
+            ctx,
+            [
+                HybridStage2(
+                    model=bundle.joinpath("HybridStage2_region.model"),
+                    all_bed=mapq0_bed,
+                )
+            ],
+            name="mapq0-bed",
+            task_name="region-selection",
+            inputs=lr_aln + sr_aln,
             read_filter=rg_info.lr_rg_read_filter + rg_info.sr_rg_read_filter,
+            replace_rg=rg_info.replace_rg_args[0] + rg_info.replace_rg_args[1],
         )
-        driver.add_algo(
-            HybridStage2(
-                model=self.model_bundle.joinpath("HybridStage2_region.model"),
-                all_bed=mapq0_bed,
-            )
-        )
-        mapq0_job = Job(
-            Pipeline(Command(*driver.build_cmd())),
-            "mapq0-bed",
-            self.cores,
-        )
+        dag.add_job(mapq0_job, upstream)
 
         mapq0_slop_bed = self.tmp_dir.joinpath("hybrid_mapq0.ex1000.bed")
         mapq0_slop_job = Job(
@@ -814,7 +942,9 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             ),
             "mapq0-bed-slop",
             0,
+            task_name="region-selection",
         )
+        dag.add_job(mapq0_slop_job, {mapq0_job})
 
         diff_bed = self.tmp_dir.joinpath("merged_diff.bed")
         cat_merge_job = Job(
@@ -825,14 +955,20 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             ),
             "concat-merge-bed",
             0,
+            task_name="region-selection",
         )
-        rm_cmd = ["rm", str(selected_bed), str(mapq0_slop_bed)]
-        rm_job1 = Job(Pipeline(Command(*rm_cmd, fail_ok=True)), "rm-tmp1", 0)
+        dag.add_job(cat_merge_job, {mapq0_slop_job, select_job})
+        self.add_cleanup(
+            dag,
+            [selected_bed, mapq0_slop_bed],
+            "rm-tmp1",
+            {cat_merge_job},
+        )
 
         stage1_ins_fa = self.tmp_dir.joinpath("stage1_ins.fa")
         stage1_ins_bed = self.tmp_dir.joinpath("stage1_ins.bed")
         ins_driver = Driver(
-            reference=self.reference,
+            reference=ctx.reference,
             thread_count=self.cores,
             replace_rg=rg_info.replace_rg_args[0],
             input=lr_aln,
@@ -841,7 +977,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         ins_driver.add_algo(
             HybridStage1(
                 "-",
-                model=self.model_bundle.joinpath("HybridStage1_ins.model"),
+                model=bundle.joinpath("HybridStage1_ins.model"),
                 fa_file=stage1_ins_fa,
                 bed_file=stage1_ins_bed,
             )
@@ -850,8 +986,21 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         stage1_hap_bam = self.tmp_dir.joinpath("stage1_hap.bam")
         stage1_hap_bed = self.tmp_dir.joinpath("stage1_hap.bed")
         stage1_hap_vcf = self.tmp_dir.joinpath("stage1_hap.vcf")
+
+        # The algo writes its fastq output to a fifo read by the bwa job
+        # and its unsorted haplotype alignments to stdout
+        stage1_fifo = self.tmp_dir.joinpath("stage1_hap.fq")
+        stage1_fifo_job = Job(
+            Pipeline(Command("mkfifo", str(stage1_fifo))),
+            "stage1-fifo",
+            1,
+            task_name="hybrid-realignment",
+        )
+        # The haplotype job writes the fifo read by the first-stage job
+        dag.add_job(stage1_fifo_job)
+
         stage1_driver = Driver(
-            reference=self.reference,
+            reference=ctx.reference,
             thread_count=self.cores,
             replace_rg=rg_info.replace_rg_args[0],
             input=lr_aln,
@@ -860,115 +1009,135 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         )
         stage1_driver.add_algo(
             HybridStage1(
-                "-",
-                model=self.model_bundle.joinpath("HybridStage1.model"),
-                hap_bam=stage1_hap_bam,
+                stage1_fifo,
+                model=bundle.joinpath("HybridStage1.model"),
+                hap_bam="-",
                 hap_bed=stage1_hap_bed,
                 hap_vcf=stage1_hap_vcf,
             )
         )
+        stage1_hap_job = Job(
+            cmds.hybrid_stage1_hap(
+                stage1_hap_bam,
+                stage1_driver,
+                self.cores,
+            ),
+            "first-stage-hap",
+            # This job writes the fifo that the `first-stage` job reads, so
+            # the two need to run concurrently. Jobs requesting 0 threads
+            # start immediately instead of waiting for the thread budget;
+            # requesting `self.cores` here could let the scheduler serialize
+            # the two jobs and deadlock on the fifo.
+            0,
+            task_name="hybrid-realignment",
+        )
+        dag.add_job(stage1_hap_job, {stage1_fifo_job, cat_merge_job})
 
         stage1_bam = self.tmp_dir.joinpath("hybrid_stage1.bam")
         stage1_job = Job(
             cmds.hybrid_stage1(
                 out_aln=stage1_bam,
-                reference=self.reference,
+                reference=ctx.reference,
                 cores=self.cores,
                 readgroup=f"@RG\\tID:hybrid-18893\\tSM:{self.hybrid_rg_sm}",
                 ins_driver=ins_driver,
-                stage1_driver=stage1_driver,
-                bwa_model=self.model_bundle.joinpath("HybridStage1_bwa.model"),
+                hap_fastq_fifo=stage1_fifo,
+                bwa_model=bundle.joinpath("HybridStage1_bwa.model"),
             ),
             "first-stage",
             self.cores,
+            task_name="hybrid-realignment",
         )
-        rm_cmd = [
-            "rm",
-            str(stage1_ins_fa),
-            str(stage1_ins_bed),
-            str(stage1_hap_vcf),
-        ]
-        rm_job2 = Job(Pipeline(Command(*rm_cmd, fail_ok=True)), "rm-tmp2", 0)
+        dag.add_job(stage1_job, {stage1_fifo_job, cat_merge_job})
+        self.add_cleanup(
+            dag,
+            [stage1_ins_fa, stage1_ins_bed, stage1_hap_vcf],
+            "rm-tmp2",
+            {stage1_job, stage1_hap_job},
+        )
 
         stage2_bed = self.tmp_dir.joinpath("hybrid_stage2.bed")
         stage2_unmap_bam = self.tmp_dir.joinpath("hybrid_stage2_unmap.bam")
         stage2_alt_bam = self.tmp_dir.joinpath("hybrid_stage2_alt.bam")
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-            input=[stage1_bam, stage1_hap_bam],
+        second_stage_job = driver_job(
+            ctx,
+            [
+                HybridStage2(
+                    model=bundle.joinpath("HybridStage2.model"),
+                    hap_bed=stage1_hap_bed,
+                    unmap_bam=stage2_unmap_bam,
+                    alt_bam=stage2_alt_bam,
+                    all_bed=stage2_bed,
+                )
+            ],
+            name="second-stage",
+            task_name="hybrid-realignment",
+            inputs=[stage1_bam, stage1_hap_bam],
         )
-        driver.add_algo(
-            HybridStage2(
-                model=self.model_bundle.joinpath("HybridStage2.model"),
-                hap_bed=stage1_hap_bed,
-                unmap_bam=stage2_unmap_bam,
-                alt_bam=stage2_alt_bam,
-                all_bed=stage2_bed,
-            )
+        dag.add_job(second_stage_job, {stage1_job, stage1_hap_job})
+        self.add_cleanup(
+            dag,
+            [stage1_bam, stage1_hap_bam],
+            "rm-tmp3",
+            {second_stage_job},
         )
-        second_stage_job = Job(
-            Pipeline(Command(*driver.build_cmd())),
-            "second-stage",
-            self.cores,
-        )
-
-        rm_cmd = ["rm", str(stage1_bam), str(stage1_hap_bam)]
-        rm_job3 = Job(Pipeline(Command(*rm_cmd, fail_ok=True)), "rm-tmp3", 0)
 
         suffix = "bam" if self.bam_format else "cram"
         stage3_aln = pathlib.Path(
-            str(self.output_vcf).replace(".vcf.gz", f"_sr_realigned.{suffix}")
+            str(ctx.output_vcf).replace(".vcf.gz", f"_sr_realigned.{suffix}")
         )
-        driver = Driver(
-            reference=self.reference,
+        stage3_driver = Driver(
+            reference=ctx.reference,
             thread_count=self.cores,
             replace_rg=rg_info.replace_rg_args[0] + rg_info.replace_rg_args[1],
             input=lr_aln + sr_aln + [stage2_unmap_bam, stage2_alt_bam],
             interval=stage2_bed,
             read_filter=rg_info.lr_rg_read_filter + rg_info.sr_rg_read_filter,
         )
-        driver.add_algo(
+        stage3_driver.add_algo(
             HybridStage3(
                 "-",
-                model=self.model_bundle.joinpath("HybridStage3.model"),
+                model=bundle.joinpath("HybridStage3.model"),
             )
         )
         third_stage_job = Job(
             cmds.hybrid_stage3(
                 stage3_aln,
-                reference=self.reference,
-                driver=driver,
+                reference=ctx.reference,
+                driver=stage3_driver,
                 cores=self.cores,
             ),
             "third-stage",
             self.cores,
+            task_name="hybrid-realignment",
         )
-        rm_cmd = ["rm", str(stage2_unmap_bam), str(stage2_alt_bam)]
-        rm_job4 = Job(Pipeline(Command(*rm_cmd, fail_ok=True)), "rm-tmp4", 0)
+        dag.add_job(third_stage_job, {second_stage_job})
+        self.add_cleanup(
+            dag,
+            [stage2_unmap_bam, stage2_alt_bam],
+            "rm-tmp4",
+            {third_stage_job},
+        )
 
         # pass 2 of variant calling
         pass2_vcf = self.tmp_dir.joinpath("hybrid_pass2.vcf.gz")
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-            replace_rg=rg_info.replace_rg_args[0],
-            input=lr_aln + [stage3_aln],
+        call2 = DNAscopeStage(
+            ctx=ctx,
+            algos=[
+                DNAscope(
+                    pass2_vcf,
+                    dbsnp=self.dbsnp,
+                    model=hybrid_model,
+                    pcr_indel_model="none",
+                    emit_mode=emit_mode,
+                )
+            ],
+            inputs=lr_aln + [stage3_aln],
             interval=stage2_bed,
             read_filter=rg_info.ultima_read_filter + rg_info.lr_rg_read_filter,
-        )
-        driver.add_algo(
-            DNAscope(
-                pass2_vcf,
-                dbsnp=self.dbsnp,
-                model=self.model_bundle.joinpath("hybrid.model"),
-                pcr_indel_model="none",
-                emit_mode=emit_mode,
-            )
-        )
-        call2_job = Job(
-            Pipeline(Command(*driver.build_cmd())), "call2", self.cores
-        )
+            replace_rg=rg_info.replace_rg_args[0],
+            name="dnascope-2",
+        ).add_to(dag, {third_stage_job})
 
         # Merge and normalize the VCFs
         subset_vcf = self.tmp_dir.joinpath("mix_subset.vcf.gz")
@@ -981,7 +1150,9 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             ),
             "subset-calls",
             0,
+            task_name="vcf-merge",
         )
+        dag.add_job(subset_job, {second_stage_job})
         concat_job = Job(
             cmds.bcftools_concat(
                 combined_tmp_vcf,
@@ -989,9 +1160,15 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             ),
             "concat-calls",
             0,
+            task_name="vcf-merge",
         )
-        rm_cmd = ["rm", str(combined_vcf), str(subset_vcf), str(pass2_vcf)]
-        rm_job5 = Job(Pipeline(Command(*rm_cmd, fail_ok=True)), "rm-tmp5", 0)
+        dag.add_job(concat_job, {subset_job} | call2.terminal)
+        self.add_cleanup(
+            dag,
+            [combined_vcf, subset_vcf, pass2_vcf],
+            "rm-tmp5",
+            {concat_job},
+        )
 
         # Annotate the output VCF
         hybrid_anno = pathlib.Path(
@@ -999,7 +1176,7 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
         )
         anno_target = self.tmp_dir.joinpath("combined_tmp_anno.vcf.gz")
         if self.skip_model_apply and not self.pop_vcf:
-            anno_target = self.output_vcf
+            anno_target = ctx.output_vcf
 
         anno_job = Job(
             cmds.cmd_pyexec_hybrid_anno(
@@ -1011,106 +1188,51 @@ class DNAscopeHybridPipeline(DNAscopePipeline, DNAscopeLRPipeline):
             ),
             "anno-calls",
             0,
+            task_name="annotation",
         )
+        dag.add_job(anno_job, {concat_job})
 
-        transfer_jobs: Optional[List[Job]] = None
-        transfer_concat_job: Optional[Job] = None
-        input_to_apply = anno_target
+        if not self.pop_vcf and self.skip_model_apply:
+            # `anno_target` is already the output VCF
+            return
 
+        # Transfer annotations and apply the model
+        transfer_spec: Optional[TransferSpec] = None
         if self.pop_vcf:
             transfer_target = self.tmp_dir.joinpath(
                 "combined_tmp_transfer.vcf.gz"
             )
             if self.skip_model_apply:
-                transfer_target = self.output_vcf
-
-            transfer_jobs, transfer_concat_job = build_transfer_jobs(
-                transfer_target,
-                self.pop_vcf,
-                anno_target,
-                self.tmp_dir,
-                self.shards,
-                self.pop_vcf_contigs,
-                self.fai_data,
-                self.dry_run,
-                self.cores,
+                transfer_target = ctx.output_vcf
+            transfer_spec = TransferSpec(
+                TransferConfig.from_pipeline(self), transfer_target
             )
-            input_to_apply = transfer_target
+
+        apply_spec: Optional[ApplySpec] = None
+        apply_vcf = self.tmp_dir.joinpath("combined_apply.vcf.gz")
+        if not self.skip_model_apply:
+            apply_spec = ApplySpec(hybrid_model, apply_vcf)
+
+        transfer_apply = TransferApplyStage(
+            ctx=ctx,
+            raw_vcf=anno_target,
+            transfer=transfer_spec,
+            apply=apply_spec,
+        ).add_to(dag, {anno_job})
 
         if self.skip_model_apply:
-            return (
-                call_job,
-                select_job,
-                mapq0_job,
-                mapq0_slop_job,
-                cat_merge_job,
-                rm_job1,
-                stage1_job,
-                rm_job2,
-                second_stage_job,
-                rm_job3,
-                third_stage_job,
-                rm_job4,
-                call2_job,
-                subset_job,
-                concat_job,
-                rm_job5,
-                anno_job,
-                transfer_jobs,
-                transfer_concat_job,
-                None,
-                None,
-            )
-
-        # Model Apply
-        apply_vcf = self.tmp_dir.joinpath("combined_apply.vcf.gz")
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-            interval=self.bed,
-        )
-        driver.add_algo(
-            DNAModelApply(
-                model=self.model_bundle.joinpath("hybrid.model"),
-                vcf=input_to_apply,
-                output=apply_vcf,
-            )
-        )
-        apply_job = Job(
-            Pipeline(Command(*driver.build_cmd())), "model-apply", self.cores
-        )
+            return
 
         # Final normalize
         norm_job = Job(
             cmds.filter_norm(
-                self.output_vcf,
+                ctx.output_vcf,
                 apply_vcf,
-                self.reference,
+                ctx.reference,
                 exclude_homref=not self.gvcf,
             ),
             "final-norm",
             0,
+            task_name="vcf-norm",
         )
-        return (
-            call_job,
-            select_job,
-            mapq0_job,
-            mapq0_slop_job,
-            cat_merge_job,
-            rm_job1,
-            stage1_job,
-            rm_job2,
-            second_stage_job,
-            rm_job3,
-            third_stage_job,
-            rm_job4,
-            call2_job,
-            subset_job,
-            concat_job,
-            rm_job5,
-            anno_job,
-            transfer_jobs,
-            transfer_concat_job,
-            apply_job,
-            norm_job,
-        )
+        dag.add_job(norm_job, transfer_apply.terminal)

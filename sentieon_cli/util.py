@@ -3,16 +3,27 @@ Utility functions
 """
 
 import argparse
+from enum import Enum
+import gzip
 from importlib.metadata import PackageNotFoundError, version
 import multiprocessing as mp
 import os
 import pathlib
 import re
-import shlex
 import shutil
 import subprocess as sp
+import sys
 import tempfile
-from typing import Callable, Dict, List, Optional
+from typing import (
+    IO,
+    Callable,
+    Dict,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Tuple,
+)
 
 import packaging.version
 
@@ -29,7 +40,67 @@ PRELOAD_SEP = r":| "
 PRELOAD_SEP_PAT = re.compile(PRELOAD_SEP)
 
 NUMA_NODE_PAT = re.compile(r"^NUMA node. CPU\(s\):\s+(?P<cpus>.*)$")
-READ_LENGTH_PAT = re.compile(r"SN\taverage length:\t(?P<length>\d*)$")
+
+_UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
+
+# The first two bytes of a gzip (and so of a BGZF) file
+GZIP_MAGIC = b"\x1f\x8b"
+
+
+class SampleSex(Enum):
+    FEMALE = 1
+    MALE = 2
+    UNKNOWN = 3
+
+
+def sample_sex_arg(value: str) -> SampleSex:
+    """Parse the `--sample_sex` argument"""
+    sex = value.strip().lower()
+    if sex == "male":
+        return SampleSex.MALE
+    if sex == "female":
+        return SampleSex.FEMALE
+    raise argparse.ArgumentTypeError(
+        f"invalid sample sex '{value}'. Please supply 'male' or 'female'"
+    )
+
+
+def cnvscope_sex_args(
+    sample_sex: Optional[SampleSex],
+    par_bed: Optional[pathlib.Path],
+) -> Tuple[Optional[str], Optional[pathlib.Path]]:
+    """The CNVscope `--sex` and `--par` arguments for a sample.
+
+    Male samples are called with the pseudo-autosomal regions (PAR) BED
+    file. Female samples do not need a PAR BED file. When the sample sex
+    is not known, both arguments are omitted and CNVscope assumes a
+    diploid genome, matching the behavior of previous releases.
+    """
+    if sample_sex is SampleSex.MALE:
+        return ("M", par_bed)
+    if sample_sex is SampleSex.FEMALE:
+        return ("F", None)
+    logger.warning(
+        "The sample sex is not known. CNVscope will assume a diploid "
+        "genome, matching the behavior of previous releases. Supply "
+        "`--sample_sex` for sex-aware CNV calling."
+    )
+    return (None, None)
+
+
+def caller_sex_arg(sample_sex: Optional[SampleSex]) -> str:
+    """The `--sex male|female` value for ExpansionHunter and segdup-caller.
+
+    Both tools accept only the two values, so an unknown sample sex
+    collapses to "female", unchanged from the previous
+    dnascope-pangenome behavior.
+    """
+    return "male" if sample_sex is SampleSex.MALE else "female"
+
+
+def sanitize(component: str) -> str:
+    """Restrict a path component to filesystem-safe characters"""
+    return _UNSAFE.sub("-", component)
 
 
 def tmp():
@@ -37,6 +108,45 @@ def tmp():
     tmp_base = os.getenv("SENTIEON_TMPDIR")
     tmp_dir = tempfile.mkdtemp(dir=tmp_base)
     return tmp_dir
+
+
+def executable_version(cmd: str) -> Optional[packaging.version.Version]:
+    """The version reported by `<cmd> --version`.
+
+    Returns `None`, after logging the reason, when the command cannot be
+    run or its output is not a version.
+    """
+    cmd_list: List[str] = cmd.split()
+    cmd_list.append("--version")
+    try:
+        cmd_version_str = (
+            sp.check_output(cmd_list).decode("utf-8", "ignore").strip()
+        )
+    except (sp.CalledProcessError, OSError) as e:
+        logger.error(
+            "Error: could not determine the version of '%s': %s", cmd, e
+        )
+        return None
+    if cmd_list[0] == "sentieon":
+        cmd_version_str = cmd_version_str.split("-")[-1]
+    elif cmd_list[0] == "pbsv":
+        cmd_version_str = cmd_version_str.split(" ")[1]
+    elif cmd_list[0] == "hificnv":
+        cmd_version_str = cmd_version_str.split(" ")[1].split("-")[0]
+    else:
+        # handle, e.g. bcftools which outputs multiple lines.
+        cmd_version_str = (
+            cmd_version_str.split("\n")[0].split()[-1].split("-")[0]
+        )
+    try:
+        return packaging.version.Version(cmd_version_str)
+    except packaging.version.InvalidVersion:
+        logger.error(
+            "Error: could not parse the version of '%s': '%s'",
+            cmd,
+            cmd_version_str,
+        )
+        return None
 
 
 def check_version(
@@ -53,28 +163,9 @@ def check_version(
     if version is None:
         return True
 
-    cmd_list.append("--version")
-    try:
-        cmd_version_str = (
-            sp.check_output(cmd_list).decode("utf-8", "ignore").strip()
-        )
-    except (sp.CalledProcessError, OSError) as e:
-        logger.error(
-            "Error: could not determine the version of '%s': %s", cmd, e
-        )
+    cmd_version = executable_version(cmd)
+    if cmd_version is None:
         return False
-    if cmd_list[0] == "sentieon":
-        cmd_version_str = cmd_version_str.split("-")[-1]
-    elif cmd_list[0] == "pbsv":
-        cmd_version_str = cmd_version_str.split(" ")[1]
-    elif cmd_list[0] == "hificnv":
-        cmd_version_str = cmd_version_str.split(" ")[1].split("-")[0]
-    else:
-        # handle, e.g. bcftools which outputs multiple lines.
-        cmd_version_str = (
-            cmd_version_str.split("\n")[0].split()[-1].split("-")[0]
-        )
-    cmd_version = packaging.version.Version(cmd_version_str)
     if cmd_version < version:
         logger.error(
             "Error: the pipeline requires %s version '%s' or later "
@@ -86,6 +177,45 @@ def check_version(
         )
         return False
     return True
+
+
+def require_versions(
+    min_versions: Mapping[str, Optional[packaging.version.Version]],
+    *,
+    skip: bool = False,
+) -> None:
+    """Exit unless every executable meets its minimum version.
+
+    `check_version` has already logged the reason, so the exit is silent.
+    Pass `skip=True` (the pipelines' `--skip_version_check`) to do nothing.
+
+    A `Mapping` rather than a `Dict`, so the module-level
+    `*_MIN_VERSIONS` constants -- some of which mypy infers as
+    `Dict[str, Version]`, with no `None` entry -- are accepted.
+    """
+    if skip:
+        return
+    for cmd, min_version in min_versions.items():
+        if not check_version(cmd, min_version):
+            sys.exit(2)
+
+
+def versions_available(
+    min_versions: Mapping[str, Optional[packaging.version.Version]],
+    *,
+    skip: bool = False,
+) -> bool:
+    """Whether every executable meets its minimum version.
+
+    For optional tools, where a missing or outdated executable skips a step
+    rather than ending the run. `skip=True` reports them as available.
+    """
+    if skip:
+        return True
+    return all(
+        check_version(cmd, min_version)
+        for cmd, min_version in min_versions.items()
+    )
 
 
 def path_arg(
@@ -146,6 +276,36 @@ def total_memory() -> int:
                 pass
     total_mem = min(total_mem, cgroup_mem_limit)
     return total_mem
+
+
+def set_bwt_max_mem(
+    total_input_size: int,
+    n_alignment_jobs: int = 1,
+    override: Optional[str] = None,
+) -> str:
+    """Set the `bwt_max_mem` environment variable and return its value.
+
+    `override` short-circuits the calculation, for the hidden
+    `--bwt_max_mem` argument. Otherwise the value is derived from the
+    memory available to the run, the size of the inputs staged in
+    memory, and the number of concurrent alignment jobs.
+    """
+    if override:
+        os.environ["bwt_max_mem"] = override
+        return override
+
+    total_mem = total_memory()
+    total_mem_gb = total_mem / (1024.0**3)
+    align_mem_gb = (
+        total_mem_gb - 4 - total_input_size / (1024.0**3) * 2.3
+    )  # some memory for other system processes
+    bwa_mem_gb = max(
+        int((align_mem_gb / n_alignment_jobs) - 6), 0
+    )  # some memory for other alignment processes
+    logger.debug("Setting bwt_max_mem to: %sG", bwa_mem_gb)
+    bwt_max_mem = f"{bwa_mem_gb}G"
+    os.environ["bwt_max_mem"] = bwt_max_mem
+    return bwt_max_mem
 
 
 def find_numa_nodes() -> List[str]:
@@ -213,65 +373,75 @@ def parse_rg_line(rg_line: str) -> Dict[str, str]:
     return parsed
 
 
-def get_read_length_aln(
-    aln: pathlib.Path,
-    reference: pathlib.Path,
-    n_reads: int = 100000,
-) -> int:
-    """Get the average read length for an alignment file"""
-    cmds = []
-    cmds.append(
-        [
-            "samtools",
-            "view",
-            "-h",
-            "--reference",
-            shlex.quote(str(reference)),
-            shlex.quote(str(aln)),
-        ]
-    )
-    cmds.append(
-        [
-            "head",
-            "-n",
-            str(n_reads),
-        ]
-    )
-    cmds.append(["samtools", "stats", "-"])
-    all_cmds = [shlex.join(x) for x in cmds]
-    cmd = " | ".join(all_cmds)
-    res = sp.run(
-        cmd,
-        shell=True,
-        capture_output=True,
-        text=True,
-        executable="/bin/bash",
-    )
-
-    for line in res.stdout.split("\n"):
-        m = READ_LENGTH_PAT.match(line)
-        if m:
-            return int(m.groupdict()["length"])
-    return 151
+class VcfHeaderError(ValueError):
+    """A VCF header could not be read"""
 
 
-def vcf_id(in_vcf: pathlib.Path) -> Optional[str]:
-    """Collect the SentieonVcfID header"""
-    cmd = ["bcftools", "view", "-h", str(in_vcf)]
-    p = sp.run(cmd, capture_output=True, text=True)
-    if p.returncode != 0:
-        logger.error(
-            "`%s` failed with return code %d: %s",
-            " ".join(cmd),
-            p.returncode,
-            p.stderr.strip(),
-        )
-        return None
-    for line in p.stdout.split("\n"):
+def _open_vcf_text(in_vcf: pathlib.Path) -> IO[str]:
+    """Open a VCF for reading, transparently decompressing it.
+
+    The first two bytes decide: a BGZF file is a gzip file, and a VCF is
+    routinely named without regard to how it is compressed.
+    """
+    with open(in_vcf, "rb") as raw:
+        compressed = raw.read(len(GZIP_MAGIC)) == GZIP_MAGIC
+    if compressed:
+        return gzip.open(in_vcf, "rt")
+    return open(in_vcf, "rt")
+
+
+def read_vcf_header(in_vcf: pathlib.Path) -> List[str]:
+    """Read the header lines of a VCF file.
+
+    Lines are read until the first one that is not a header line, so the
+    body of the file is never touched: the header of a whole-genome
+    population VCF parses in milliseconds, with no `bcftools` on the
+    PATH and no subprocess.
+
+    Raises:
+        VcfHeaderError: the file holds no VCF header, or its header
+            could not be decompressed or decoded.
+        OSError: the file does not exist or could not be read.
+    """
+    header: List[str] = []
+    try:
+        with _open_vcf_text(in_vcf) as fh:
+            for line in fh:
+                if not line.startswith("#"):
+                    break
+                header.append(line.rstrip("\n"))
+                if line.startswith("#CHROM"):
+                    break
+    except (gzip.BadGzipFile, EOFError, UnicodeDecodeError) as err:
+        raise VcfHeaderError(
+            f"{in_vcf}: the VCF header could not be read ({err})"
+        ) from err
+    if not header:
+        raise VcfHeaderError(f"{in_vcf}: the file has no VCF header")
+    return header
+
+
+def vcf_id_from_header(header: Iterable[str]) -> Optional[str]:
+    """The `##SentieonVcfID` of VCF header lines, `None` when absent"""
+    for line in header:
         if line.startswith("##SentieonVcfID="):
             i = line.index("=")
             return line[i + 1 :]  # noqa: E203
     return None
+
+
+def vcf_id(in_vcf: pathlib.Path) -> Optional[str]:
+    """Collect the SentieonVcfID header.
+
+    Returns `None` when the header has no ID and when it could not be
+    read at all; an unreadable header is logged.
+    """
+    try:
+        header = read_vcf_header(in_vcf)
+    except (VcfHeaderError, OSError) as err:
+        logger.error("%s", err)
+        return None
+    return vcf_id_from_header(header)
 
 
 def check_kmc_patch(kmc_cmd: str = "kmc") -> bool:

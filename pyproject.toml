@@ -1,7 +1,7 @@
 
 [project]
 name = "sentieon_cli"
-version = "1.7.0"
+version = "2.0.0"
 description = "Pipeline implementations for the Sentieon software"
 authors = [
     {name = "Don Freed", email = "don.freed@sentieon.com"},
@@ -27,6 +27,10 @@ dependencies = [
 [project.scripts]
 sentieon-cli = "sentieon_cli:main"
 
+[tool.poetry]
+# Ship the packaged pseudo-autosomal region (PAR) BED files
+include = [{ path = "sentieon_cli/data/*.bed", format = ["sdist", "wheel"] }]
+
 [tool.mypy]
 ignore_missing_imports = true
 
@@ -44,6 +48,7 @@ exclude = [
     "sentieon_cli/scripts/hybrid_anno.py",
     "sentieon_cli/scripts/hybrid_select.py",
     "sentieon_cli/scripts/indel2cnv.py",
+    "sentieon_cli/scripts/sad_lad_update.py",
     "sentieon_cli/scripts/trimalt.py",
     "sentieon_cli/archive.py",
     "playground",

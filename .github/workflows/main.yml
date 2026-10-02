@@ -15,7 +15,7 @@ jobs:
       max-parallel: 1
       matrix:
         python-version: ["3.11", "3.14"]
-        sentieon-version: ["202503.02"]
+        sentieon-version: ["${{ vars.SENTIEON_VERSION }}"]
         os: [ubuntu-22.04] #, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
@@ -41,6 +41,10 @@ jobs:
           pip install multiqc
       - name: Install sentieon
         run: |
+          if [ -z "$SENTIEON_VERSION" ]; then
+            echo "::error::Repository variable SENTIEON_VERSION is not set." >&2
+            exit 1
+          fi
           url="https://s3.amazonaws.com/sentieon-release/software/sentieon-genomics-$SENTIEON_VERSION.tar.gz"
           bin_dir=$(pwd)/sentieon-genomics-$SENTIEON_VERSION/bin
           machine_arch=$(uname -m)
@@ -98,7 +102,7 @@ jobs:
       max-parallel: 1
       matrix:
         python-version: ["3.11", "3.14"]
-        sentieon-version: ["202503.02"]
+        sentieon-version: ["${{ vars.SENTIEON_VERSION }}"]
         os: [ubuntu-22.04] #, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
@@ -136,6 +140,10 @@ jobs:
           sudo chmod ugo+x /usr/local/bin/mosdepth
       - name: Install sentieon
         run: |
+          if [ -z "$SENTIEON_VERSION" ]; then
+            echo "::error::Repository variable SENTIEON_VERSION is not set." >&2
+            exit 1
+          fi
           url="https://s3.amazonaws.com/sentieon-release/software/sentieon-genomics-$SENTIEON_VERSION.tar.gz"
           bin_dir=$(pwd)/sentieon-genomics-$SENTIEON_VERSION/bin
           machine_arch=$(uname -m)
@@ -220,7 +228,7 @@ jobs:
       max-parallel: 1
       matrix:
         python-version: ["3.11", "3.14"]
-        sentieon-version: ["202503.02"]
+        sentieon-version: ["${{ vars.SENTIEON_VERSION }}"]
         os: [ubuntu-22.04] #, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
@@ -261,6 +269,10 @@ jobs:
           pip install multiqc
       - name: Install sentieon
         run: |
+          if [ -z "$SENTIEON_VERSION" ]; then
+            echo "::error::Repository variable SENTIEON_VERSION is not set." >&2
+            exit 1
+          fi
           url="https://s3.amazonaws.com/sentieon-release/software/sentieon-genomics-$SENTIEON_VERSION.tar.gz"
           bin_dir=$(pwd)/sentieon-genomics-$SENTIEON_VERSION/bin
           machine_arch=$(uname -m)
@@ -296,6 +308,7 @@ jobs:
             --sr_aln "tests/smoke/illumina.cram" \
             --lr_aln "tests/smoke/sam ple.cram" \
             -m "DNAscope hybrid IlmnPB1.1.bundle" \
+            --skip_cnv \
             --sr_duplicate_marking none \
             "output_hybrid1.vcf.gz"
           if [ ! -f "output_hybrid1.vcf.gz" ]; then
@@ -314,6 +327,7 @@ jobs:
             --lr_align_input \
             --lr_input_ref "tests/smoke/r ef.fa" \
             -m "DNAscope hybrid IlmnPB1.1.bundle" \
+            --skip_cnv \
             "output_hybrid2.vcf.gz"
           if [ ! -f "output_hybrid2.vcf.gz" ]; then
             exit 1
@@ -331,6 +345,7 @@ jobs:
             --sr_aln "tests/smoke/illumina.cram" "tests/smoke/illumina_2.bam" \
             --lr_aln "tests/smoke/sam ple.cram" \
             -m "DNAscope hybrid IlmnPB1.1.bundle" \
+            --skip_cnv \
             --sr_duplicate_marking none \
             "output_hybrid3.vcf.gz"
           if [ ! -f "output_hybrid3.vcf.gz" ]; then

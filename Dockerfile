@@ -293,7 +293,7 @@ RUN sentieon driver --help && \
     perl -c "$(command -v run-t1k)" && \
     SENTIEON_LICENSE=placeholder segdup-caller --version && \
     SENTIEON_LICENSE=placeholder python -c "import sys; from packaging.version import Version; \
-from sentieon_cli.sentieon_pangenome import SEGDUP_MIN_VERSION; \
+from sentieon_cli.stages.segdup import SEGDUP_MIN_VERSIONS; \
 from sentieon_cli.util import check_version; \
-sys.exit(0 if all(check_version(c, v) for c, v in SEGDUP_MIN_VERSION.items()) else 1)" && \
+sys.exit(0 if all(check_version(c, v) for c, v in SEGDUP_MIN_VERSIONS.items()) else 1)" && \
     sentieon-cli -h

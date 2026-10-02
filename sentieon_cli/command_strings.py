@@ -10,13 +10,18 @@ import shlex
 import subprocess as sp
 import sys
 import typing
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from .driver import BaseDriver, Driver, ReadWriter
 from .logging import get_logger
 from .shell_pipeline import Command, InputProcSub, Pipeline
 
 logger = get_logger(__name__)
+
+# Requested OS pipe-buffer size (bytes) for throughput-bound alignment
+# pipelines. Applied best-effort: the kernel caps unprivileged requests at
+# fs.pipe-max-size and non-Linux platforms keep their default size.
+ALN_PIPE_SIZE = 268435456
 
 
 def cmd_fai_to_bed(
@@ -41,23 +46,6 @@ def cmd_bedtools_subtract(
         str(phased_bed),
     ]
     return Pipeline(Command(*cmd), file_output=unphased_bed)
-
-
-def cmd_bedtools_merge(
-    in_bed: pathlib.Path,
-    out_bed: pathlib.Path,
-    distance: int = 0,
-) -> Pipeline:
-    """Bedtools merge"""
-    cmd = [
-        "bedtools",
-        "merge",
-        "-d",
-        str(distance),
-        "-i",
-        str(in_bed),
-    ]
-    return Pipeline(Command(*cmd), file_output=out_bed)
 
 
 def cmd_bedtools_slop(
@@ -311,24 +299,163 @@ def cmd_pyexec_hybrid_anno(
     return Pipeline(Command(*cmd))
 
 
+def cmd_pyexec_sad_lad_update(
+    out_vcf: pathlib.Path,
+    in_vcf: pathlib.Path,
+    sad_lad_update: pathlib.Path,
+    threads: int,
+) -> Pipeline:
+    """Update AD/DP by choosing between SAD and LAD"""
+    cmd = [
+        sys.executable,
+        str(sad_lad_update),
+        "--input_vcf",
+        str(in_vcf),
+        "--output_vcf",
+        str(out_vcf),
+        "--threads",
+        str(threads),
+    ]
+    return Pipeline(Command(*cmd))
+
+
+PANGENOME_META_MODULE = "sentieon_cli.pangenome_meta"
+
+# `sentieon_cli/__init__.py` imports every pipeline, so `pangenome_meta` is
+# already in `sys.modules` when `-m` re-executes it as `__main__`. The
+# duplicate module is harmless -- the script holds no state -- but runpy
+# warns about it on the stderr of every check job, so runpy's own warnings
+# are silenced rather than left to clutter the job logs.
+PANGENOME_META_WARNING_FILTER = "ignore::RuntimeWarning:runpy"
+
+
+def cmd_pangenome_meta(
+    subcommand: str,
+    input_flag: str,
+    input_file: pathlib.Path,
+    reference_name: str,
+    contig_prefix: str,
+) -> Pipeline:
+    """Run a `sentieon_cli.pangenome_meta` check on a pangenome file"""
+    cmd = [
+        sys.executable,
+        "-W",
+        PANGENOME_META_WARNING_FILTER,
+        "-m",
+        PANGENOME_META_MODULE,
+        subcommand,
+        input_flag,
+        str(input_file),
+        "--reference_name",
+        reference_name,
+        "--contig_prefix",
+        contig_prefix,
+    ]
+    return Pipeline(Command(*cmd))
+
+
+def cmd_check_pangenome_gbz(
+    gbz: pathlib.Path,
+    reference_name: str,
+    contig_prefix: str,
+) -> Pipeline:
+    """Check that a sampled pangenome kept its reference paths"""
+    return cmd_pangenome_meta(
+        "check-gbz", "--gbz", gbz, reference_name, contig_prefix
+    )
+
+
+def cmd_check_pangenome_gfa(
+    gfa: pathlib.Path,
+    reference_name: str,
+    contig_prefix: str,
+) -> Pipeline:
+    """Check that a pangenome GFA carries the reference's rGFA tags"""
+    return cmd_pangenome_meta(
+        "check-gfa", "--gfa", gfa, reference_name, contig_prefix
+    )
+
+
+def cmd_pyexec_indel2cnv(
+    out_vcf: pathlib.Path,
+    in_vcf: pathlib.Path,
+    reference: pathlib.Path,
+    indel2cnv_script: pathlib.Path,
+    threads: int,
+) -> Pipeline:
+    """Convert PangenomeSV INDELs to CNV calls"""
+    cmd = [
+        sys.executable,
+        str(indel2cnv_script),
+        str(reference),
+        str(in_vcf),
+        str(out_vcf),
+        "-t",
+        str(threads),
+    ]
+    return Pipeline(Command(*cmd))
+
+
+def cmd_pyexec_combine_cnv(
+    out_vcf: pathlib.Path,
+    cnv_vcf: pathlib.Path,
+    converted_vcf: pathlib.Path,
+    combine_script: pathlib.Path,
+) -> Pipeline:
+    """Combine CNVscope and converted SV calls"""
+    cmd = [
+        sys.executable,
+        str(combine_script),
+        "--cnv",
+        str(cnv_vcf),
+        "--converted",
+        str(converted_vcf),
+        "-o",
+        str(out_vcf),
+    ]
+    return Pipeline(Command(*cmd))
+
+
+def hybrid_stage1_hap(
+    out_hap_bam: pathlib.Path,
+    stage1_driver: BaseDriver,
+    cores: int,
+) -> Pipeline:
+    """Sort the haplotype alignments written to stdout by HybridStage1"""
+    sort_cmd = Command(
+        "sentieon",
+        "util",
+        "sort",
+        "-i",
+        "-",
+        "-t",
+        str(cores),
+        "-o",
+        str(out_hap_bam),
+        # No `--sam2bam`: the algo writes unsorted BAM, not SAM, to stdout
+    )
+    return Pipeline(Command(*stage1_driver.build_cmd()), sort_cmd)
+
+
 def hybrid_stage1(
     out_aln: pathlib.Path,
     reference: pathlib.Path,
     cores: int,
     readgroup: str,
     ins_driver: BaseDriver,
-    stage1_driver: BaseDriver,
+    hap_fastq_fifo: pathlib.Path,
     bwa_model: pathlib.Path,
 ) -> Pipeline:
     bwa_env = dict(os.environ)
     _ = bwa_env.pop("bwt_max_mem", None)
 
-    # Send the input of both fq commands to bwa with cat
-    fq1_cmd = Command(*stage1_driver.build_cmd())
+    # Send both sets of reads to bwa with cat. The HybridStage1 driver of
+    # the `hybrid_stage1_hap` job writes its fastq output to the fifo, so
+    # the fifo is read first to drain it while that job runs.
     fq2_cmd = Command(*ins_driver.build_cmd())
     cat_cmd = Command(
         "cat",
-        InputProcSub(Pipeline(fq1_cmd)),
+        str(hap_fastq_fifo),
         InputProcSub(Pipeline(fq2_cmd)),
     )
 
@@ -506,13 +633,16 @@ def cmd_samtools_fastq_minimap2(
     input_ref: Optional[pathlib.Path] = None,
     fastq_taglist: str = "*",
     minimap2_args: str = "-YL",
-    util_sort_args: str = "--cram_write_options version=3.0,compressor=rans",
+    util_sort_args: str = "",
+    minimap2_model: Optional[Union[pathlib.Path, str]] = None,
 ) -> Pipeline:
     """Re-align an input BAM/CRAM/uBAM/uCRAM file with minimap2"""
 
+    # `input_ref` decodes the input file, which may use a different
+    # reference from the alignment target
     ref_cmd: List[str] = []
     if input_ref:
-        ref_cmd = ["--reference", str(reference)]
+        ref_cmd = ["--reference", str(input_ref)]
     cmd_list = [
         Command(
             "samtools",
@@ -525,6 +655,9 @@ def cmd_samtools_fastq_minimap2(
             str(input_aln),
         )
     ]
+    mm2_model = (
+        minimap2_model if minimap2_model else f"{model_bundle}/minimap2.model"
+    )
     cmd_list.append(
         Command(
             "sentieon",
@@ -535,7 +668,7 @@ def cmd_samtools_fastq_minimap2(
             "-a",
             minimap2_args,
             "-x",
-            f"{model_bundle}/minimap2.model",
+            str(mm2_model),
             str(reference),
             "/dev/stdin",
         )
@@ -589,16 +722,15 @@ def cmd_samtools_fastq_bwa(
     bwa_args: str = "",
     bwa_k: str = "20000000",
     fastq_taglist: str = "RG",
-    util_sort_args: str = "--cram_write_options version=3.0,compressor=rans",
+    util_sort_args: str = "",
 ) -> Pipeline:
     """Re-align an input BAM/CRAM/uBAM/uCRAM file with bwa"""
+    # `input_ref` decodes the input file, which may use a different
+    # reference from the alignment target
     ref_cmd: List[str] = []
     if input_ref:
-        ref_cmd = ["--reference", str(reference)]
+        ref_cmd = ["--reference", str(input_ref)]
 
-    pipebuf_cmd = Command(
-        "perl", "-MFcntl", "-e", "fcntl(STDOUT, 1031, 268435456)"
-    )
     if collate:
         collate_cmd = Command(
             "samtools",
@@ -667,20 +799,18 @@ def cmd_samtools_fastq_bwa(
     )
     if collate_cmd:
         return Pipeline(
-            pipebuf_cmd,
             collate_cmd,
             fastq_cmd,
             bwa_cmd,
             sort_cmd,
-            skip_pipe=(0,),
+            pipe_size=ALN_PIPE_SIZE,
         )
     else:
         return Pipeline(
-            pipebuf_cmd,
             fastq_cmd,
             bwa_cmd,
             sort_cmd,
-            skip_pipe=(0,),
+            pipe_size=ALN_PIPE_SIZE,
         )
 
 
@@ -693,7 +823,7 @@ def cmd_fastq_minimap2(
     cores: int,
     unzip: str = "gzip",
     minimap2_args: str = "-YL",
-    util_sort_args: str = "--cram_write_options version=3.0,compressor=rans",
+    util_sort_args: str = "",
 ) -> Pipeline:
     """Align an input fastq file with minimap2"""
 
@@ -741,26 +871,15 @@ def cmd_fastq_bwa(
     unzip: str = "gzip",
     bwa_args: str = "",
     bwa_k: str = "20000000",
-    util_sort_args: str = "--cram_write_options version=3.0,compressor=rans",
+    util_sort_args: str = "",
     numa: Optional[str] = None,
     split: Optional[str] = None,
 ) -> Pipeline:
     """Align an input fastq file with bwa"""
-    pipebuf_cmd = Command(
-        "perl", "-MFcntl", "-e", "fcntl(STDOUT, 1031, 268435456)"
-    )
-    r1_unzip = Pipeline(
-        pipebuf_cmd,
-        Command(str(unzip), "-dc", str(r1)),
-        skip_pipe=(0,),
-    )
+    r1_unzip = Pipeline(Command(str(unzip), "-dc", str(r1)))
     r2_unzip = None
     if r2:
-        r2_unzip = Pipeline(
-            pipebuf_cmd,
-            Command(str(unzip), "-dc", str(r2)),
-            skip_pipe=(0,),
-        )
+        r2_unzip = Pipeline(Command(str(unzip), "-dc", str(r2)))
     bwa_cmd_args: List[Union[str, InputProcSub]] = [
         *(["taskset", "-c", numa] if numa else []),
         "sentieon",
@@ -780,7 +899,6 @@ def cmd_fastq_bwa(
     ]
     if split:
         extract_cmd = Pipeline(
-            pipebuf_cmd,
             Command(
                 "sentieon",
                 "fqidx",
@@ -792,7 +910,6 @@ def cmd_fastq_bwa(
                 InputProcSub(r1_unzip),
                 *([InputProcSub(r2_unzip)] if r2_unzip else []),
             ),
-            skip_pipe=(0,),
         )
         bwa_cmd_args.append(InputProcSub(extract_cmd))
     else:
@@ -816,10 +933,9 @@ def cmd_fastq_bwa(
         *util_sort_args.split(),
     )
     return Pipeline(
-        pipebuf_cmd,
         Command(str(bwa_cmd_args[0]), *bwa_cmd_args[1:]),
         sort_cmd,
-        skip_pipe=(0,),
+        pipe_size=ALN_PIPE_SIZE,
     )
 
 
@@ -893,19 +1009,22 @@ def cmd_kmc(
     return Pipeline(Command(*cmd))
 
 
-def cmd_extract_kmc(
-    output_prefix: pathlib.Path,
-    out_fastq: pathlib.Path,
+def _readwriter_extract_cmds(
     input_aln: List[pathlib.Path],
     reference: pathlib.Path,
     extract_model: pathlib.Path,
-    tmp_dir: pathlib.Path,
     rw_bam: pathlib.Path,
+    out_fastq: pathlib.Path,
     threads: int = 1,
-) -> Pipeline:
-    # `rw_bam` must already be a symlink to /dev/stdout;
-    # ReadWriter writes to it, which resolves to the driver's stdout (= the
-    # pipe to pgutil extract).
+) -> Tuple[Command, Command]:
+    """Read an aligned input once, writing the extracted reads to a fastq
+    file and the full read stream to stdout.
+
+    `rw_bam` must already be a symlink to /dev/stdout; ReadWriter writes to
+    it, which resolves to the driver's stdout (= the pipe to pgutil
+    extract). Duplicate, secondary, and supplementary reads are excluded
+    with `--output_flag_filter 0xf00:0`.
+    """
     driver = Driver(
         reference=reference,
         thread_count=threads,
@@ -938,6 +1057,27 @@ def cmd_extract_kmc(
         str(out_fastq),
         "-a",
         "-",
+    )
+    return driver_cmd, extract_cmd
+
+
+def cmd_extract_kmc(
+    output_prefix: pathlib.Path,
+    out_fastq: pathlib.Path,
+    input_aln: List[pathlib.Path],
+    reference: pathlib.Path,
+    extract_model: pathlib.Path,
+    tmp_dir: pathlib.Path,
+    rw_bam: pathlib.Path,
+    threads: int = 1,
+) -> Pipeline:
+    driver_cmd, extract_cmd = _readwriter_extract_cmds(
+        input_aln,
+        reference,
+        extract_model,
+        rw_bam,
+        out_fastq,
+        threads,
     )
     kmc_cmd = Command(
         "kmc",
@@ -981,188 +1121,14 @@ def cmd_vg_haplotypes(
     return Pipeline(Command(*cmd))
 
 
-def cmd_vg_giraffe(
-    sample_gam: pathlib.Path,
-    sample_pangenome: pathlib.Path,
-    fastq1: pathlib.Path,
-    fastq2: Optional[pathlib.Path],
-    readgroup="rg-1",
-    sample="sample",
-    threads=1,
-    max_fragment_length=3000,
-) -> Pipeline:
-    vg_cmd = [
-        "vg",
-        "giraffe",
-        "-t",
-        str(threads),
-        "-Z",
-        str(sample_pangenome),
-        "--read-group",
-        readgroup,
-        "--sample",
-        sample,
-        "-L",
-        str(max_fragment_length),
-        "--progress",
-        "-f",
-        str(fastq1),
-    ]
-    if fastq2:
-        vg_cmd.extend(["-f", str(fastq2)])
-
-    return Pipeline(Command(*vg_cmd), file_output=sample_gam)
-
-
-def cmd_vg_pack(
-    sample_pack: pathlib.Path,
-    sample_gams: List[pathlib.Path],
-    gbz: pathlib.Path,
-    min_mapq=5,
-    threads=1,
-) -> Pipeline:
-    cat_cmd = Command("cat", *[str(x) for x in sample_gams])
-    vg_cmd = Command(
-        "vg",
-        "pack",
-        "-x",
-        str(gbz),
-        "-g",
-        "-",
-        "-o",
-        str(sample_pack),
-        "-Q",
-        str(min_mapq),
-        "--threads",
-        str(threads),
-    )
-
-    return Pipeline(cat_cmd, vg_cmd)
-
-
-def cmd_sv_call(
-    out_svs: pathlib.Path,
-    sample_pack: pathlib.Path,
-    sv_header: pathlib.Path,
-    gbz: pathlib.Path,
-    snarls: pathlib.Path,
-    sample_name="",
-    ref_path="GRCh38",
-    min_indel_size=34,
-) -> Pipeline:
-    # Call SVs with vg call
-    vg_call_cmd = Command(
-        "vg",
-        "call",
-        "-r",
-        str(snarls),
-        "-k",
-        str(sample_pack),
-        "-s",
-        sample_name,
-        "-z",
-        "--ref-sample",
-        ref_path,
-        "--progress",
-        str(gbz),
-    )
-
-    # Use bcftools to remove smaller variants
-    view_cmd = Command(
-        "bcftools",
-        "view",
-        "-i",
-        f"ABS(ILEN) > {min_indel_size}",
-        "-H",
-        "-",
-    )
-
-    # Rehead the vg call output
-    cat_cmd = Command(
-        "cat",
-        str(sv_header),
-        InputProcSub(Pipeline(vg_call_cmd, view_cmd)),
-    )
-
-    # Sort and compress the output
-    sort_cmd = Command(
-        "bcftools",
-        "sort",
-        "-O",
-        "v",
-    )
-    convert_cmd = Command(
-        "sentieon",
-        "util",
-        "vcfconvert",
-        "-",
-        str(out_svs),
-    )
-    return Pipeline(cat_cmd, sort_cmd, convert_cmd)
-
-
-def cmd_vg_surject(
-    out_bam: pathlib.Path,
-    sample_gam: pathlib.Path,
-    xg: pathlib.Path,
-    surject_paths_dict: pathlib.Path,
-    threads=1,
-    surject_xargs: List[str] = [
-        "--interleaved",
-        "--progress",
-    ],
-) -> Pipeline:
-    surject_cmd_list = [
-        "vg",
-        "surject",
-        "--sam-output",
-        "-t",
-        str(threads),
-        "-x",
-        str(xg),
-        "--into-paths",
-        shlex.quote(str(surject_paths_dict)),
-    ]
-    surject_cmd_list.extend(surject_xargs)
-    surject_cmd_list.append(str(sample_gam))
-
-    sort_cmd = Command(
-        "sentieon",
-        "util",
-        "sort",
-        "--sam2bam",
-        "-i",
-        "-",
-        "-o",
-        str(out_bam),
-    )
-
-    return Pipeline(Command(*surject_cmd_list), sort_cmd)
-
-
-def strip_ctg_prefix(
-    output_header: pathlib.Path,
-    bam: pathlib.Path,
-    prefix: str,
-) -> Pipeline:
-    # Also remove the M5 tag
-    samtools_cmd = Command("samtools", "view", "-H", str(bam))
-    sed_cmd = Command(
-        "sed",
-        "-e",
-        f"s/\tSN:{prefix}/\tSN:/",
-        "-e",
-        "s/\tM5:[0-9a-zA-Z]*\t/\t/",
-        "-e",
-        "s/\tM5:[0-9a-zA-Z]*$//",
-    )
-    return Pipeline(samtools_cmd, sed_cmd, file_output=output_header)
-
-
 def cmd_estimate_ploidy(
     output_json: pathlib.Path,
     aln_files: List[pathlib.Path],
     ploidy_script: pathlib.Path,
+    contigs: Optional[List[str]] = None,
+    autosomes: Optional[List[str]] = None,
+    x_contig: Optional[str] = None,
+    y_contig: Optional[str] = None,
 ) -> Pipeline:
     cmd = (
         [
@@ -1176,6 +1142,18 @@ def cmd_estimate_ploidy(
             str(output_json),
         ]
     )
+    # Contig names are only supplied when they differ from the defaults
+    # of the `estimate_ploidy.py` script
+    if contigs:
+        cmd.append("--contigs")
+        cmd.extend(contigs)
+    if autosomes:
+        cmd.append("--autosomes")
+        cmd.extend(autosomes)
+    if x_contig:
+        cmd.extend(["--x_contig", x_contig])
+    if y_contig:
+        cmd.extend(["--y_contig", y_contig])
     return Pipeline(Command(*cmd))
 
 
@@ -1241,16 +1219,37 @@ def cmd_segdup_caller(
     sex: Optional[str] = None,
     genes: Optional[str] = None,
     overrides: Optional[List[str]] = None,
+    lr_alignments: Optional[pathlib.Path] = None,
+    lr_bundle: Optional[pathlib.Path] = None,
 ) -> Pipeline:
+    """Call variants in difficult segmental duplications.
+
+    Long reads are optional; segdup-caller needs both the long-read
+    alignment and the long-read model bundle to use them.
+    """
+    if (lr_alignments is None) != (lr_bundle is None):
+        raise ValueError(
+            "segdup-caller needs both `lr_alignments` and `lr_bundle` to "
+            "call with long reads"
+        )
+
     cmd = [
         "segdup-caller",
         "--short",
         str(sr_alignments),
-        "--reference",
-        str(reference),
-        "--sr_model",
-        str(sr_bundle),
     ]
+    if lr_alignments is not None:
+        cmd.extend(["--long", str(lr_alignments)])
+    cmd.extend(
+        [
+            "--reference",
+            str(reference),
+            "--sr_model",
+            str(sr_bundle),
+        ]
+    )
+    if lr_bundle is not None:
+        cmd.extend(["--lr_model", str(lr_bundle)])
     if input_vcf is not None:
         cmd.extend(["--input_vcf", str(input_vcf)])
     if sex is not None:
@@ -1333,8 +1332,8 @@ def cmd_bwa_extract(
 def cmd_vg_convert_gfa(
     output_gfa: pathlib.Path,
     input_gbz: pathlib.Path,
-    reference_name="GRCh38",
-    threads=1,
+    reference_name: str = "GRCh38",
+    threads: int = 1,
 ) -> Pipeline:
     """Convert GBZ to GFA"""
     cmd = [
@@ -1363,6 +1362,19 @@ def cmd_vg_paths_fasta(
         "-H",
         "-F",
     ]
+    return Pipeline(Command(*cmd), file_output=output_fasta)
+
+
+def cmd_vg_gfa2fa(
+    output_fasta: pathlib.Path,
+    gfa_file: pathlib.Path,
+) -> Pipeline:
+    """Write every path of a GFA file as FASTA.
+
+    A slower stand-in for `pgutil gfa2fa`, for driver releases whose
+    `gfa2fa` handles only GRCh38 pangenomes.
+    """
+    cmd = ["vg", "paths", "-x", str(gfa_file), "-F"]
     return Pipeline(Command(*cmd), file_output=output_fasta)
 
 
@@ -1427,6 +1439,183 @@ def cmd_minimap2_lift(
     )
 
     return Pipeline(mm2_cmd, lift_cmd, sort_cmd)
+
+
+def _aln_fasta_procsubs(
+    aln: List[Tuple[pathlib.Path, pathlib.Path]],
+    threads: int = 1,
+) -> List[InputProcSub]:
+    """FASTA process substitutions for `(alignment, decode reference)`
+    pairs"""
+    procsubs: List[InputProcSub] = []
+    for aln_file, decode_ref in aln:
+        procsubs.append(
+            InputProcSub(
+                Pipeline(
+                    Command(
+                        "samtools",
+                        "fasta",
+                        "--reference",
+                        str(decode_ref),
+                        "-@",
+                        str(threads),
+                        str(aln_file),
+                    )
+                )
+            )
+        )
+    return procsubs
+
+
+def _kmc_stdin_cmd(
+    output_prefix: pathlib.Path,
+    tmp_dir: pathlib.Path,
+    k: int = 29,
+    memory: int = 30,
+    threads: int = 1,
+) -> Command:
+    """The patched KMC reading a FASTA stream from stdin"""
+    return Command(
+        "kmc",
+        f"-k{k}",
+        f"-m{memory}",
+        "-okff",
+        f"-t{threads}",
+        "-fa",
+        "/dev/stdin",
+        str(output_prefix),
+        str(tmp_dir),
+    )
+
+
+def cmd_hybrid_kmc(
+    output_prefix: pathlib.Path,
+    fastq: List[pathlib.Path],
+    aln: List[Tuple[pathlib.Path, pathlib.Path]],
+    tmp_dir: pathlib.Path,
+    k: int = 29,
+    memory: int = 30,
+    threads: int = 1,
+    unzip: str = "gzip",
+) -> Pipeline:
+    """Count k-mers across fastq and aligned reads.
+
+    KMC accepts a single input format per run, so the fastq files are
+    converted to FASTA and the aligned reads are extracted with
+    `samtools fasta`, and one FASTA stream is fed to the patched KMC
+    through stdin. Each alignment is supplied as an
+    `(alignment, decode reference)` pair.
+    """
+    cat_args: List[Union[str, InputProcSub]] = []
+    if fastq:
+        fq_fasta = Pipeline(
+            Command(
+                unzip,
+                "-dc",
+                *[str(x) for x in fastq],
+            ),
+            Command("awk", 'NR%4==1{print ">"substr($0,2)} NR%4==2{print}'),
+        )
+        cat_args.append(InputProcSub(fq_fasta))
+    cat_args.extend(_aln_fasta_procsubs(aln, threads))
+    cat_cmd = Command("cat", *cat_args)
+    kmc_cmd = _kmc_stdin_cmd(output_prefix, tmp_dir, k, memory, threads)
+    return Pipeline(cat_cmd, kmc_cmd)
+
+
+def cmd_hybrid_extract_kmc(
+    output_prefix: pathlib.Path,
+    out_fastq: pathlib.Path,
+    sr_aln: List[pathlib.Path],
+    lr_aln: List[Tuple[pathlib.Path, pathlib.Path]],
+    reference: pathlib.Path,
+    extract_model: pathlib.Path,
+    tmp_dir: pathlib.Path,
+    rw_bam: pathlib.Path,
+    k: int = 29,
+    memory: int = 30,
+    threads: int = 1,
+) -> Pipeline:
+    """Extract reads from aligned short-read input and count k-mers across
+    the short and long reads in a single pass.
+
+    The aligned short reads are read once: `pgutil extract` writes the
+    extracted reads to `out_fastq` and passes the full read stream on to
+    KMC. Each long-read alignment is supplied as an
+    `(alignment, decode reference)` pair.
+    """
+    driver_cmd, extract_cmd = _readwriter_extract_cmds(
+        sr_aln,
+        reference,
+        extract_model,
+        rw_bam,
+        out_fastq,
+        threads,
+    )
+    cat_args: List[Union[str, InputProcSub]] = [
+        InputProcSub(Pipeline(driver_cmd, extract_cmd))
+    ]
+    cat_args.extend(_aln_fasta_procsubs(lr_aln, threads))
+    cat_cmd = Command("cat", *cat_args)
+    kmc_cmd = _kmc_stdin_cmd(output_prefix, tmp_dir, k, memory, threads)
+    return Pipeline(cat_cmd, kmc_cmd)
+
+
+# Extract graph update regions from the phase sets of LongReadSV calls.
+LONGREAD_SV_BED_AWK = """!/^#/ {
+    n=split($10,a,":");
+    ps=a[n];
+    if (ps != "." && ps ~ /^chr[^_]+_[0-9]+_[0-9]+$/) {
+        split(ps,b,"_");
+        print b[1], b[2], b[3];
+    }
+}"""
+
+
+def cmd_longread_sv_bed(
+    out_bed: pathlib.Path,
+    sv_vcf: pathlib.Path,
+    ref_fai: pathlib.Path,
+) -> Pipeline:
+    """Generate a BED file of graph update regions from LongReadSV calls"""
+    zcat_cmd = Command("zcat", str(sv_vcf))
+    awk_cmd = Command("awk", "-F\t", LONGREAD_SV_BED_AWK, "OFS=\t")
+    sort_cmd = Command("bedtools", "sort", "-faidx", str(ref_fai), "-i", "-")
+    merge_cmd = Command("bedtools", "merge")
+    return Pipeline(
+        zcat_cmd,
+        awk_cmd,
+        sort_cmd,
+        merge_cmd,
+        file_output=out_bed,
+    )
+
+
+def cmd_pgutil_gfa2fa(
+    out_fasta: pathlib.Path,
+    ref_fai: pathlib.Path,
+    gfa_file: pathlib.Path,
+) -> Pipeline:
+    """Generate FASTA sequences from a pangenome graph"""
+    cmd = Command(
+        "sentieon",
+        "pgutil",
+        "gfa2fa",
+        "-F",
+        str(ref_fai),
+        "-g",
+        str(gfa_file),
+        "-o",
+        str(out_fasta),
+    )
+    return Pipeline(cmd)
+
+
+def cmd_samtools_faidx(
+    fasta: pathlib.Path,
+) -> Pipeline:
+    """Index a FASTA file"""
+    return Pipeline(Command("samtools", "faidx", str(fasta)))
 
 
 def cmd_bcftools_merge_trim(

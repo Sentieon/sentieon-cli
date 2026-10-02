@@ -410,7 +410,7 @@ class HybridStage1(BaseAlgo):
         fa_file: Optional[pathlib.Path] = None,
         bed_file: Optional[pathlib.Path] = None,
         cut_indel: Optional[int] = None,
-        hap_bam: Optional[pathlib.Path] = None,
+        hap_bam: Optional[Union[pathlib.Path, str]] = None,
         hap_bed: Optional[pathlib.Path] = None,
         cut_len: Optional[int] = None,
         split_size: Optional[int] = None,
@@ -497,9 +497,16 @@ class CNVscope(BaseAlgo):
         self,
         output: Union[pathlib.Path, str],
         model: pathlib.Path,
+        *,
+        sex: Optional[str] = None,
+        par: Optional[pathlib.Path] = None,
+        dump_probes: Optional[pathlib.Path] = None,
     ):
         self.output = output
         self.model = model
+        self.sex = sex
+        self.par = par
+        self.dump_probes = dump_probes
 
 
 class CNVModelApply(BaseAlgo):
@@ -542,6 +549,26 @@ class PangenomeSV(BaseAlgo):
         self.prefix = prefix
 
 
+class PGHapUpdateAlgo(BaseAlgo):
+    """algo PGHapUpdateAlgo"""
+
+    name = "PGHapUpdateAlgo"
+
+    def __init__(
+        self,
+        output: pathlib.Path,
+        gfa_file: pathlib.Path,
+        target_bed: Optional[pathlib.Path] = None,
+        min_map_qual: Optional[int] = None,
+        prefix: Optional[str] = None,
+    ):
+        self.output = output
+        self.gfa_file = gfa_file
+        self.target_bed = target_bed
+        self.min_map_qual = min_map_qual
+        self.prefix = prefix
+
+
 class BaseDriver:
     """A base class for the Sentieon driver"""
 
@@ -550,7 +577,7 @@ class BaseDriver:
         reference: Optional[pathlib.Path] = None,
         thread_count: Optional[int] = None,
         interval: Optional[Union[pathlib.Path, str]] = None,
-        interval_padding: int = 0,
+        interval_padding: Optional[int] = None,
         read_filter: Optional[List[str]] = None,
         replace_rg: Optional[List[List[str]]] = None,
         input: Optional[List[pathlib.Path]] = None,

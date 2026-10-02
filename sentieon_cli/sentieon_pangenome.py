@@ -6,9 +6,8 @@ import argparse
 import copy
 import json
 import pathlib
-import shutil
 import sys
-from typing import Dict, List, Optional, Set, Tuple, Union
+from typing import Dict, List, Optional, Set, Union
 
 import packaging.version
 
@@ -16,48 +15,47 @@ from importlib.resources import files
 
 from . import command_strings as cmds
 from .archive import ar_load
-from .base_pangenome import BasePangenome, SampleSex
+from .base_pangenome import BasePangenome
 from .dag import DAG
 from .driver import (
-    AlignmentStat,
-    BaseDistributionByCycle,
-    CNVModelApply,
-    CNVscope,
-    CoverageMetrics,
-    Dedup,
-    DNAModelApply,
+    BaseAlgo,
     DNAscope,
-    Driver,
-    GCBias,
-    GVCFtyper,
-    InsertSizeMetricAlgo,
-    LocusCollector,
-    MeanQualityByCycle,
     PangenomeSV,
-    QualDistribution,
-    ReadWriter,
-    WgsMetricsAlgo,
 )
 from .job import Job
 from .logging import get_logger
 from .shell_pipeline import Command, Pipeline
+from .stages.alignment import (
+    BwaExtractStage,
+    find_unzip,
+)
+from .stages.base import StageContext
+from .stages.cnv import CNV_MIN_VERSIONS
+from .stages.dedup import DedupStage
+from .stages.expansion import EXPANSION_MIN_VERSIONS
+from .stages.metrics import MetricsPaths, MetricsStage
+from .stages.ploidy import PloidyStage
+from .stages.segdup import SEGDUP_MIN_VERSIONS
+from .stages.small_variants import (
+    ApplySpec,
+    DNAscopeStage,
+    GVCFtyperStage,
+    TransferApplyStage,
+    TransferSpec,
+)
+from .stages.transfer import TransferConfig
 from .util import (
     __version__,
-    check_version,
     check_kmc_patch,
     parse_rg_line,
     path_arg,
-    tmp,
+    require_versions,
     total_memory,
-    vcf_id,
 )
 from .shard import (
-    GRCH38_CONTIGS,
     determine_shards_from_fai,
     parse_fai,
-    vcf_contigs,
 )
-from .transfer import build_transfer_jobs
 
 SENT_PANGENOME_MIN_VERSIONS = {
     "kmc": None,
@@ -66,21 +64,6 @@ SENT_PANGENOME_MIN_VERSIONS = {
     "bcftools": packaging.version.Version("1.22"),
     "samtools": packaging.version.Version("1.16"),
 }
-
-SEGDUP_MIN_VERSION = {
-    "segdup-caller": packaging.version.Version("0.7.0"),
-}
-
-EXPANSION_MIN_VERSION = {
-    "ExpansionHunter": None,
-}
-
-T1K_MIN_VERSION = {
-    "run-t1k": None,
-}
-
-DEFAULT_T1K_HLA_LOCUS = "chr6:28510020-33480577"
-DEFAULT_T1K_KIR_LOCUS = "chr19:53100000-55800000"
 
 logger = get_logger(__name__)
 
@@ -127,22 +110,6 @@ class SentieonPangenome(BasePangenome):
                 "help": "Generate a gVCF output file.",
                 "action": "store_true",
             },
-            "pangenome_ref_name": {
-                "default": "GRCh38",
-                "help": (
-                    "Reference name in the pangenome (GRCh38). The "
-                    "'extract.<pangenome_ref_name>.model' member of the model "
-                    "bundle is preferred; if it is absent and the reference "
-                    "name is 'GRCh38', the pipeline falls back to "
-                    "'extract.model'."
-                ),
-            },
-            "pangenome_contig_prefix": {
-                "default": "GRCh38#0#",
-                "help": (
-                    "Prefix to strip from pangenome contig names (GRCh38#0#)"
-                ),
-            },
             "skip_metrics": {
                 "help": "Skip metrics collection and multiQC",
                 "action": "store_true",
@@ -151,76 +118,7 @@ class SentieonPangenome(BasePangenome):
                 "help": "Skip multiQC report generation",
                 "action": "store_true",
             },
-            "segdup_caller": {
-                "nargs": "*",
-                "help": (
-                    "Call variants in difficult segmental duplications with "
-                    "segdup-caller. Supply the flag with no arguments to run "
-                    "the caller's default gene set. Supply a comma-separated "
-                    "list of gene names (e.g. 'CFH,CYP2D6,SMN1') to restrict "
-                    "calling to those genes."
-                ),
-            },
-            "expansion_catalog": {
-                "help": (
-                    "An ExpansionHunter variant catalog. Required for short "
-                    "tandem repeat expansion calling."
-                ),
-                "type": path_arg(exists=True, is_file=True),
-            },
-            "t1k_hla_seq": {
-                "help": (
-                    "The DNA HLA seq FASTA file for T1K. Required for HLA "
-                    "calling."
-                ),
-                "type": path_arg(exists=True, is_file=True),
-            },
-            "t1k_hla_coord": {
-                "help": (
-                    "The DNA HLA coord FASTA file for T1K. Required for HLA "
-                    "calling."
-                ),
-                "type": path_arg(exists=True, is_file=True),
-            },
-            "t1k_hla_locus": {
-                "default": DEFAULT_T1K_HLA_LOCUS,
-                "help": (
-                    "Reference interval covering the HLA locus. Reads "
-                    "overlapping this region are extracted before being "
-                    f"passed to T1K (default: {DEFAULT_T1K_HLA_LOCUS})."
-                ),
-            },
-            "t1k_kir_seq": {
-                "help": (
-                    "The DNA KIR seq FASTA file for T1K. Required for KIR "
-                    "calling."
-                ),
-                "type": path_arg(exists=True, is_file=True),
-            },
-            "t1k_kir_coord": {
-                "help": (
-                    "The DNA KIR coord FASTA file for T1K. Required for KIR "
-                    "calling."
-                ),
-                "type": path_arg(exists=True, is_file=True),
-            },
-            "t1k_kir_locus": {
-                "default": DEFAULT_T1K_KIR_LOCUS,
-                "help": (
-                    "Reference interval covering the KIR locus. Reads "
-                    "overlapping this region are extracted before being "
-                    f"passed to T1K (default: {DEFAULT_T1K_KIR_LOCUS})."
-                ),
-            },
             # Hidden arguments
-            "skip_contig_checks": {
-                "help": argparse.SUPPRESS,
-                "action": "store_true",
-            },
-            "skip_pangenome_name_checks": {
-                "help": argparse.SUPPRESS,
-                "action": "store_true",
-            },
             "skip_pop_vcf_id_check": {
                 "help": argparse.SUPPRESS,
                 "action": "store_true",
@@ -246,64 +144,40 @@ class SentieonPangenome(BasePangenome):
         self.bed: Optional[pathlib.Path] = None
         self.call_svs = False
         self.gvcf = False
-        self.pangenome_ref_name = "GRCh38"
         self.extract_model_name = "extract.model"
-        self.pangenome_contig_prefix = "GRCh38#0#"
         self.skip_metrics = False
         self.skip_multiqc = False
-        self.segdup_caller: Optional[List[str]] = None
-        self.expansion_catalog: Optional[pathlib.Path] = None
-        self.t1k_hla_seq: Optional[pathlib.Path] = None
-        self.t1k_hla_coord: Optional[pathlib.Path] = None
-        self.t1k_hla_locus: str = DEFAULT_T1K_HLA_LOCUS
-        self.t1k_kir_seq: Optional[pathlib.Path] = None
-        self.t1k_kir_coord: Optional[pathlib.Path] = None
-        self.t1k_kir_locus: str = DEFAULT_T1K_KIR_LOCUS
-        self.skip_contig_checks: bool = False
-        self.skip_pangenome_name_checks: bool = False
         self.skip_pop_vcf_id_check: bool = False
         self.skip_model_apply = False
         self.skip_small_variants = False
 
-    def main(self, args: argparse.Namespace) -> None:
-        """Run the pipeline"""
-        self.handle_arguments(args)
-        self.setup_logging(args)
-        self.validate_ref()
+    def _cnv_in_second_dag(self) -> bool:
+        """CNV calling runs in the second, sex-aware DAG"""
+        return self.call_svs and self.has_cnv_model
 
-        self.fai_data = parse_fai(pathlib.Path(str(self.reference) + ".fai"))
-        self.pop_vcf_contigs: Dict[str, Optional[int]] = {}
-        if self.pop_vcf:
-            self.pop_vcf_contigs = vcf_contigs(self.pop_vcf, self.dry_run)
-            self.logger.debug("VCF contigs are: %s", self.pop_vcf_contigs)
-
-        self.validate()
-        self.shards = determine_shards_from_fai(
-            self.fai_data, 10 * 1000 * 1000
+    def _needs_second_dag(self) -> bool:
+        """The run has jobs that depend on the estimated sample sex"""
+        return bool(
+            self.expansion_catalog
+            or self.segdup_caller is not None
+            or self._cnv_in_second_dag()
         )
-
-        tmp_dir_str = tmp()
-        self.tmp_dir = pathlib.Path(tmp_dir_str)
-
-        dag = self.build_first_dag()
-        executor = self.run(dag)
-        self.check_execution(dag, executor)
-
-        if self.expansion_catalog or self.segdup_caller is not None:
-            self.get_sex(self.ploidy_json)
-            dag = self.build_second_dag()
-            executor = self.run(dag)
-            self.check_execution(dag, executor)
-
-        if not self.retain_tmpdir:
-            shutil.rmtree(tmp_dir_str)
 
     def validate(self) -> None:
         """Validate pipeline inputs"""
+        self.validate_ref()
+        self.fai_data = parse_fai(pathlib.Path(str(self.reference) + ".fai"))
+        self.shards = determine_shards_from_fai(
+            self.fai_data, 10 * 1000 * 1000
+        )
+        # Before `validate_bundle`, which picks the bundle's
+        # `extract.<pangenome_ref_name>.model` member by the resolved name
+        self.resolve_pangenome_reference()
+        self.load_pop_vcf_header(self.pop_vcf)
+
         self.validate_bundle()
         self.validate_fastq_rg()
         self.validate_output_vcf()
-        self.validate_ref()
         self.collect_readgroups()
 
         if not self.sample_input and not self.r1_fastq:
@@ -326,21 +200,21 @@ class SentieonPangenome(BasePangenome):
         self.validate_segdup()
         self.validate_expansion()
         self.validate_t1k()
+        self.validate_cnv()
 
-        if not self.skip_version_check:
-            for cmd, min_version in SENT_PANGENOME_MIN_VERSIONS.items():
-                if not check_version(cmd, min_version):
-                    sys.exit(2)
+        require_versions(
+            SENT_PANGENOME_MIN_VERSIONS, skip=self.skip_version_check
+        )
 
-            if self.sample_input:
-                if not check_kmc_patch("kmc"):
-                    self.logger.error(
-                        "Error: The 'kmc' executable in the PATH does not "
-                        "support reading from stdin. Please ensure "
-                        "you are using the patched version of KMC from "
-                        "https://github.com/Sentieon/KMC/releases."
-                    )
-                    sys.exit(2)
+        if not self.skip_version_check and self.sample_input:
+            if not check_kmc_patch("kmc"):
+                self.logger.error(
+                    "Error: The 'kmc' executable in the PATH does not "
+                    "support reading from stdin. Please ensure "
+                    "you are using the patched version of KMC from "
+                    "https://github.com/Sentieon/KMC/releases."
+                )
+                sys.exit(2)
 
         if self.bed is None:
             self.logger.info(
@@ -348,51 +222,7 @@ class SentieonPangenome(BasePangenome):
                 "across decoy and unplaced contigs."
             )
 
-        if not self.skip_pangenome_name_checks:
-            if not str(self.gbz).endswith("grch38.gbz"):
-                self.logger.error(
-                    "The `--gbz` file does not have the expected suffix. "
-                    "Check that you are using a GRCh38 pangenome."
-                )
-                sys.exit(2)
-
-            if not str(self.hapl).endswith("grch38.hapl"):
-                self.logger.error(
-                    "The `--hapl` file does not have the expected suffix. "
-                    "Check that you re using a GRCh38 pangenome."
-                )
-                sys.exit(2)
-
-        if not self.skip_contig_checks:
-            # Check the fai file contigs
-            mismatch_contigs: Set[str] = set()
-            for ctg, length in GRCH38_CONTIGS.items():
-                d = self.fai_data.get(ctg, {})
-                fai_length = d.get("length", -1)
-                if length != fai_length:
-                    mismatch_contigs.add(ctg)
-            if mismatch_contigs:
-                mismatch_contigs_s = ", ".join(mismatch_contigs)
-                self.logger.error(
-                    "Reference contigs with unexpected lengths: %s",
-                    mismatch_contigs_s,
-                )
-                sys.exit(2)
-
-            # Check the pop VCF file contigs
-            if not self.dry_run:
-                mismatch_contigs = set()
-                for ctg, length in GRCH38_CONTIGS.items():
-                    vcf_length = self.pop_vcf_contigs.get(ctg, -1)
-                    if length != vcf_length:
-                        mismatch_contigs.add(ctg)
-                if mismatch_contigs:
-                    mismatch_contigs_s = ", ".join(mismatch_contigs)
-                    self.logger.error(
-                        "Pop VCF contigs with unexpected lengths: %s",
-                        mismatch_contigs_s,
-                    )
-                    sys.exit(2)
+        self.validate_pangenome_contig_lengths()
 
     def validate_segdup(self) -> None:
         if self.segdup_caller is None:
@@ -413,10 +243,7 @@ class SentieonPangenome(BasePangenome):
             )
             sys.exit(2)
 
-        if not self.skip_version_check:
-            for cmd, min_version in SEGDUP_MIN_VERSION.items():
-                if not check_version(cmd, min_version):
-                    sys.exit(2)
+        require_versions(SEGDUP_MIN_VERSIONS, skip=self.skip_version_check)
 
     def validate_expansion(self) -> None:
         if self.expansion_catalog is None:
@@ -436,47 +263,24 @@ class SentieonPangenome(BasePangenome):
             )
             sys.exit(2)
 
-        if not self.skip_version_check:
-            for cmd, min_version in EXPANSION_MIN_VERSION.items():
-                if not check_version(cmd, min_version):
-                    sys.exit(2)
+        require_versions(EXPANSION_MIN_VERSIONS, skip=self.skip_version_check)
 
-    def validate_t1k(self) -> None:
-        hla_requested = self.t1k_hla_seq is not None or (
-            self.t1k_hla_coord is not None
-        )
-        if hla_requested and not (self.t1k_hla_seq and self.t1k_hla_coord):
-            self.logger.error(
-                "For HLA calling, both `--t1k_hla_seq` and `--t1k_hla_coord` "
-                "must be supplied."
-            )
-            sys.exit(2)
-
-        kir_requested = self.t1k_kir_seq is not None or (
-            self.t1k_kir_coord is not None
-        )
-        if kir_requested and not (self.t1k_kir_seq and self.t1k_kir_coord):
-            self.logger.error(
-                "For KIR calling, both `--t1k_kir_seq` and `--t1k_kir_coord` "
-                "must be supplied."
-            )
-            sys.exit(2)
-
-        if not (hla_requested or kir_requested):
+    def validate_cnv(self) -> None:
+        """Validate the arguments used for sex-aware CNV calling"""
+        # `validate_bundle` has already set `self.has_cnv_model`
+        cnv_will_run = self._cnv_in_second_dag()
+        self.resolve_cnv_par_bed(self.fai_data, self.par_bed, cnv_will_run)
+        if not cnv_will_run:
             return
 
-        if not self.skip_version_check:
-            for cmd, min_version in T1K_MIN_VERSION.items():
-                if not check_version(cmd, min_version):
-                    sys.exit(2)
+        # A PAR BED file is required for CNV calling, whatever the sex
+        self.validate_cnv_par(True)
+
+        require_versions(CNV_MIN_VERSIONS, skip=self.skip_version_check)
 
     def validate_bundle(self) -> None:
-        if not self.pop_vcf:
-            self.logger.error("pop_vcf is required")
-            sys.exit(2)
-        if not self.gbz:
-            self.logger.error("gbz is required")
-            sys.exit(2)
+        self.required(self.pop_vcf, "pop_vcf")
+        gbz = self.required(self.gbz, "gbz")
         bundle_info_bytes = ar_load(
             str(self.model_bundle) + "/bundle_info.json"
         )
@@ -509,7 +313,7 @@ class SentieonPangenome(BasePangenome):
         if bundle_pipeline != "Sentieon pangenome":
             self.logger.error("The model bundle is for a different pipeline.")
             sys.exit(2)
-        if self.gbz.name != bundle_pangenome:
+        if gbz.name != bundle_pangenome:
             self.logger.warning(
                 "The `--gbz` file name is not '%s'. "
                 "This model is optimized for the %s pangenome.",
@@ -548,13 +352,8 @@ class SentieonPangenome(BasePangenome):
                 "PangenomeSV will still run."
             )
 
-        if not self.skip_pop_vcf_id_check and not self.dry_run:
-            pop_vcf_id = vcf_id(self.pop_vcf)
-            if bundle_vcf_id != pop_vcf_id:
-                self.logger.error(
-                    "The ID of the `--pop_vcf` does not match the model bundle"
-                )
-                sys.exit(2)
+        if not self.skip_pop_vcf_id_check:
+            self.check_pop_vcf_id(bundle_vcf_id)
 
     def validate_fastq_rg(self) -> None:
         if len(self.r1_fastq) != len(self.r2_fastq):
@@ -612,19 +411,10 @@ class SentieonPangenome(BasePangenome):
         pass
 
     def build_dag(self) -> DAG:
-        return DAG()
+        """Build the first DAG for the Sentieon pangenome pipeline"""
+        bundle = self.required(self.model_bundle, "model_bundle")
 
-    def build_first_dag(self) -> DAG:
-        """Build the main DAG for the Sentieon pangenome pipeline"""
-        if not self.reference:
-            self.logger.error("reference is required")
-            sys.exit(2)
-        if not self.model_bundle:
-            self.logger.error("model_bundle is required")
-            sys.exit(2)
-        if not self.output_vcf:
-            self.logger.error("output_vcf is required")
-            sys.exit(2)
+        ctx = self.stage_context()
 
         self.logger.info("Building the Sentieon pangenome DAG")
         dag = DAG()
@@ -632,16 +422,13 @@ class SentieonPangenome(BasePangenome):
         # Output files
         suffix = "bam" if self.bam_format else "cram"
         out_bwa_aln = pathlib.Path(
-            str(self.output_vcf).replace(".vcf.gz", f"_bwa_deduped.{suffix}")
+            str(ctx.output_vcf).replace(".vcf.gz", f"_bwa_deduped.{suffix}")
         )
         out_mm2_aln = pathlib.Path(
-            str(self.output_vcf).replace(".vcf.gz", f"_mm2_deduped.{suffix}")
-        )
-        self.ploidy_json = pathlib.Path(
-            str(self.output_vcf).replace(".vcf.gz", "_ploidy.json")
+            str(ctx.output_vcf).replace(".vcf.gz", f"_mm2_deduped.{suffix}")
         )
         out_gvcf = pathlib.Path(
-            str(self.output_vcf).replace(".vcf.gz", ".g.vcf.gz")
+            str(ctx.output_vcf).replace(".vcf.gz", ".g.vcf.gz")
         )
 
         # Intermediate file paths
@@ -656,14 +443,12 @@ class SentieonPangenome(BasePangenome):
         if not self.r1_fastq:
             # with bam/cram input, output the realigned bam/cram
             mm2_bam = pathlib.Path(
-                str(self.output_vcf).replace(
+                str(ctx.output_vcf).replace(
                     ".vcf.gz", f"_mm2_deduped.{suffix}"
                 )
             )
         raw_vcf = self.tmp_dir.joinpath("sample-dnascope.vcf.gz")
         transfer_vcf = self.tmp_dir.joinpath("sample-dnascope_transfer.vcf.gz")
-        # - Ensure we have a bam file for t1k
-        self.rw_bam = self.tmp_dir.joinpath("sample_deduped.bam")
 
         bwa_lc_dependencies: Set[Job] = set()
         haplotype_dependencies: Set[Job] = set()
@@ -679,8 +464,10 @@ class SentieonPangenome(BasePangenome):
             haplotype_dependencies.add(kmc_job)
 
             # BWA alignment and extraction
-            bwa_job = self.build_alignment_job(bwa_bam, ext_fastq)
-            dag.add_job(bwa_job)
+            bwa_result = self.bwa_extract_stage(
+                ctx, bwa_bam, ext_fastq
+            ).add_to(dag)
+            bwa_job = bwa_result.jobs[0]
             mm2_dependencies.add(bwa_job)
             bwa_lc_dependencies.add(bwa_job)
             # Do not run vg-haplotypes with bwa in low-mem environments
@@ -696,6 +483,7 @@ class SentieonPangenome(BasePangenome):
                 Pipeline(Command("ln", "-sf", "/dev/stdout", str(rw_bam))),
                 "extract-kmc-symlink",
                 1,
+                task_name="read-extraction",
             )
             dag.add_job(ln_job)
 
@@ -704,14 +492,15 @@ class SentieonPangenome(BasePangenome):
                     kmer_prefix,
                     ext_fastq,
                     self.sample_input,
-                    self.reference,
-                    self.model_bundle.joinpath(self.extract_model_name),
+                    ctx.reference,
+                    bundle.joinpath(self.extract_model_name),
                     self.tmp_dir,
                     rw_bam,
                     threads=self.cores,
                 ),
                 "extract-kmc",
                 self.cores,
+                task_name="read-extraction",
             )
             dag.add_job(extract_kmc_job, {ln_job})
             haplotype_dependencies.add(extract_kmc_job)
@@ -720,11 +509,21 @@ class SentieonPangenome(BasePangenome):
         haplotypes_job = self.build_haplotypes_job(sample_pangenome, kmer_file)
         dag.add_job(haplotypes_job, haplotype_dependencies)
 
+        # Confirm the sampled pangenome kept its reference paths before
+        # anything consumes it
+        check_gbz_job = self.build_check_gbz_job(sample_pangenome)
+        dag.add_job(check_gbz_job, {haplotypes_job})
+
         # convert the sample pangenome
         gfa_job = self.build_gfa_job(sample_gfa, sample_pangenome)
         fasta_job = self.build_fasta_job(sample_fasta, sample_pangenome)
-        dag.add_job(gfa_job, {haplotypes_job})
-        dag.add_job(fasta_job, {haplotypes_job})
+        dag.add_job(gfa_job, {check_gbz_job})
+        dag.add_job(fasta_job, {check_gbz_job})
+
+        # Confirm the GFA carries the reference's rGFA tags, without which
+        # `pgutil lift` leaves every read unmapped
+        check_gfa_job = self.build_check_gfa_job(sample_gfa)
+        dag.add_job(check_gfa_job, {gfa_job})
 
         # minimap2 alignment of the extracted fastq
         dnascope_dependencies = set()
@@ -734,11 +533,11 @@ class SentieonPangenome(BasePangenome):
             sample_fasta,
             sample_gfa,
         )
-        dag.add_job(mm2_job, mm2_dependencies | {gfa_job, fasta_job})
+        dag.add_job(mm2_job, mm2_dependencies | {check_gfa_job, fasta_job})
         dnascope_dependencies.add(mm2_job)
 
         # With fastq input, perform dedup and metrics
-        cnv_input_bams: List[pathlib.Path] = []
+        sr_alignments: List[pathlib.Path] = []
         cnvscope_deps: Set[Job] = set()
         if self.r1_fastq:
             dnascope_bams.append(out_bwa_aln)
@@ -746,250 +545,224 @@ class SentieonPangenome(BasePangenome):
 
             # Emit Dedup metrics for the primary (bwa) short-read alignment so
             # they land in the metrics directory scanned by MultiQC.
+            paths = MetricsPaths.from_output_vcf(ctx.output_vcf)
             dedup_metrics: Optional[pathlib.Path] = None
             if not self.skip_metrics:
-                metrics_dir = pathlib.Path(
-                    str(self.output_vcf).replace(".vcf.gz", "_metrics")
-                )
-                if not self.dry_run:
-                    metrics_dir.mkdir(exist_ok=True)
-                sample_name = self.output_vcf.name.replace(".vcf.gz", "")
-                dedup_metrics = metrics_dir.joinpath(
-                    sample_name + ".txt.dedup_metrics.txt"
-                )
+                paths.ensure_dir(self.dry_run)
+                dedup_metrics = paths.dedup_metrics
 
-            bwa_lc_job, bwa_dedup_job = self.build_dedup_job(
-                out_bwa_aln, [bwa_bam], "bwa", metrics=dedup_metrics
-            )
-            mm2_lc_job, mm2_dedup_job = self.build_dedup_job(
-                out_mm2_aln, [mm2_bam], "mm2", left_align=True
-            )
-            dag.add_job(bwa_lc_job, bwa_lc_dependencies)
-            dag.add_job(bwa_dedup_job, {bwa_lc_job})
+            bwa_dedup = DedupStage(
+                ctx=ctx,
+                tag="bwa",
+                inputs=[bwa_bam],
+                output=out_bwa_aln,
+                score_file=self.tmp_dir.joinpath("sample-bwa-score.txt.gz"),
+                dedup_metrics=dedup_metrics,
+            ).add_to(dag, bwa_lc_dependencies)
+            bwa_dedup_job = bwa_dedup.dedup_job
             dnascope_dependencies.add(bwa_dedup_job)
-            dag.add_job(mm2_lc_job, {mm2_job})
-            dag.add_job(mm2_dedup_job, {mm2_lc_job})
-            dnascope_dependencies.add(mm2_dedup_job)
+            mm2_dedup = DedupStage(
+                ctx=ctx,
+                tag="mm2",
+                inputs=[mm2_bam],
+                output=out_mm2_aln,
+                score_file=self.tmp_dir.joinpath("sample-mm2-score.txt.gz"),
+                read_filters=[
+                    "IndelLeftAlignReadTransform,rgid="
+                    f"{self.fastq_readgroup['ID']}-mm2"
+                ],
+            ).add_to(dag, {mm2_job})
+            dnascope_dependencies.add(mm2_dedup.dedup_job)
 
-            cnv_input_bams = [out_bwa_aln]
+            sr_alignments = [out_bwa_aln]
             cnvscope_deps = {bwa_dedup_job}
 
             if not self.skip_metrics:
-                metrics_job, rehead_job = self.build_metrics_job(
-                    [out_bwa_aln, out_mm2_aln],
-                )
-                dag.add_job(metrics_job, {bwa_dedup_job, mm2_dedup_job})
-                dag.add_job(rehead_job, {metrics_job})
+                metrics_result = MetricsStage(
+                    ctx=ctx,
+                    inputs=[out_bwa_aln],
+                    algos=self.pangenome_metrics_algos(paths),
+                    rehead_metrics=paths.wgs,
+                ).add_to(dag, {bwa_dedup_job})
                 if not self.skip_multiqc:
                     multiqc_job = self.multiqc()
                     if multiqc_job:
-                        dag.add_job(multiqc_job, {rehead_job})
+                        dag.add_job(multiqc_job, metrics_result.terminal)
         else:
             dnascope_bams.append(mm2_bam)
-            cnv_input_bams = list(self.sample_input)
+            sr_alignments = list(self.sample_input)
 
-        # Stash the short-read alignment for the second DAG
-        self.sr_alignment = cnv_input_bams[0]
+        # Stash the short-read alignments for the second DAG
+        self.sr_alignments = sr_alignments
 
-        # Estimate ploidy when needed for sex-aware downstream tools
-        if self.expansion_catalog or self.segdup_caller is not None:
-            ploidy_job = self.build_ploidy_job(
-                self.ploidy_json, [cnv_input_bams[0]]
-            )
-            dag.add_job(ploidy_job, cnvscope_deps)
+        # Estimate the sample ploidy and sex. The JSON output is always
+        # written; `--sample_sex` takes precedence for the sex used by
+        # the sex-aware callers.
+        ploidy_result = PloidyStage(
+            ctx=ctx,
+            inputs=[self.sr_alignments[0]],
+            reference_build=self.reference_build,
+        ).add_to(dag, cnvscope_deps)
+        self.ploidy_json = ploidy_result.ploidy_json
 
         # T1K HLA/KIR calling
-        if self.t1k_hla_seq and self.t1k_hla_coord:
-            out_hla = pathlib.Path(
-                str(self.output_vcf).replace(".vcf.gz", "_hla")
-            )
-            extract_job, t1k_job = self.build_t1k_jobs(
-                out_hla,
-                cnv_input_bams,
-                self.t1k_hla_seq,
-                self.t1k_hla_coord,
-                self.t1k_hla_locus,
-                "hla-wgs",
-                tag="hla",
-            )
-            dag.add_job(extract_job, cnvscope_deps)
-            dag.add_job(t1k_job, {extract_job})
-        if self.t1k_kir_seq and self.t1k_kir_coord:
-            out_kir = pathlib.Path(
-                str(self.output_vcf).replace(".vcf.gz", "_kir")
-            )
-            extract_job, t1k_job = self.build_t1k_jobs(
-                out_kir,
-                cnv_input_bams,
-                self.t1k_kir_seq,
-                self.t1k_kir_coord,
-                self.t1k_kir_locus,
-                "kir-wgs",
-                tag="kir",
-            )
-            dag.add_job(extract_job, cnvscope_deps)
-            dag.add_job(t1k_job, {extract_job})
+        self.add_t1k(dag, ctx, self.sr_alignments, cnvscope_deps)
 
         # DNAscope calling with bwa and mm2 input
         sv_vcf = None
         if self.call_svs:
             sv_vcf = pathlib.Path(
-                str(self.output_vcf).replace(".vcf.gz", "_sv.vcf.gz")
+                str(ctx.output_vcf).replace(".vcf.gz", "_sv.vcf.gz")
             )
 
         if self.skip_small_variants and not self.call_svs:
             return dag
 
-        if self.skip_small_variants and self.call_svs and sv_vcf:
-            # SV calling only
-            dnascope_job = self.build_dnascope_job(
-                raw_vcf,
-                dnascope_bams,
-                sv_vcf=sv_vcf,
-                gfa_file=sample_gfa,
-            )
-            dag.add_job(dnascope_job, dnascope_dependencies)
-            if self.has_cnv_model:
-                self._add_cnv_jobs(
-                    dag,
-                    sv_vcf,
-                    cnv_input_bams,
-                    cnvscope_deps,
-                    dnascope_job,
+        read_filters: List[str] = []
+        if self.tech.upper() == "ULTIMA":
+            read_filters.append("UltimaReadFilter")
+        pcr_indel_model = "NONE" if self.pcr_free else "CONSERVATIVE"
+        model = bundle.joinpath("dnascope.model")
+        gfa_file = sample_gfa if self.call_svs else None
+
+        algos: List[BaseAlgo] = []
+        if not self.skip_small_variants:
+            algos.append(
+                DNAscope(
+                    raw_vcf,
+                    model=model,
+                    pcr_indel_model=pcr_indel_model,
+                    dbsnp=self.dbsnp,
+                    emit_mode="gvcf" if self.gvcf else "variant",
                 )
+            )
+        if sv_vcf and gfa_file:
+            algos.append(
+                PangenomeSV(
+                    sv_vcf,
+                    gfa_file=gfa_file,
+                    prefix=self.contig_prefix(),
+                )
+            )
+        call = DNAscopeStage(
+            ctx=ctx,
+            algos=algos,
+            inputs=dnascope_bams,
+            interval=self.bed,
+            read_filter=read_filters,
+        ).add_to(dag, dnascope_dependencies)
+
+        if self.skip_small_variants:
+            # SV calling only. CNV calling is sex-aware and runs in the
+            # second DAG
             return dag
 
-        apply_dependencies = set()
-        dnascope_job = self.build_dnascope_job(
-            raw_vcf,
-            dnascope_bams,
-            sv_vcf=sv_vcf,
-            gfa_file=sample_gfa if self.call_svs else None,
-        )
-        dag.add_job(dnascope_job, dnascope_dependencies)
-        apply_dependencies.add(dnascope_job)
+        if self.skip_model_apply and not self.pop_vcf:
+            # Nothing post-processes the raw VCF
+            return dag
 
         # When --gvcf is set, the model-apply / transfer outputs are
-        # gVCFs; GVCFtyper produces the final VCF at self.output_vcf.
-        small_variants_out = out_gvcf if self.gvcf else self.output_vcf
+        # gVCFs; GVCFtyper produces the final VCF at ctx.output_vcf.
+        small_variants_out = out_gvcf if self.gvcf else ctx.output_vcf
+        snv_apply_vcf = self.tmp_dir.joinpath(
+            "sample-snv_apply.g.vcf.gz"
+            if self.gvcf
+            else "sample-snv_apply.vcf.gz"
+        )
 
-        # transfer annotations from the pop_vcf
+        # Transfer annotations from the pop_vcf, then apply the model
+        transfer: Optional[TransferSpec] = None
         if self.pop_vcf:
-            transfer_jobs, concat_job = build_transfer_jobs(
-                (
+            transfer = TransferSpec(
+                config=TransferConfig.from_pipeline(self),
+                out_vcf=(
                     transfer_vcf
                     if not self.skip_model_apply
-                    else (small_variants_out)
+                    else snv_apply_vcf
                 ),
-                self.pop_vcf,
-                raw_vcf,
-                self.tmp_dir,
-                self.shards,
-                self.pop_vcf_contigs,
-                self.fai_data,
-                self.dry_run,
-                self.cores,
             )
-            for job in transfer_jobs:
-                dag.add_job(job, {dnascope_job})
-            dag.add_job(concat_job, set(transfer_jobs))
-            apply_dependencies.add(concat_job)
-
-        small_variants_last_job: Optional[Job] = None
+        apply_spec: Optional[ApplySpec] = None
         if not self.skip_model_apply:
-            # DNAModelApply
-            apply_job = self.build_dnamodelapply_job(
-                transfer_vcf, small_variants_out
-            )
-            dag.add_job(apply_job, apply_dependencies)
-            small_variants_last_job = apply_job
-        elif self.pop_vcf:
-            small_variants_last_job = concat_job
+            apply_spec = ApplySpec(model=model, output=snv_apply_vcf)
+        transfer_apply = TransferApplyStage(
+            ctx=ctx,
+            raw_vcf=raw_vcf,
+            transfer=transfer,
+            apply=apply_spec,
+        ).add_to(dag, call.terminal)
+
+        # Update the overestimated AD/DP of the joint pileup
+        ad_update_job = self.build_count_ad_update_job(
+            small_variants_out, snv_apply_vcf
+        )
+        dag.add_job(ad_update_job, transfer_apply.terminal)
 
         # Genotype the gVCF to also produce a regular VCF at output_vcf
-        if self.gvcf and small_variants_last_job is not None:
-            gvcftyper_job = self.build_gvcftyper_job(self.output_vcf, out_gvcf)
-            dag.add_job(gvcftyper_job, {small_variants_last_job})
+        if self.gvcf:
+            GVCFtyperStage(
+                ctx=ctx,
+                gvcf=out_gvcf,
+                output=ctx.output_vcf,
+                interval=self.bed,
+            ).add_to(dag, {ad_update_job})
 
-        if self.call_svs and sv_vcf and self.has_cnv_model:
-            self._add_cnv_jobs(
-                dag,
-                sv_vcf,
-                cnv_input_bams,
-                cnvscope_deps,
-                dnascope_job,
-            )
+        # CNV calling is sex-aware and runs in the second DAG
 
         return dag
 
-    def build_alignment_job(
+    def bwa_extract_stage(
         self,
+        ctx: StageContext,
         sample_bam: pathlib.Path,
         sample_fastq: pathlib.Path,
-    ) -> Job:
-        """Build the alignment and extract jobs"""
-        if not self.reference:
-            self.logger.error("reference is required")
-            sys.exit(2)
-        if not self.model_bundle:
-            self.logger.error("model_bundle is required")
-            sys.exit(2)
+    ) -> BwaExtractStage:
+        """The bwa alignment and read extraction stage.
 
-        unzip = "igzip"
-        if not shutil.which(unzip):
-            self.logger.info(
-                "igzip is recommended for decompression, but is not "
-                "available. Falling back to gzip."
-            )
-            unzip = "gzip"
+        The bwa alignment reuses the input readgroup ID with a `-bwa`
+        suffix, so it stays distinct from the lifted alignment's.
+        """
+        bundle = self.required(self.model_bundle, "model_bundle")
 
         rg = copy.deepcopy(self.fastq_readgroup)
         rg["ID"] = rg["ID"] + "-bwa"
-        bwa_job = Job(
-            cmds.cmd_bwa_extract(
-                sample_bam,
-                sample_fastq,
-                self.reference,
-                self.r1_fastq,
-                self.r2_fastq,
-                "@RG\\t" + "\\t".join([f"{x[0]}:{x[1]}" for x in rg.items()]),
-                self.model_bundle.joinpath(self.extract_model_name),
-                self.model_bundle.joinpath("bwa.model"),
-                self.cores,
-                unzip=unzip,
+        return BwaExtractStage(
+            ctx=ctx,
+            output_bam=sample_bam,
+            output_fastq=sample_fastq,
+            r1_fastq=self.r1_fastq,
+            r2_fastq=self.r2_fastq,
+            readgroup=(
+                "@RG\\t" + "\\t".join([f"{x[0]}:{x[1]}" for x in rg.items()])
             ),
-            "bwa-extract",
-            self.cores,
+            extract_model=bundle.joinpath(self.extract_model_name),
+            bwa_model=bundle.joinpath("bwa.model"),
+            unzip=find_unzip(self.logger),
         )
-        return bwa_job
 
     def build_haplotypes_job(
         self, output_gbz: pathlib.Path, kmer_file: pathlib.Path
     ) -> Job:
         """Build vg haplotypes job"""
-        if not self.hapl:
-            self.logger.error("hapl is required")
-            sys.exit(2)
-        if not self.gbz:
-            self.logger.error("gbz is required")
-            sys.exit(2)
+        hapl_file = self.required(self.hapl, "hapl")
+        gbz_file = self.required(self.gbz, "gbz")
 
         haplotypes_job = Job(
             cmds.cmd_vg_haplotypes(
                 output_gbz,
                 kmer_file,
-                self.hapl,
-                self.gbz,
+                hapl_file,
+                gbz_file,
                 threads=self.cores,
                 xargs=[
                     "--include-reference",
                     "--diploid-sampling",
                     "--set-reference",
-                    self.pangenome_ref_name,
+                    self.ref_name(),
                 ],
             ),
             "vg-haplotypes",
             self.cores,
+            task_name="pangenome",
         )
         return haplotypes_job
 
@@ -1002,10 +775,11 @@ class SentieonPangenome(BasePangenome):
                 output_gfa,
                 input_gbz,
                 threads=self.cores,
-                reference_name=self.pangenome_ref_name,
+                reference_name=self.ref_name(),
             ),
             "vg-convert-gfa",
             0,
+            task_name="pangenome",
         )
         return gfa_job
 
@@ -1020,6 +794,7 @@ class SentieonPangenome(BasePangenome):
             ),
             "vg-paths-fasta",
             0,
+            task_name="pangenome",
         )
         return fasta_job
 
@@ -1031,12 +806,8 @@ class SentieonPangenome(BasePangenome):
         sample_gfa: pathlib.Path,
     ) -> Job:
         """Build minimap2 alignment with pgutil lift job"""
-        if not self.model_bundle:
-            self.logger.error("model_bundle is required")
-            sys.exit(2)
-        if not self.reference:
-            self.logger.error("reference is required")
-            sys.exit(2)
+        bundle = self.required(self.model_bundle, "model_bundle")
+        reference = self.required(self.reference, "reference")
 
         rg = (
             self.fastq_readgroup
@@ -1047,530 +818,89 @@ class SentieonPangenome(BasePangenome):
         rg2["ID"] = rg2["ID"] + "-mm2"
         rg2["LR"] = "1"
 
-        mm2_model: Union[str, pathlib.Path] = self.model_bundle.joinpath(
-            "minimap2.model"
-        )
+        mm2_model: Union[str, pathlib.Path] = bundle.joinpath("minimap2.model")
         mm2_job = Job(
             cmds.cmd_minimap2_lift(
                 mm2_bam,
                 sample_fasta,
                 ext_fastq,
                 sample_gfa,
-                self.reference,
+                reference,
                 "@RG\\t" + "\\t".join([f"{x[0]}:{x[1]}" for x in rg2.items()]),
                 mm2_model,
                 threads=self.cores,
-                lift_prefix=self.pangenome_contig_prefix,
+                lift_prefix=self.contig_prefix(),
             ),
             "mm2-lift",
             self.cores,
+            task_name="pangenome-alignment",
         )
         return mm2_job
 
-    def build_dedup_job(
-        self,
-        output_bam,
-        input_bam: List[pathlib.Path],
-        tag: str,
-        left_align=False,
-        metrics: Optional[pathlib.Path] = None,
-    ) -> Tuple[Job, Job]:
-        """Build deduplication job"""
-        score_file = self.tmp_dir.joinpath(f"sample-{tag}-score.txt.gz")
-
-        read_filters = []
-        if left_align:
-            read_filters.append(
-                "IndelLeftAlignReadTransform,"
-                f"rgid={self.fastq_readgroup['ID']}-mm2"
-            )
-
-        # LocusCollector + Dedup
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-            input=input_bam,
-            read_filter=read_filters,
-        )
-        driver.add_algo(LocusCollector(score_file))
-
-        lc_job = Job(
-            Pipeline(Command(*driver.build_cmd())),
-            f"locuscollector-{tag}",
-            self.cores,
-        )
-
-        driver2 = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-            input=input_bam,
-            read_filter=read_filters,
-        )
-        driver2.add_algo(Dedup(output_bam, score_file, metrics=metrics))
-
-        dedup_job = Job(
-            Pipeline(Command(*driver2.build_cmd())),
-            f"dedup-{tag}",
-            self.cores,
-        )
-
-        return lc_job, dedup_job
-
-    def build_metrics_job(
-        self,
-        sample_input: List[pathlib.Path],
-    ) -> Tuple[Job, Job]:
-        """Build a metrics job"""
-        if not self.output_vcf:
-            self.logger.error("output_vcf is required")
-            sys.exit(2)
-
-        # Create the metrics directory
-        sample_name = self.output_vcf.name.replace(".vcf.gz", "")
-        metric_base = sample_name + ".txt"
-        metrics_dir = pathlib.Path(
-            str(self.output_vcf).replace(".vcf.gz", "_metrics")
-        )
-        if not self.dry_run:
-            metrics_dir.mkdir(exist_ok=True)
-
-        is_metrics = metrics_dir.joinpath(metric_base + ".insert_size.txt")
-        mqbc_metrics = metrics_dir.joinpath(
-            metric_base + ".mean_qual_by_cycle.txt"
-        )
-        bdbc_metrics = metrics_dir.joinpath(
-            metric_base + ".base_distribution_by_cycle.txt"
-        )
-        qualdist_metrics = metrics_dir.joinpath(
-            metric_base + ".qual_distribution.txt"
-        )
-        as_metrics = metrics_dir.joinpath(metric_base + ".alignment_stat.txt")
-        coverage_metrics = metrics_dir.joinpath("coverage")
-
-        # WGS metrics
-        wgs_metrics = metrics_dir.joinpath(metric_base + ".wgs.txt")
-        gc_metrics = metrics_dir.joinpath(metric_base + ".gc_bias.txt")
-        gc_summary = metrics_dir.joinpath(metric_base + ".gc_bias_summary.txt")
-
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-            input=sample_input,
-        )
-
-        driver.add_algo(InsertSizeMetricAlgo(is_metrics))
-        driver.add_algo(MeanQualityByCycle(mqbc_metrics))
-        driver.add_algo(BaseDistributionByCycle(bdbc_metrics))
-        driver.add_algo(QualDistribution(qualdist_metrics))
-        driver.add_algo(AlignmentStat(as_metrics))
-        driver.add_algo(GCBias(gc_metrics, summary=gc_summary))
-        driver.add_algo(WgsMetricsAlgo(wgs_metrics, include_unpaired="true"))
-        driver.add_algo(CoverageMetrics(coverage_metrics))
-
-        metrics_job = Job(Pipeline(Command(*driver.build_cmd())), "metrics", 0)
-
-        rehead_script = pathlib.Path(
-            str(
-                files("sentieon_cli.scripts").joinpath("rehead_wgs_metrics.py")
-            )
-        )
-        rehead_job = Job(
-            Pipeline(
-                Command(
-                    sys.executable,
-                    str(rehead_script),
-                    "--metrics_file",
-                    str(wgs_metrics),
-                )
-            ),
-            "Rehead metrics",
-            0,
-        )
-        return (metrics_job, rehead_job)
-
-    def build_dnascope_job(
+    def build_count_ad_update_job(
         self,
         out_vcf: pathlib.Path,
-        input_bams: List[pathlib.Path],
-        sv_vcf: Optional[pathlib.Path] = None,
-        gfa_file: Optional[pathlib.Path] = None,
-    ) -> Job:
-        if not self.model_bundle:
-            self.logger.error("model_bundle is required")
-            sys.exit(2)
-
-        read_filters = []
-        if self.tech.upper() == "ULTIMA":
-            read_filters.append("UltimaReadFilter")
-
-        pcr_indel_model = "NONE" if self.pcr_free else "CONSERVATIVE"
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-            input=input_bams,
-            interval=self.bed,
-            read_filter=read_filters,
-        )
-        if not self.skip_small_variants:
-            driver.add_algo(
-                DNAscope(
-                    out_vcf,
-                    model=self.model_bundle.joinpath("dnascope.model"),
-                    pcr_indel_model=pcr_indel_model,
-                    dbsnp=self.dbsnp,
-                    emit_mode="gvcf" if self.gvcf else "variant",
-                )
-            )
-        if sv_vcf and gfa_file:
-            driver.add_algo(
-                PangenomeSV(
-                    sv_vcf,
-                    gfa_file=gfa_file,
-                )
-            )
-        return Job(
-            Pipeline(Command(*driver.build_cmd())),
-            "dnascope-raw",
-            self.cores,
-        )
-
-    def build_dnamodelapply_job(
-        self,
         in_vcf: pathlib.Path,
-        out_vcf: pathlib.Path,
     ) -> Job:
-        if not self.model_bundle:
-            self.logger.error("model_bundle is required")
-            sys.exit(2)
+        """Update the AD/DP of the joint pileup.
 
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-        )
-        driver.add_algo(
-            DNAModelApply(
-                model=self.model_bundle.joinpath("dnascope.model"),
-                vcf=in_vcf,
-                output=out_vcf,
-            )
+        Reads that are present in both the bwa and the mm2 alignment are
+        counted twice, so FORMAT/AD, FORMAT/DP and INFO/DP are inflated.
+        The script picks FORMAT/SAD or FORMAT/LAD per sample and derives
+        the updated depths from that choice.
+        """
+        sad_lad_update = pathlib.Path(
+            str(files("sentieon_cli.scripts").joinpath("sad_lad_update.py"))
         )
         return Job(
-            Pipeline(Command(*driver.build_cmd())),
-            "model-apply",
-            self.cores,
-        )
-
-    def build_gvcftyper_job(
-        self,
-        out_vcf: pathlib.Path,
-        in_gvcf: pathlib.Path,
-    ) -> Job:
-        """Genotype a gVCF to produce a VCF"""
-        if not self.reference:
-            self.logger.error("reference is required")
-            sys.exit(2)
-
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-            interval=self.bed,
-        )
-        driver.add_algo(
-            GVCFtyper(
-                output=out_vcf,
-                vcf=in_gvcf,
-            )
-        )
-        return Job(
-            Pipeline(Command(*driver.build_cmd())),
-            "gvcftyper",
-            self.cores,
-        )
-
-    def build_segdup_job(
-        self,
-        out_segdup: pathlib.Path,
-        sr_alignment: pathlib.Path,
-        input_vcf: pathlib.Path,
-        genes: Optional[str],
-    ) -> Job:
-        """Call variants in difficult SegDups"""
-        if not self.reference:
-            self.logger.error("reference is required")
-            sys.exit(2)
-        if not self.model_bundle:
-            self.logger.error("model_bundle is required")
-            sys.exit(2)
-
-        sex = "male" if self.sample_sex == SampleSex.MALE else "female"
-
-        # segdup-caller's default `main.min_map_qual` of 45 is too strict
-        # for Ultima alignments.
-        overrides = []
-        if self.tech.upper() == "ULTIMA":
-            overrides.append("main.min_map_qual=30")
-
-        return Job(
-            cmds.cmd_segdup_caller(
-                out_segdup,
-                sr_alignment,
-                reference=self.reference,
-                sr_bundle=self.model_bundle,
-                input_vcf=input_vcf,
-                sex=sex,
-                genes=genes,
-                overrides=overrides,
+            cmds.cmd_pyexec_sad_lad_update(
+                out_vcf,
+                in_vcf,
+                sad_lad_update,
+                self.cores,
             ),
-            "segdup-caller",
+            "sad-lad-update",
             self.cores,
+            task_name="ad-update",
         )
 
-    def build_second_dag(self) -> DAG:
+    def build_second_dag(self) -> Optional[DAG]:
         """Build the second DAG for sex-aware downstream tools"""
+        if not self._needs_second_dag():
+            return None
+
+        assert self.ploidy_json is not None
+        self.get_sex(self.ploidy_json)
+
         self.logger.info("Building the second pangenome DAG")
         dag = DAG()
+        ctx = self.stage_context()
 
-        if self.expansion_catalog and self.sr_alignment:
-            out_expansions = pathlib.Path(
-                str(self.output_vcf).replace(".vcf.gz", "_expansion")
+        # CNV calling with CNVscope, using the sample sex
+        if self._cnv_in_second_dag():
+            self.add_pangenome_cnv(
+                dag,
+                ctx,
+                self.output_path("_sv.vcf.gz"),
+                self.sr_alignments,
+                interval=self.bed,
             )
-            expansion_job = self.build_expansion_job(
-                out_expansions, self.sr_alignment, self.expansion_catalog
-            )
-            dag.add_job(expansion_job)
 
-        # SegDup calling consumes the small-variant VCF and the inferred sex
-        if (
-            self.segdup_caller is not None
-            and self.sr_alignment
-            and self.output_vcf
-        ):
-            out_segdup = pathlib.Path(
-                str(self.output_vcf).replace(".vcf.gz", "_segdups")
+        if self.sr_alignments:
+            self.add_expansion(dag, ctx, self.sr_alignments[0])
+
+            # SegDup calling consumes the small-variant VCF and the
+            # inferred sex. segdup-caller's default `main.min_map_qual`
+            # of 45 is too strict for Ultima alignments.
+            self.add_segdup(
+                dag,
+                ctx,
+                self.sr_alignments[0],
+                overrides=(
+                    ["main.min_map_qual=30"]
+                    if self.tech.upper() == "ULTIMA"
+                    else ()
+                ),
             )
-            genes = ",".join(self.segdup_caller) or None
-            segdup_job = self.build_segdup_job(
-                out_segdup,
-                self.sr_alignment,
-                self.output_vcf,
-                genes,
-            )
-            dag.add_job(segdup_job)
 
         return dag
-
-    def build_t1k_jobs(
-        self,
-        out_basename: pathlib.Path,
-        sr_alignments: List[pathlib.Path],
-        gene_seq: pathlib.Path,
-        gene_coord: pathlib.Path,
-        locus: str,
-        preset: str,
-        tag: str,
-    ) -> Tuple[Job, Job]:
-        """Extract reads at the T1K locus and genotype them with T1K"""
-        if not self.reference:
-            self.logger.error("reference is required")
-            sys.exit(2)
-
-        # Extract reads overlapping the locus to a BAM file with ReadWriter
-        extracted_bam = self.tmp_dir.joinpath(f"sample_{tag}.bam")
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-            input=sr_alignments,
-            interval=locus,
-        )
-        driver.add_algo(ReadWriter(extracted_bam))
-        extract_job = Job(
-            Pipeline(Command(*driver.build_cmd())),
-            f"t1k-{tag}-extract",
-            self.cores,
-        )
-
-        t1k_job = Job(
-            cmds.cmd_t1k(
-                out_basename,
-                extracted_bam,
-                gene_seq=gene_seq,
-                gene_coord=gene_coord,
-                preset=preset,
-                threads=self.cores,
-            ),
-            f"t1k-{tag}",
-            self.cores,
-        )
-        return (extract_job, t1k_job)
-
-    def build_expansion_job(
-        self,
-        out_expansions: pathlib.Path,
-        sr_alignment: pathlib.Path,
-        expansion_catalog: pathlib.Path,
-    ) -> Job:
-        """Identify repeat expansions"""
-        if not self.reference:
-            self.logger.error("reference is required")
-            sys.exit(2)
-
-        return Job(
-            cmds.cmd_expansion_hunter(
-                out_expansions,
-                sr_alignment,
-                reference=self.reference,
-                variant_catalog=expansion_catalog,
-                sex="male" if self.sample_sex == SampleSex.MALE else "female",
-                threads=self.cores,
-            ),
-            "expansion-hunter",
-            self.cores,
-        )
-
-    def _add_cnv_jobs(
-        self,
-        dag: DAG,
-        sv_vcf: pathlib.Path,
-        cnv_input_bams: List[pathlib.Path],
-        cnvscope_deps: Set[Job],
-        dnascope_job: Job,
-    ) -> None:
-        """Add CNV calling jobs to the DAG"""
-        if not self.model_bundle:
-            self.logger.error("model_bundle is required")
-            sys.exit(2)
-        if not self.reference:
-            self.logger.error("reference is required")
-            sys.exit(2)
-        if not self.output_vcf:
-            self.logger.error("output_vcf is required")
-            sys.exit(2)
-
-        cnvscope_vcf = self.tmp_dir.joinpath("sample-cnvscope.vcf.gz")
-        cnv_apply_vcf = self.tmp_dir.joinpath("sample-cnv_model_apply.vcf.gz")
-        indel2cnv_vcf = self.tmp_dir.joinpath("sample-sv_cnv.vcf.gz")
-        cnv_vcf = pathlib.Path(
-            str(self.output_vcf).replace(".vcf.gz", "_cnv.vcf.gz")
-        )
-
-        # CNVscope on BWA deduped BAM
-        cnvscope_job = self._build_cnvscope_job(cnvscope_vcf, cnv_input_bams)
-        dag.add_job(cnvscope_job, cnvscope_deps)
-
-        # CNVModelApply on CNVscope output
-        cnv_model_apply_job = self._build_cnv_model_apply_job(
-            cnv_apply_vcf, cnvscope_vcf
-        )
-        dag.add_job(cnv_model_apply_job, {cnvscope_job})
-
-        # Convert PangenomeSV output to CNVs
-        indel2cnv_job = self._build_indel2cnv_job(indel2cnv_vcf, sv_vcf)
-        dag.add_job(indel2cnv_job, {dnascope_job})
-
-        # Combine CNVModelApply output with converted SVs
-        combine_job = self._build_combine_cnv_job(
-            cnv_vcf, cnv_apply_vcf, indel2cnv_vcf
-        )
-        dag.add_job(combine_job, {cnv_model_apply_job, indel2cnv_job})
-
-    def _build_cnvscope_job(
-        self,
-        output_vcf: pathlib.Path,
-        input_bams: List[pathlib.Path],
-    ) -> Job:
-        """Build a CNVscope job"""
-        assert self.model_bundle is not None
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-            input=input_bams,
-            interval=self.bed,
-        )
-        driver.add_algo(
-            CNVscope(
-                output=output_vcf,
-                model=self.model_bundle.joinpath("cnv.model"),
-            )
-        )
-        return Job(
-            Pipeline(Command(*driver.build_cmd())),
-            "cnvscope",
-            self.cores,
-        )
-
-    def _build_cnv_model_apply_job(
-        self,
-        output_vcf: pathlib.Path,
-        input_vcf: pathlib.Path,
-    ) -> Job:
-        """Build a CNVModelApply job"""
-        assert self.model_bundle is not None
-        driver = Driver(
-            reference=self.reference,
-            thread_count=self.cores,
-        )
-        driver.add_algo(
-            CNVModelApply(
-                output=output_vcf,
-                model=self.model_bundle.joinpath("cnv.model"),
-                vcf=input_vcf,
-            )
-        )
-        return Job(
-            Pipeline(Command(*driver.build_cmd())),
-            "cnv-model-apply",
-            self.cores,
-        )
-
-    def _build_indel2cnv_job(
-        self,
-        output_vcf: pathlib.Path,
-        input_vcf: pathlib.Path,
-    ) -> Job:
-        """Convert PangenomeSV INDELs to CNV calls"""
-        indel2cnv_script = pathlib.Path(
-            str(files("sentieon_cli.scripts").joinpath("indel2cnv.py"))
-        )
-        # Run in background
-        return Job(
-            Pipeline(
-                Command(
-                    sys.executable,
-                    str(indel2cnv_script),
-                    str(self.reference),
-                    str(input_vcf),
-                    str(output_vcf),
-                    "-t",
-                    str(self.cores),
-                )
-            ),
-            "indel2cnv",
-            0,
-        )
-
-    def _build_combine_cnv_job(
-        self,
-        output_vcf: pathlib.Path,
-        cnv_vcf: pathlib.Path,
-        converted_vcf: pathlib.Path,
-    ) -> Job:
-        """Combine CNVscope and converted SV calls"""
-        combine_script = pathlib.Path(
-            str(files("sentieon_cli.scripts").joinpath("combine_cnv.py"))
-        )
-        return Job(
-            Pipeline(
-                Command(
-                    sys.executable,
-                    str(combine_script),
-                    "--cnv",
-                    str(cnv_vcf),
-                    "--converted",
-                    str(converted_vcf),
-                    "-o",
-                    str(output_vcf),
-                )
-            ),
-            "combine-cnv",
-            0,
-        )
