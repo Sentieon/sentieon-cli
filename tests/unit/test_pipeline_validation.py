@@ -48,8 +48,11 @@ class TestDNAscopePipelineValidation:
         self.mock_bundle = pathlib.Path(self.temp_dir) / "model.bundle"
 
         # Create empty files
-        for file_path in [self.mock_ref, self.mock_bam, self.mock_fastq, self.mock_bundle]:
+        for file_path in [self.mock_ref, self.mock_bam, self.mock_fastq]:
             file_path.touch()
+
+        # An empty ar archive: a bundle without a bundle_info.json
+        self.mock_bundle.write_bytes(b"!<arch>\n")
 
         # Create BWA index files next to the reference
         for suf in (".amb", ".ann", ".bwt", ".pac", ".sa"):

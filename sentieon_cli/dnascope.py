@@ -5,14 +5,16 @@ DNAscope alignment and variant calling
 import argparse
 import copy
 import itertools
+import json
 import os
 import pathlib
 import shutil
 import sys
-from typing import List, Optional, Set
+from typing import Dict, List, Optional, Set
 
 import packaging.version
 
+from .archive import ar_load
 from .dag import DAG
 from .driver import (
     BaseAlgo,
@@ -21,6 +23,7 @@ from .driver import (
 )
 from .job import Job
 from .pipeline import BasePipeline
+from .shard import Shard, determine_shards_from_fai, parse_fai, vcf_contigs
 from .stages.alignment import (
     BWA_FASTQ_MIN_VERSIONS,
     BWA_REALIGN_MIN_VERSIONS,
@@ -39,7 +42,9 @@ from .stages.small_variants import (
     DNAscopeStage,
     GVCFtyperStage,
     TransferApplyStage,
+    TransferSpec,
 )
+from .stages.transfer import TransferConfig
 from .util import (
     library_preloaded,
     parse_rg_line,
@@ -48,10 +53,15 @@ from .util import (
     set_bwt_max_mem,
     split_alignment,
     total_memory,
+    vcf_id,
 )
 
 VARIANTS_MIN_VERSIONS = {
     "sentieon driver": packaging.version.Version("202308"),
+}
+
+TRANSFER_MIN_VERSIONS = {
+    "bcftools": packaging.version.Version("1.22"),
 }
 
 
@@ -163,6 +173,13 @@ class DNAscopePipeline(BasePipeline):
                 "help": "Use arguments for PCR-free data processing",
                 "action": "store_true",
             },
+            "pop_vcf": {
+                "flags": ["--pop_vcf"],
+                "help": (
+                    "A VCF containing annotations for use with DNAModelApply."
+                ),
+                "type": path_arg(exists=True, is_file=True),
+            },
             "skip_metrics": {
                 "help": "Skip all metrics collection and multiQC",
                 "action": "store_true",
@@ -202,6 +219,10 @@ class DNAscopePipeline(BasePipeline):
                 "help": argparse.SUPPRESS,
                 "action": "store_true",
             },
+            "skip_pop_vcf_id_check": {
+                "help": argparse.SUPPRESS,
+                "action": "store_true",
+            },
             "util_sort_args": {
                 # "help": "Extra arguments for sentieon util sort",
                 "help": argparse.SUPPRESS,
@@ -221,6 +242,7 @@ class DNAscopePipeline(BasePipeline):
         self.bed: Optional[pathlib.Path] = None
         self.interval_padding: Optional[int] = None
         self.pcr_free = False
+        self.pop_vcf: Optional[pathlib.Path] = None
         self.gvcf = False
         self.duplicate_marking = "markdup"
         self.assay = "WGS"
@@ -239,6 +261,12 @@ class DNAscopePipeline(BasePipeline):
         self.bwt_max_mem: Optional[str] = None
         self.no_ramdisk = False
         self.no_split_alignment = False
+        self.skip_pop_vcf_id_check = False
+        # The annotation transfer's inputs, set by `validate` when a
+        # `--pop_vcf` is supplied
+        self.fai_data: Dict[str, Dict[str, int]] = {}
+        self.pop_vcf_contigs: Dict[str, Optional[int]] = {}
+        self.shards: List[Shard] = []
 
     def validate(self) -> None:
         self.required(self.output_vcf, "output_vcf")
@@ -287,6 +315,54 @@ class DNAscopePipeline(BasePipeline):
 
         if self.r1_fastq or self.align or self.collate_align:
             self.validate_bwa_index()
+
+        if self.pop_vcf:
+            self.fai_data = parse_fai(
+                pathlib.Path(str(self.reference) + ".fai")
+            )
+            self.pop_vcf_contigs = vcf_contigs(self.pop_vcf)
+            self.logger.debug("VCF contigs are: %s", self.pop_vcf_contigs)
+            self.shards = determine_shards_from_fai(
+                self.fai_data, 10 * 1000 * 1000
+            )
+        self.validate_bundle()
+
+    def validate_bundle(self) -> None:
+        """Check the `--pop_vcf` against the model bundle"""
+        bundle = self.required(self.model_bundle, "model_bundle")
+        bundle_info_bytes = ar_load(str(bundle) + "/bundle_info.json")
+        if isinstance(bundle_info_bytes, list):
+            bundle_info_bytes = b"{}"
+        bundle_info = json.loads(bundle_info_bytes.decode())
+        bundle_vcf_id = bundle_info.get("SentieonVcfID")
+
+        if not bundle_vcf_id:
+            if self.pop_vcf:
+                self.logger.error(
+                    "The model bundle does not require a population VCF. "
+                    "Please use this model bundle without the `--pop_vcf` "
+                    "argument."
+                )
+                sys.exit(2)
+            return
+
+        if not self.pop_vcf:
+            self.logger.error(
+                "The model bundle requires a population VCF. Please supply "
+                "the `--pop_vcf` argument."
+            )
+            sys.exit(2)
+        if self.skip_pop_vcf_id_check:
+            return
+        pop_vcf_id = vcf_id(self.pop_vcf)
+        if pop_vcf_id != bundle_vcf_id:
+            self.logger.error(
+                "The population VCF provided does not match the population "
+                "VCF required by the model bundle. Expected: %s, Found: %s",
+                bundle_vcf_id,
+                pop_vcf_id,
+            )
+            sys.exit(2)
 
     def configure(self) -> None:
         self.configure_alignment()
@@ -474,6 +550,10 @@ class DNAscopePipeline(BasePipeline):
         bundle = self.required(self.model_bundle, "model_bundle")
 
         require_versions(VARIANTS_MIN_VERSIONS, skip=self.skip_version_check)
+        if self.pop_vcf:
+            require_versions(
+                TRANSFER_MIN_VERSIONS, skip=self.skip_version_check
+            )
 
         out_gvcf = pathlib.Path(
             str(ctx.output_vcf).replace(".vcf.gz", ".g.vcf.gz")
@@ -525,10 +605,23 @@ class DNAscopePipeline(BasePipeline):
             interval_padding=self.interval_padding,
         ).add_to(dag, upstream)
 
-        # Genotyping and filtering with DNAModelApply
+        # Transfer annotations from the pop_vcf, then genotype and filter
+        # with DNAModelApply
+        transfer: Optional[TransferSpec] = None
+        if self.pop_vcf:
+            transfer_vcf = ctx.tmp_dir.joinpath(
+                "sample-dnascope_transfer.g.vcf.gz"
+                if self.gvcf
+                else "sample-dnascope_transfer.vcf.gz"
+            )
+            transfer = TransferSpec(
+                config=TransferConfig.from_pipeline(self),
+                out_vcf=transfer_vcf,
+            )
         transfer_apply = TransferApplyStage(
             ctx=ctx,
             raw_vcf=tmp_vcf,
+            transfer=transfer,
             apply=ApplySpec(model=model, output=ds_out),
         ).add_to(dag, call.terminal)
 

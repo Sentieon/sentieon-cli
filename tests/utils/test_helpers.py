@@ -71,13 +71,14 @@ class MockFileSystem:
 
     def create_model_bundle(self, path: str, pipeline_type: str = "DNAscope",
                            longread_tech: str = "HiFi", shortread_tech: str = "Illumina") -> pathlib.Path:
-        """Create a mock model bundle file (ar archive will be mocked)"""
-        # Create an empty file - the ar_load function will be mocked
+        """Create a mock model bundle file (an empty ar archive)"""
         bundle_path = pathlib.Path(self.temp_dir) / path
         bundle_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Just create an empty file - the actual content will be provided by mocked ar_load
-        bundle_path.write_bytes(b"mock_ar_archive")
+        # An empty ar archive: an unmocked `ar_load` reads it as a bundle
+        # without a bundle_info.json. Tests that need bundle members or a
+        # bundle_info.json mock `ar_load`.
+        bundle_path.write_bytes(b"!<arch>\n")
 
         self.files[path] = bundle_path
         return bundle_path
