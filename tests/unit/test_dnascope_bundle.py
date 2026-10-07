@@ -1,5 +1,6 @@
 """
-Unit tests for the DNAscope pipeline's `--pop_vcf` support
+Unit tests for the DNAscope pipeline's model-bundle handling: the
+`--pop_vcf` annotation transfer and the platform's read filter
 """
 
 import json
@@ -236,3 +237,65 @@ class TestPopVcfDag:
         dag = build(make_pipeline(files, skip_small_variants=True))
         names = [job.name for job in all_jobs(dag)]
         assert not any(n.startswith("merge-trim") for n in names)
+
+
+class TestUltimaReadFilter:
+    """An Ultima bundle adds `UltimaReadFilter` to the DNAscope call"""
+
+    @staticmethod
+    def build_with_bundle(files, bundle_info, **overrides):
+        write_bundle(files["bundle"], bundle_info)
+        return build(make_pipeline(files, pop_vcf=None, **overrides))
+
+    @pytest.mark.parametrize("platform", ["Ultima", "ULTIMA", "ultima"])
+    def test_ultima_bundle_filters_the_dnascope_call(self, files, platform):
+        dag = self.build_with_bundle(files, {"platform": platform})
+
+        cmd = str(job_named(dag, "dnascope").shell)
+        assert cmd.count("--read_filter UltimaReadFilter") == 1
+        # Duplicate marking and the rest of the pipeline are unfiltered
+        others = [j for j in all_jobs(dag) if j.name != "dnascope"]
+        assert others
+        for job in others:
+            assert "UltimaReadFilter" not in str(job.shell), job.name
+
+    def test_ultima_filter_covers_sv_calling(self, files):
+        dag = self.build_with_bundle(files, {"platform": "Ultima"})
+
+        # Small variants and SVs come from the same driver call
+        cmd = str(job_named(dag, "dnascope").shell)
+        assert "--var_type BND" in cmd
+        assert "--read_filter UltimaReadFilter" in cmd
+
+    def test_ultima_bundle_with_a_pop_vcf(self, files):
+        write_bundle(
+            files["bundle"],
+            {"platform": "Ultima", "SentieonVcfID": BUNDLE_VCF_ID},
+        )
+        dag = build(make_pipeline(files))
+
+        cmd = str(job_named(dag, "dnascope").shell)
+        assert "--read_filter UltimaReadFilter" in cmd
+        assert dep_names(dag, job_named(dag, "model-apply")) == [
+            "merge-trim-concat"
+        ]
+
+    @pytest.mark.parametrize(
+        "bundle_info", [None, {}, {"platform": "Illumina"}]
+    )
+    def test_other_bundles_are_unfiltered(self, files, bundle_info):
+        dag = self.build_with_bundle(files, bundle_info)
+
+        for job in all_jobs(dag):
+            assert "--read_filter" not in str(job.shell), job.name
+
+    def test_platform_is_read_from_the_bundle(self, files):
+        write_bundle(files["bundle"], {"platform": "Ultima"})
+        pipeline = make_pipeline(files, pop_vcf=None)
+        pipeline.validate()
+        assert pipeline.tech == "ULTIMA"
+
+        write_bundle(files["bundle"], None)
+        pipeline = make_pipeline(files, pop_vcf=None)
+        pipeline.validate()
+        assert pipeline.tech == ""

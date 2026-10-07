@@ -267,6 +267,9 @@ class DNAscopePipeline(BasePipeline):
         self.fai_data: Dict[str, Dict[str, int]] = {}
         self.pop_vcf_contigs: Dict[str, Optional[int]] = {}
         self.shards: List[Shard] = []
+        # The bundle's sequencing platform, upper-cased, set by
+        # `validate_bundle`
+        self.tech = ""
 
     def validate(self) -> None:
         self.required(self.output_vcf, "output_vcf")
@@ -328,12 +331,13 @@ class DNAscopePipeline(BasePipeline):
         self.validate_bundle()
 
     def validate_bundle(self) -> None:
-        """Check the `--pop_vcf` against the model bundle"""
+        """Read the bundle's platform and check the `--pop_vcf` against it"""
         bundle = self.required(self.model_bundle, "model_bundle")
         bundle_info_bytes = ar_load(str(bundle) + "/bundle_info.json")
         if isinstance(bundle_info_bytes, list):
             bundle_info_bytes = b"{}"
         bundle_info = json.loads(bundle_info_bytes.decode())
+        self.tech = bundle_info.get("platform", "").upper()
         bundle_vcf_id = bundle_info.get("SentieonVcfID")
 
         if not bundle_vcf_id:
@@ -564,6 +568,9 @@ class DNAscopePipeline(BasePipeline):
         out_svs = pathlib.Path(
             str(ctx.output_vcf).replace(".vcf.gz", "_svs.vcf.gz")
         )
+        read_filters: List[str] = []
+        if self.tech == "ULTIMA":
+            read_filters.append("UltimaReadFilter")
         pcr_indel_model = "NONE" if self.pcr_free else "CONSERVATIVE"
         model = bundle.joinpath("dnascope.model")
 
@@ -603,6 +610,7 @@ class DNAscopePipeline(BasePipeline):
             inputs=deduped,
             interval=self.bed,
             interval_padding=self.interval_padding,
+            read_filter=read_filters,
         ).add_to(dag, upstream)
 
         # Transfer annotations from the pop_vcf, then genotype and filter
