@@ -1520,10 +1520,22 @@ class TestHybridPangenome:
         cnv_vcf = str(self.mock_vcf).replace(".vcf.gz", "_cnv.vcf.gz")
         assert str(job.shell) == (
             f"{sys.executable} {self.script_path('combine_cnv.py')} "
+            "--preset PE "
             f"--cnv {self.mock_dir}/sample-cnv_model_apply.vcf.gz "
             f"--converted {self.mock_dir}/sample-sv_cnv.vcf.gz "
+            f"--raw {self.mock_dir}/sample-cnvscope.vcf.gz "
+            "--sex F "
             f"-o {cnv_vcf}"
         )
+
+    def test_combine_cnv_male_sample(self):
+        """combine_cnv.py gets the same sex and PAR BED file as CNVscope"""
+        pipeline = self.enable_cnv(self.create_pipeline())
+        job = self._second_dag_job(
+            pipeline, "combine-cnv", sample_sex=SampleSex.MALE
+        )
+
+        assert f"--sex M --par {pipeline.cnv_par_bed}" in str(job.shell)
 
     def test_expansion_hunter_command(self):
         """ExpansionHunter genotypes the short reads"""

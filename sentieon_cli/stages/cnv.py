@@ -29,6 +29,9 @@ class CNVResult(StageResult):
     cnvscope_job: Job
     apply_job: Job
     cnv_vcf: pathlib.Path
+    # The CNVscope `--sex` and `--par` arguments, None when omitted
+    sex: Optional[str] = None
+    par: Optional[pathlib.Path] = None
 
 
 @dataclass(kw_only=True)
@@ -97,6 +100,8 @@ class CNVscopeStage(Stage):
             cnvscope_job=cnvscope,
             apply_job=apply_job,
             cnv_vcf=self.cnv_vcf,
+            sex=sex,
+            par=par,
         )
 
 
@@ -120,6 +125,10 @@ class PangenomeCNVStage(Stage):
     sets are combined by `combine_cnv.py` into `<output>_cnv.vcf.gz`.
     Both inputs -- the alignments and the SV VCF -- come from an earlier
     DAG, and the sample sex has to be known before the jobs are built.
+    `combine_cnv.py` gets the same sex and PAR BED file as CNVscope and
+    the CNVscope output as its raw segments. `combine_preset` selects its
+    rules: `PE` for paired-end CNVscope models and `SE` for single-end
+    models.
     """
 
     inputs: List[pathlib.Path]
@@ -127,6 +136,7 @@ class PangenomeCNVStage(Stage):
     sv_vcf: pathlib.Path
     sample_sex: Optional[SampleSex] = None
     par_bed: Optional[pathlib.Path] = None
+    combine_preset: str = "PE"
     interval: Optional[pathlib.Path] = None
     replace_rg: Optional[List[List[str]]] = None
     task_name: str = "cnv"
@@ -178,7 +188,10 @@ class PangenomeCNVStage(Stage):
         )
         dag.add_job(indel2cnv_job, deps)
 
-        # Combine the CNVModelApply output with the converted SVs
+        # Combine the CNVModelApply output with the converted SVs. The
+        # CNVscope output, written before CNVModelApply runs, is the raw
+        # segmentation that `combine_cnv.py` checks long converted gains
+        # against
         combine_script = pathlib.Path(
             str(files("sentieon_cli.scripts").joinpath("combine_cnv.py"))
         )
@@ -188,6 +201,10 @@ class PangenomeCNVStage(Stage):
                 apply_vcf,
                 converted_vcf,
                 combine_script,
+                raw_vcf=cnvscope_vcf,
+                preset=self.combine_preset,
+                sex=cnv_result.sex,
+                par=cnv_result.par,
             ),
             "combine-cnv",
             0,

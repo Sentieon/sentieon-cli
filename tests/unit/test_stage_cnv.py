@@ -153,6 +153,8 @@ class TestSexArguments:
         shell = str(result.cnvscope_job.shell)
         assert "--sex M" in shell
         assert f"--par {par_bed}" in shell
+        # The result records the ploidy CNVscope was called with
+        assert (result.sex, result.par) == ("M", par_bed)
 
     def test_female_sample(self, tmp_path):
         # A female sample does not need the PAR regions
@@ -294,10 +296,59 @@ class TestPangenomeCNVStage:
 
         assert str(result.combine_job.shell) == (
             f"{sys.executable} {script_path('combine_cnv.py')} "
+            "--preset PE "
             f"--cnv {tmp_path}/sample-cnv_model_apply.vcf.gz "
             f"--converted {tmp_path}/sample-sv_cnv.vcf.gz "
+            f"--raw {tmp_path}/sample-cnvscope.vcf.gz "
             f"-o {tmp_path}/output_cnv.vcf.gz"
         )
+
+    def test_combine_cnv_single_end_preset(self, tmp_path):
+        result = make_pangenome_stage(
+            tmp_path, combine_preset="SE"
+        ).add_to(DAG())
+
+        assert "--preset SE" in str(result.combine_job.shell)
+
+    def test_combine_cnv_male_sample(self, tmp_path):
+        """combine_cnv.py gets the same sex and PAR BED file as CNVscope"""
+        par_bed = tmp_path / "par.bed"
+        result = make_pangenome_stage(
+            tmp_path, sample_sex=SampleSex.MALE, par_bed=par_bed
+        ).add_to(DAG())
+
+        assert str(result.combine_job.shell) == (
+            f"{sys.executable} {script_path('combine_cnv.py')} "
+            "--preset PE "
+            f"--cnv {tmp_path}/sample-cnv_model_apply.vcf.gz "
+            f"--converted {tmp_path}/sample-sv_cnv.vcf.gz "
+            f"--raw {tmp_path}/sample-cnvscope.vcf.gz "
+            f"--sex M --par {par_bed} "
+            f"-o {tmp_path}/output_cnv.vcf.gz"
+        )
+
+    def test_combine_cnv_female_sample(self, tmp_path):
+        result = make_pangenome_stage(
+            tmp_path,
+            sample_sex=SampleSex.FEMALE,
+            par_bed=tmp_path / "par.bed",
+        ).add_to(DAG())
+
+        shell = str(result.combine_job.shell)
+        assert "--sex F" in shell
+        assert "--par" not in shell
+
+    def test_combine_cnv_unknown_sex(self, tmp_path):
+        """Without a known sex both tools treat the genome as diploid"""
+        result = make_pangenome_stage(
+            tmp_path,
+            sample_sex=SampleSex.UNKNOWN,
+            par_bed=tmp_path / "par.bed",
+        ).add_to(DAG())
+
+        shell = str(result.combine_job.shell)
+        assert "--sex" not in shell
+        assert "--par" not in shell
 
     def test_upstream_lands_on_the_entry_jobs(self, tmp_path):
         dag = DAG()

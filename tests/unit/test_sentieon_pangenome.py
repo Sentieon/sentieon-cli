@@ -968,9 +968,41 @@ class TestSentieonPangenome:
         assert "combine_cnv.py" in cmd_str
         assert "--cnv" in cmd_str
         assert "--converted" in cmd_str
+        # The CNVscope output is the raw segmentation
+        assert f"--raw {pipeline.tmp_dir}/sample-cnvscope.vcf.gz" in cmd_str
+        # Illumina bundles carry a paired-end CNVscope model
+        assert "--preset PE" in cmd_str
+        # The same ploidy as CNVscope, a female sample
+        assert "--sex F" in cmd_str
+        assert "--par" not in cmd_str
         # Output should use _cnv.vcf.gz suffix
         cnv_vcf = str(pipeline.output_vcf).replace(".vcf.gz", "_cnv.vcf.gz")
         assert cnv_vcf in cmd_str
+
+    def test_combine_cnv_ultima_preset(self):
+        """Ultima bundles carry a single-end CNVscope model"""
+        pipeline = self.create_pipeline()
+        pipeline.call_svs = True
+        pipeline.tech = "ULTIMA"
+        dag = self._build_cnv_dag(pipeline)
+
+        _, all_jobs = self._get_all_job_names(dag)
+        job = next(j for j in all_jobs if j.name == "combine-cnv")
+        assert "--preset SE" in str(job.shell)
+
+    def test_combine_cnv_male_sample(self):
+        """A male sample is combined with the PAR BED file"""
+        par_bed = self.mock_dir / "par.bed"
+        par_bed.touch()
+
+        pipeline = self.create_pipeline()
+        pipeline.call_svs = True
+        pipeline.cnv_par_bed = par_bed
+        dag = self._build_cnv_dag(pipeline, sample_sex=SampleSex.MALE)
+
+        _, all_jobs = self._get_all_job_names(dag)
+        job = next(j for j in all_jobs if j.name == "combine-cnv")
+        assert f"--sex M --par {par_bed}" in str(job.shell)
 
     def test_cnv_with_skip_model_apply(self):
         """Test CNV jobs are added even with skip_model_apply"""

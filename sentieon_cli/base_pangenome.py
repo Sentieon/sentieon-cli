@@ -789,9 +789,18 @@ class BasePangenome(BasePipeline):
             sv_vcf=sv_vcf,
             sample_sex=self.sample_sex,
             par_bed=self.cnv_par_bed,
+            combine_preset=self.cnv_combine_preset(),
             interval=interval,
             replace_rg=replace_rg,
         ).add_to(dag)
+
+    def cnv_combine_preset(self) -> str:
+        """The `combine_cnv.py` preset for the bundle's CNVscope model.
+
+        `PE` for paired-end models; pipelines with single-end short reads
+        override this to return `SE`.
+        """
+        return "PE"
 
     def build_kmc_job(
         self, kmer_prefix: pathlib.Path, job_threads: int

@@ -155,6 +155,10 @@ class SentieonPangenome(BasePangenome):
         """CNV calling runs in the second, sex-aware DAG"""
         return self.call_svs and self.has_cnv_model
 
+    def cnv_combine_preset(self) -> str:
+        """Ultima bundles carry a single-end CNVscope model"""
+        return "SE" if self.tech.upper() == "ULTIMA" else "PE"
+
     def _needs_second_dag(self) -> bool:
         """The run has jobs that depend on the estimated sample sex"""
         return bool(
