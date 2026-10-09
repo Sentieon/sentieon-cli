@@ -216,6 +216,8 @@ class HybridPangenome(BasePangenome):
         self.skip_pop_vcf_id_check = False
         self.skip_small_variants = False
         self.skip_svs = False
+        # The bundle's `shortReadPlatform`, upper-cased; empty if unset
+        self.sr_platform = ""
         # The single long-read alignment, stashed by `build_dag` for the
         # second, sex-aware DAG
         self.lr_alignment: Optional[pathlib.Path] = None
@@ -223,6 +225,10 @@ class HybridPangenome(BasePangenome):
     def _cnv_in_second_dag(self) -> bool:
         """CNV calling runs in the second, sex-aware DAG"""
         return self.call_cnvs and self.has_cnv_model
+
+    def cnv_combine_preset(self) -> str:
+        """Ultima bundles carry a single-end CNVscope model"""
+        return "SE" if self.sr_platform == "ULTIMA" else "PE"
 
     def _needs_second_dag(self) -> bool:
         """The run has jobs that depend on the estimated sample sex"""
@@ -444,6 +450,8 @@ class HybridPangenome(BasePangenome):
             self.logger.error("The model bundle is for a different pipeline.")
             sys.exit(2)
 
+        self.sr_platform = bundle_info.get("shortReadPlatform", "").upper()
+
         bundle_members = set(ar_load(str(self.model_bundle)))
 
         # Prefer a reference-specific extract model. Fall back to the generic
@@ -457,11 +465,12 @@ class HybridPangenome(BasePangenome):
             self.extract_model_name = extract_candidate
 
         required_members = {
-            "dnascope.model",
             "longreadsv.model",
             "minimap2.model",
             self.extract_model_name,
         }
+        if not self.skip_small_variants:
+            required_members.add("dnascope.model")
         if self.r1_fastq:
             required_members.add("bwa.model")
         if self.lr_align_input:

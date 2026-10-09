@@ -338,8 +338,12 @@ class SentieonPangenome(BasePangenome):
         else:
             self.extract_model_name = extract_candidate
 
+        # `dnascope.model` is only used for small-variant calling
         if (
-            "dnascope.model" not in bundle_members
+            (
+                "dnascope.model" not in bundle_members
+                and not self.skip_small_variants
+            )
             or self.extract_model_name not in bundle_members
             or "minimap2.model" not in bundle_members
         ):

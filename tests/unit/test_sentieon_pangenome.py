@@ -1020,3 +1020,29 @@ class TestSentieonPangenome:
         assert "cnv-model-apply" in job_names
         assert "indel2cnv" in job_names
         assert "combine-cnv" in job_names
+
+    def test_validate_bundle_dnascope_model_with_skip_small_variants(self):
+        """`dnascope.model` is only needed for small-variant calling"""
+        bundle_info = {
+            "minScriptVersion": "1.0.0",
+            "pipeline": "Sentieon pangenome",
+            "platform": "Illumina",
+            "SentieonVcfID": "population",
+        }
+
+        def fake_ar_load(path):
+            if str(path).endswith("bundle_info.json"):
+                return json.dumps(bundle_info).encode()
+            return ["extract.model", "minimap2.model", "cnv.model"]
+
+        with patch(
+            "sentieon_cli.sentieon_pangenome.ar_load", fake_ar_load
+        ):
+            pipeline = self.create_pipeline()
+            with pytest.raises(SystemExit) as excinfo:
+                pipeline.validate_bundle()
+            assert excinfo.value.code == 2
+
+            pipeline = self.create_pipeline()
+            pipeline.skip_small_variants = True
+            pipeline.validate_bundle()  # no SystemExit

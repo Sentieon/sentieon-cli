@@ -3,6 +3,7 @@ Unit tests for the HybridPangenome pipeline logic
 """
 
 from importlib.resources import files
+import json
 import logging
 import os
 import pathlib
@@ -1537,6 +1538,14 @@ class TestHybridPangenome:
 
         assert f"--sex M --par {pipeline.cnv_par_bed}" in str(job.shell)
 
+    def test_combine_cnv_ultima_preset(self):
+        """Ultima short reads use the single-end preset"""
+        pipeline = self.enable_cnv(self.create_pipeline())
+        pipeline.sr_platform = "ULTIMA"
+        job = self._second_dag_job(pipeline, "combine-cnv")
+
+        assert "--preset SE " in str(job.shell)
+
     def test_expansion_hunter_command(self):
         """ExpansionHunter genotypes the short reads"""
         catalog = self.mock_dir / "catalog.json"
@@ -1806,14 +1815,15 @@ class TestHybridPangenome:
 
     # Model bundle validation
 
-    def bundle_pipeline(self, monkeypatch, members):
-        """A pipeline whose bundle holds `members`"""
+    def bundle_pipeline(self, monkeypatch, members, bundle_info=None):
+        """A pipeline whose bundle holds `members` and `bundle_info`"""
         pipeline = self.create_pipeline()
         pipeline.skip_pop_vcf_id_check = True
+        info = {"pipeline": "Hybrid pangenome", **(bundle_info or {})}
 
         def fake_ar_load(path):
             if str(path).endswith("bundle_info.json"):
-                return b'{"pipeline": "Hybrid pangenome"}'
+                return json.dumps(info).encode()
             return list(members)
 
         monkeypatch.setattr(hybrid_pangenome, "ar_load", fake_ar_load)
@@ -1858,3 +1868,55 @@ class TestHybridPangenome:
     ):
         pipeline = self.bundle_pipeline(monkeypatch, self.BUNDLE_MEMBERS)
         pipeline.validate_bundle()  # no SystemExit
+
+    def test_validate_bundle_dnascope_model_with_skip_small_variants(
+        self, monkeypatch
+    ):
+        """`dnascope.model` is only needed for small-variant calling"""
+        members = [m for m in self.BUNDLE_MEMBERS if m != "dnascope.model"]
+
+        pipeline = self.bundle_pipeline(monkeypatch, members)
+        with pytest.raises(SystemExit) as excinfo:
+            pipeline.validate_bundle()
+        assert excinfo.value.code == 2
+
+        pipeline = self.bundle_pipeline(monkeypatch, members)
+        pipeline.skip_small_variants = True
+        pipeline.validate_bundle()  # no SystemExit
+
+    def test_validate_bundle_bwa_model_with_aligned_input(self, monkeypatch):
+        """`bwa.model` is only needed with FASTQ input"""
+        members = [m for m in self.BUNDLE_MEMBERS if m != "bwa.model"]
+
+        pipeline = self.bundle_pipeline(monkeypatch, members)
+        with pytest.raises(SystemExit) as excinfo:
+            pipeline.validate_bundle()
+        assert excinfo.value.code == 2
+
+        pipeline = self.bundle_pipeline(monkeypatch, members)
+        pipeline.r1_fastq = []
+        pipeline.validate_bundle()  # no SystemExit
+
+    def test_validate_bundle_short_read_platform(self, monkeypatch):
+        """The CNV combine preset follows the short-read platform"""
+        pipeline = self.bundle_pipeline(
+            monkeypatch,
+            self.BUNDLE_MEMBERS,
+            {"shortReadPlatform": "Ultima"},
+        )
+        pipeline.validate_bundle()
+        assert pipeline.sr_platform == "ULTIMA"
+        assert pipeline.cnv_combine_preset() == "SE"
+
+        pipeline = self.bundle_pipeline(
+            monkeypatch,
+            self.BUNDLE_MEMBERS,
+            {"shortReadPlatform": "Illumina"},
+        )
+        pipeline.validate_bundle()
+        assert pipeline.cnv_combine_preset() == "PE"
+
+        pipeline = self.bundle_pipeline(monkeypatch, self.BUNDLE_MEMBERS)
+        pipeline.validate_bundle()
+        assert pipeline.sr_platform == ""
+        assert pipeline.cnv_combine_preset() == "PE"
