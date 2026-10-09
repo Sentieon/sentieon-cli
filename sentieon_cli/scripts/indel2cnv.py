@@ -22,7 +22,7 @@ import datetime
 # a truncated copy of (SVLEN < PERIOD) an existing tandem array — both are valid CNVs
 # because reads from the new copy map back to the reference array, increasing depth.
 
-INDEL2CNV_VERSION = '2.0.1'  # combine_sv_cnv release this file belongs to
+INDEL2CNV_VERSION = '2.1.0'  # combine_sv_cnv release this file belongs to
 
 MIN_SEQ_LEN = 400
 REF_SEARCH_RNG = 50000

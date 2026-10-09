@@ -8,6 +8,8 @@ The rule values come from --preset (PRESETS): PE for paired-end CNVscope models,
   on haploid sequence, non-homozygous losses and gains longer than max_converted_gain_haploid.
 - A converted gain whose array is at least nodepth_size long, whose array-average CN shift reaches
   nodepth_min_shift, and over which CNVscope's raw segmentation shows depth but almost no gain, gets FILTER NoDepth.
+  CNVscope before 202503.04 writes raw segments without HMM states (no HMMCN); then the PASS calls of --cnv are the
+  gain evidence.
 - A CNVscope PASS call that repeats a kept converted call gets FILTER SVdup (INFO DEDUP names the array).
 - With loss_support_size set (SE), a shorter CNVscope PASS loss that no converted loss overlaps gets FILTER NoSV.
 - Other CNVscope PASS calls are written with SOURCE=CNV; non-PASS CNVscope records are left out.
@@ -24,7 +26,7 @@ from collections import defaultdict
 
 import vcflib
 
-VERSION = '2.0.1'  # combine_sv_cnv release this file belongs to
+VERSION = '2.1.0'  # combine_sv_cnv release this file belongs to
 
 # Rule values per CNVscope model: PE paired-end (the default), SE single-end (cnv.se.model: Roche SBX, Ultima)
 PRESETS = {'PE': {
@@ -286,6 +288,30 @@ def load_raw_segments(raw_vcf, chrom, ploidy):
     return segs
 
 
+def load_pass_calls(cnv_vcf, chrom, ploidy):
+    """CNVscope's PASS calls on chrom: -1 losses, 1 gains (the evidence when the raw VCF has no HMM states)."""
+    calls = {-1: [], 1: []}
+    for v in cnv_vcf.range(chrom):
+        if v.filter and set(v.filter).difference(('PASS',)):
+            continue
+        cn0 = v.info.get('CN_NEUTRAL', ploidy.cn_neutral(chrom, v.pos))
+        cn = v.info.get('CN', cn0)
+        if cn0 >= 0 and cn != cn0:
+            calls[-1 if cn < cn0 else 1].append((v.pos, v.end, cn))
+    for d in calls:
+        calls[d].sort()
+    return calls
+
+
+def has_line(vcf, prefix):
+    return any(h.startswith(prefix) for h in vcf.headers)
+
+
+def has_hmm_states(raw_vcf):
+    """CNVscope 202503.04 and later write the HMM state (HMMCN) on every raw segment; earlier releases do not."""
+    return has_line(raw_vcf, '##INFO=<ID=HMMCN,')
+
+
 def covered_fraction(segs, start, end):
     """Fraction of [start, end) covered by the (sorted, possibly overlapping) segments."""
     length = end - start
@@ -336,12 +362,19 @@ def build_parser():
 
 
 def setup(parser, args):
-    """Check the inputs and resolve the ploidy as CNVscope does; returns (ploidy, sex)."""
+    """Check the inputs and resolve the ploidy as CNVscope does; returns (ploidy, sex, raw_states)."""
     cnv_vcf = vcflib.VCF(args.cnv, 'r')
     raw_vcf = vcflib.VCF(args.raw, 'r')
     try:
-        if not any(h.startswith('##INFO=<ID=HMMCN,') for h in raw_vcf.headers):
-            parser.error(f'--raw {args.raw} has no HMMCN: it must be the raw CNVscope VCF (before CNVModelApply)')
+        if not has_line(cnv_vcf, '##SentieonCommandLine.CNVModelApply='):
+            parser.error(f'--cnv {args.cnv} is not CNVModelApply output')
+        if (not has_line(raw_vcf, '##SentieonCommandLine.CNVscope=')
+                or has_line(raw_vcf, '##SentieonCommandLine.CNVModelApply=')):
+            parser.error(f'--raw {args.raw} is not CNVscope\'s own output (the input of CNVModelApply)')
+        raw_states = has_hmm_states(raw_vcf)
+        if not raw_states:
+            log.warning('%s has no HMMCN (CNVscope before 202503.04): the NoDepth check takes its gain evidence from '
+                        'the PASS calls in --cnv', args.raw)
         if args.blocks and (args.sex or args.par):
             parser.error('--sex/--par and --blocks are mutually exclusive (as for CNVscope)')
         blocks, blocks_sex = parse_blocks_bed(args.blocks) if args.blocks else ({}, None)
@@ -351,6 +384,8 @@ def setup(parser, args):
         sex = blocks_sex if args.blocks else (args.sex or hsex)
         if args.sex and hsex and args.sex != hsex:
             log.warning('--sex %s differs from ##SampleSex=%s in %s', args.sex, hsex, args.cnv)
+        if not sex and not args.blocks:
+            log.warning('no --sex and no ##SampleSex in %s: chrX and chrY are treated as diploid', args.cnv)
         if args.par and not sex:
             parser.error('--par requires --sex')
         if sex == 'M' and not args.par and not args.blocks:
@@ -372,10 +407,10 @@ def setup(parser, args):
                  sum(len(b) for b in blocks.values()), sex or 'diploid')
     else:
         log.info('Ploidy: sex=%s par=%s', sex or 'unset (diploid)', args.par or 'none')
-    return Ploidy(sex, par_intervals, blocks), sex
+    return Ploidy(sex, par_intervals, blocks), sex, raw_states
 
 
-def output_headers(preset, rules, sex, note='', tool='combine_cnv'):
+def output_headers(preset, rules, sex, raw_states=True, note='', tool='combine_cnv'):
     hdrs = [
         '##INFO=<ID=CN_NEUTRAL,Number=1,Type=Integer,Description="Copy number neutral state for this region">',
         '##INFO=<ID=SOURCE,Number=1,Type=String,Description="Call source: CNV or SV_CNV">',
@@ -383,8 +418,9 @@ def output_headers(preset, rules, sex, note='', tool='combine_cnv'):
         '##FILTER=<ID=SVdup,Description="CNVscope call repeating a converted SV call in the same repeat array">',
         '##FILTER=<ID=NoDepth,Description="Long converted gain over which CNVscope saw depth but no gain">',
         '##FILTER=<ID=NoSV,Description="Short CNVscope loss that no converted SV loss overlaps">',
-        '##CombineCNVPreset=<ID=preset,Value="%s",Description="Rule values in effect%s: %s">'
-        % (preset, note, describe(rules)),
+        '##CombineCNVPreset=<ID=preset,Value="%s",Description="Rule values in effect%s: %s; NoDepth gain evidence: %s">'
+        % (preset, note, describe(rules),
+           'raw HMM states' if raw_states else 'PASS CNVscope calls (raw VCF without HMMCN)'),
         provenance_line(tool),
     ]
     if sex:
@@ -406,6 +442,7 @@ def combine(cnv_path, conv_path, raw_path, out_path, rules, ploidy, headers, on_
     conv_vcf = vcflib.VCF(conv_path, 'r')
     cnv_vcf = vcflib.VCF(cnv_path, 'r')
     raw_vcf = vcflib.VCF(raw_path, 'r')
+    raw_states = has_hmm_states(raw_vcf)
 
     # header: CNVscope's, plus the converter's own lines (not its contigs)
     conv_extra = [h for h in conv_vcf.headers if h.startswith('##') and not h.startswith(('##contig=', '##fileformat='))]
@@ -421,6 +458,8 @@ def combine(cnv_path, conv_path, raw_path, out_path, rules, ploidy, headers, on_
     for chrom in all_contigs:
         records = []
         raw = load_raw_segments(raw_vcf, chrom, ploidy) if chrom in raw_vcf.contigs else None
+        if raw is not None and not raw_states:
+            raw.update(load_pass_calls(cnv_vcf, chrom, ploidy) if chrom in cnv_vcf.contigs else {-1: [], 1: []})
 
         for v in conv_vcf.range(chrom):
             if over_loss_cap(v, rules['max_converted_loss']):
@@ -517,8 +556,9 @@ def main():
                         format='%(asctime)s %(levelname)s %(message)s')
     rules = PRESETS[args.preset]
     log.info('%s, preset %s: %s', tool_version(), args.preset, describe(rules))
-    ploidy, sex = setup(parser, args)
-    combine(args.cnv, args.converted, args.raw, args.output, rules, ploidy, output_headers(args.preset, rules, sex))
+    ploidy, sex, raw_states = setup(parser, args)
+    combine(args.cnv, args.converted, args.raw, args.output, rules, ploidy,
+            output_headers(args.preset, rules, sex, raw_states))
     log.info('Written to %s', args.output)
 
 
