@@ -139,6 +139,17 @@ class TestSentieonPangenome:
         mm2_dedup = next(j for j in all_jobs if j.name == "dedup-mm2")
         assert "--metrics" not in str(mm2_dedup.shell)
 
+    @pytest.mark.parametrize("cores,kmc_threads", [(2, 2), (256, 128)])
+    def test_kmc_threads(self, cores, kmc_threads):
+        """KMC runs with the pipeline's cores, capped at 128 threads"""
+        pipeline = self.create_fastq_pipeline()
+        pipeline.cores = cores
+        dag = pipeline.build_dag()
+
+        _, all_jobs = self._get_all_job_names(dag)
+        kmc_job = next(j for j in all_jobs if j.name == "kmc")
+        assert f" -t{kmc_threads} " in str(kmc_job.shell)
+
     def test_metrics_input_bwa_only(self):
         """The metrics job reads only the bwa alignment; including the mm2
         alignment would count the extracted reads it re-aligns twice."""

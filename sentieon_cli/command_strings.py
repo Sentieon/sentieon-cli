@@ -1005,6 +1005,10 @@ def cmd_mosdepth(
     return Pipeline(Command(*cmd))
 
 
+# KMC fails when run with more than 128 threads
+KMC_MAX_THREADS = 128
+
+
 def cmd_kmc(
     output_prefix: pathlib.Path,
     file_list: pathlib.Path,
@@ -1018,7 +1022,7 @@ def cmd_kmc(
         f"-k{k}",
         f"-m{memory}",
         "-okff",
-        f"-t{threads}",
+        f"-t{min(threads, KMC_MAX_THREADS)}",
         "-hp",
         f"@{file_list}",
         str(output_prefix),
@@ -1498,7 +1502,7 @@ def _kmc_stdin_cmd(
         f"-k{k}",
         f"-m{memory}",
         "-okff",
-        f"-t{threads}",
+        f"-t{min(threads, KMC_MAX_THREADS)}",
         "-fa",
         "/dev/stdin",
         str(output_prefix),

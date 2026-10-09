@@ -215,6 +215,25 @@ class TestHybridPangenome:
         assert str(self.mock_r1) in cmd_str
         assert str(self.mock_r2) in cmd_str
 
+    @pytest.mark.parametrize("aligned", [False, True])
+    def test_kmc_threads_capped(self, aligned):
+        """KMC is capped at 128 threads; the rest of the job is not"""
+        if aligned:
+            pipeline = self.create_aligned_pipeline()
+            name = "extract-kmc"
+        else:
+            pipeline = self.create_pipeline()
+            name = "kmc"
+        pipeline.cores = 256
+        dag = pipeline.build_dag()
+        _, all_jobs = self._get_all_job_names(dag)
+
+        cmd_str = str(self._get_job(all_jobs, name).shell)
+        assert " -t128 " in cmd_str
+        assert "-t256" not in cmd_str
+        assert "samtools fasta" in cmd_str
+        assert "-@ 256" in cmd_str
+
     def test_bwa_readgroup_lr0(self):
         """The bwa alignment carries the LR:0 readgroup attribute"""
         pipeline = self.create_pipeline()
