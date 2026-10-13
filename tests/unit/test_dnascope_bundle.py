@@ -233,6 +233,14 @@ class TestPopVcfDag:
         assert out_gvcf in str(apply_job.shell)
         assert dep_names(dag, job_named(dag, "gvcftyper")) == ["model-apply"]
 
+    def test_gvcftyper_annotates_dbsnp(self, files):
+        dbsnp = files["tmp_dir"] / "dbsnp.vcf.gz"
+        dag = build(make_pipeline(files, gvcf=True, dbsnp=dbsnp))
+        assert f"--dbsnp {dbsnp}" in str(job_named(dag, "gvcftyper").shell)
+
+        dag = build(make_pipeline(files, gvcf=True, dbsnp=None))
+        assert "--dbsnp" not in str(job_named(dag, "gvcftyper").shell)
+
     def test_skip_small_variants_has_no_transfer(self, files):
         dag = build(make_pipeline(files, skip_small_variants=True))
         names = [job.name for job in all_jobs(dag)]

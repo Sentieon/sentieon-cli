@@ -646,6 +646,7 @@ class DNAscopePipeline(BasePipeline):
                 gvcf=out_gvcf,
                 output=ctx.output_vcf,
                 interval=self.bed,
+                dbsnp=self.dbsnp,
             ).add_to(dag, transfer_apply.terminal)
 
         # Call SVs

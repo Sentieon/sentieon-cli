@@ -278,6 +278,18 @@ class TestSentieonPangenome:
         assert apply_gvcf not in cmd_str
         assert str(pipeline.output_vcf) in cmd_str
         assert dag.waiting_jobs[gvcftyper_job] == {ad_update_job}
+        assert "--dbsnp" not in cmd_str
+
+    def test_gvcftyper_annotates_dbsnp(self):
+        pipeline = self.create_pipeline()
+        pipeline.gvcf = True
+        pipeline.dbsnp = pathlib.Path(self.temp_dir) / "dbsnp.vcf.gz"
+        dag = pipeline.build_dag()
+
+        gvcftyper_job = next(
+            j for j in dag.waiting_jobs if j.name == "gvcftyper"
+        )
+        assert f"--dbsnp {pipeline.dbsnp}" in str(gvcftyper_job.shell)
 
     def snv_apply_vcf(self, pipeline):
         """The small-variant model-apply intermediate for a pipeline"""

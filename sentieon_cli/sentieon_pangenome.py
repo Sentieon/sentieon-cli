@@ -712,6 +712,7 @@ class SentieonPangenome(BasePangenome):
                 gvcf=out_gvcf,
                 output=ctx.output_vcf,
                 interval=self.bed,
+                dbsnp=self.dbsnp,
             ).add_to(dag, {ad_update_job})
 
         # CNV calling is sex-aware and runs in the second DAG

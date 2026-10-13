@@ -239,9 +239,11 @@ class GVCFtyper(BaseAlgo):
         self,
         output: pathlib.Path,
         vcf: pathlib.Path,
+        dbsnp: Optional[pathlib.Path] = None,
     ):
         self.output = output
         self.vcf = vcf
+        self.dbsnp = dbsnp
 
 
 class SVSolver(BaseAlgo):
