@@ -299,6 +299,35 @@ def cmd_pyexec_hybrid_anno(
     return Pipeline(Command(*cmd))
 
 
+def cmd_pyexec_gvcf_clip(
+    out_gvcf: pathlib.Path,
+    gvcf: pathlib.Path,
+    regions_bed: pathlib.Path,
+    reference: pathlib.Path,
+    gvcf_clip: pathlib.Path,
+    threads: int,
+    exclude: bool = False,
+) -> Pipeline:
+    """Restrict a gVCF to the BED regions, or with `exclude` to the
+    positions outside them, clipping reference blocks at the boundaries"""
+    cmd = [
+        sys.executable,
+        str(gvcf_clip),
+        "-v",
+        str(gvcf),
+        "-b",
+        str(regions_bed),
+        "-r",
+        str(reference),
+        "-t",
+        str(threads),
+    ]
+    if exclude:
+        cmd.append("--exclude")
+    cmd.append(str(out_gvcf))
+    return Pipeline(Command(*cmd))
+
+
 def cmd_pyexec_sad_lad_update(
     out_vcf: pathlib.Path,
     in_vcf: pathlib.Path,
@@ -581,6 +610,27 @@ def bcftools_subset(
     return Pipeline(Command("sh", "-c", shell_cmd))
 
 
+def bcftools_remove_annotations(
+    out_vcf: pathlib.Path,
+    in_vcf: pathlib.Path,
+    annotations: List[str],
+) -> Pipeline:
+    """Remove annotations, such as `FORMAT/LAD`, with bcftools annotate"""
+    return Pipeline(
+        Command(
+            "bcftools",
+            "annotate",
+            "-x",
+            ",".join(annotations),
+            "-Oz",
+            "-W=tbi",
+            "-o",
+            str(out_vcf),
+            str(in_vcf),
+        )
+    )
+
+
 def bcftools_concat(
     out_vcf: pathlib.Path,
     in_vcfs: List[pathlib.Path],
@@ -603,14 +653,9 @@ def filter_norm(
     out_vcf: pathlib.Path,
     in_vcf: pathlib.Path,
     reference: pathlib.Path,
-    exclude_homref: bool = True,
 ) -> Pipeline:
     """Trim and normalize"""
-    view_args = ["-a"]
-    if exclude_homref:
-        view_args.extend(["-e", 'GT="0/0"'])
-    view_args.append(str(in_vcf))
-    view_cmd = Command("bcftools", "view", *view_args)
+    view_cmd = Command("bcftools", "view", "-a", "-e", 'GT="0/0"', str(in_vcf))
     norm_cmd = Command("bcftools", "norm", "-f", str(reference))
     convert_cmd = Command("sentieon", "util", "vcfconvert", "-", str(out_vcf))
     return Pipeline(view_cmd, norm_cmd, convert_cmd)
