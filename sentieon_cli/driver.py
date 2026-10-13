@@ -502,12 +502,14 @@ class CNVscope(BaseAlgo):
         *,
         sex: Optional[str] = None,
         par: Optional[pathlib.Path] = None,
+        blocks: Optional[pathlib.Path] = None,
         dump_probes: Optional[pathlib.Path] = None,
     ):
         self.output = output
         self.model = model
         self.sex = sex
         self.par = par
+        self.blocks = blocks
         self.dump_probes = dump_probes
 
 

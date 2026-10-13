@@ -1510,7 +1510,8 @@ class TestHybridPangenome:
         assert "--par" not in str(job.shell)
 
     def test_cnvscope_unknown_sex(self, messages):
-        """An unknown sex calls a diploid genome, with a warning"""
+        """An unknown sex calls assumed sex chromosome ploidies, with a
+        warning"""
         pipeline = self.enable_cnv(self.create_pipeline())
         job = self._second_dag_job(
             pipeline, "cnvscope", sample_sex=SampleSex.UNKNOWN
@@ -1518,7 +1519,8 @@ class TestHybridPangenome:
 
         assert "--sex" not in str(job.shell)
         assert "--par" not in str(job.shell)
-        assert any("diploid" in msg for msg in messages)
+        assert "--blocks" in str(job.shell)
+        assert any("Sex estimation failed" in msg for msg in messages)
 
     def test_indel2cnv_command(self):
         """The PangenomeSV output is converted to CNVs"""

@@ -455,11 +455,13 @@ def cmd_pyexec_combine_cnv(
     preset: str = "PE",
     sex: Optional[str] = None,
     par: Optional[pathlib.Path] = None,
+    blocks: Optional[pathlib.Path] = None,
 ) -> Pipeline:
     """Combine CNVscope and converted SV calls.
 
     `raw_vcf` is the CNVscope output before CNVModelApply, the raw
-    segments. `sex` and `par` are the ploidy CNVscope was called with.
+    segments. `sex` and `par`, or `blocks`, are the ploidy CNVscope was
+    called with.
     `preset` is `PE` for paired-end CNVscope models and `SE` for
     single-end models.
     """
@@ -479,6 +481,8 @@ def cmd_pyexec_combine_cnv(
         cmd.extend(["--sex", sex])
     if par:
         cmd.extend(["--par", str(par)])
+    if blocks:
+        cmd.extend(["--blocks", str(blocks)])
     cmd.extend(["-o", str(out_vcf)])
     return Pipeline(Command(*cmd))
 

@@ -2,6 +2,7 @@
 Unit tests for the CNVscope stage
 """
 
+import dataclasses
 from importlib.resources import files
 import logging
 import pathlib
@@ -90,6 +91,7 @@ class TestCommands:
             f"sentieon driver --input {tmp_path}/sample.cram "
             f"--reference {tmp_path}/ref.fa --thread_count 4 "
             f"--algo CNVscope --model {tmp_path}/bundle/cnv.model "
+            f"--blocks {tmp_path}/cnvscope-blocks.bed "
             f"{tmp_path}/cnvscope.vcf.gz"
         )
 
@@ -173,9 +175,42 @@ class TestSexArguments:
         result = make_stage(tmp_path, sample_sex=sample_sex).add_to(DAG())
 
         shell = str(result.cnvscope_job.shell)
+        blocks = tmp_path / "cnvscope-blocks.bed"
         assert "--sex" not in shell
         assert "--par" not in shell
-        assert any("diploid" in msg for msg in messages)
+        assert f"--blocks {blocks}" in shell
+        assert result.blocks == blocks
+        # A dry run does not write the file
+        assert not blocks.exists()
+        assert any("Sex estimation failed" in msg for msg in messages)
+
+    def test_without_a_known_sex_writes_the_blocks(self, tmp_path):
+        (tmp_path / "ref.fa.fai").write_text(
+            "chr20\t64444167\t7\t60\t61\n"
+            "chrX\t156040895\t65518245\t60\t61\n"
+            "chrY\t57227415\t224159863\t60\t61\n"
+        )
+        par_bed = tmp_path / "par.bed"
+        par_bed.write_text(
+            "chrX\t10000\t2781479\nchrY\t10000\t2781479\n"
+            "chrX\t155701382\t156030895\nchrY\t56887902\t57217415\n"
+        )
+        ctx = dataclasses.replace(make_ctx(tmp_path), dry_run=False)
+
+        result = make_stage(
+            tmp_path,
+            ctx=ctx,
+            sample_sex=SampleSex.UNKNOWN,
+            par_bed=par_bed,
+        ).add_to(DAG())
+
+        assert result.blocks is not None
+        assert result.blocks.read_text() == (
+            "chrX\t0\t156040895\t2\n"
+            "chrY\t0\t10000\t1\n"
+            "chrY\t2781479\t56887902\t1\n"
+            "chrY\t57217415\t57227415\t1\n"
+        )
 
 
 class TestJobMetadata:
@@ -300,6 +335,7 @@ class TestPangenomeCNVStage:
             f"--cnv {tmp_path}/sample-cnv_model_apply.vcf.gz "
             f"--converted {tmp_path}/sample-sv_cnv.vcf.gz "
             f"--raw {tmp_path}/sample-cnvscope.vcf.gz "
+            f"--blocks {tmp_path}/cnvscope-blocks.bed "
             f"-o {tmp_path}/output_cnv.vcf.gz"
         )
 
@@ -339,16 +375,19 @@ class TestPangenomeCNVStage:
         assert "--par" not in shell
 
     def test_combine_cnv_unknown_sex(self, tmp_path):
-        """Without a known sex both tools treat the genome as diploid"""
+        """Without a known sex both tools get the same assumed ploidies"""
         result = make_pangenome_stage(
             tmp_path,
             sample_sex=SampleSex.UNKNOWN,
             par_bed=tmp_path / "par.bed",
         ).add_to(DAG())
 
-        shell = str(result.combine_job.shell)
-        assert "--sex" not in shell
-        assert "--par" not in shell
+        blocks = tmp_path / "cnvscope-blocks.bed"
+        for job in (result.cnvscope_job, result.combine_job):
+            shell = str(job.shell)
+            assert "--sex" not in shell
+            assert "--par" not in shell
+            assert f"--blocks {blocks}" in shell
 
     def test_upstream_lands_on_the_entry_jobs(self, tmp_path):
         dag = DAG()

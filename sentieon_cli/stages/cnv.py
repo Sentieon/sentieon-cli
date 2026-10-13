@@ -13,11 +13,12 @@ from .. import command_strings as cmds
 from ..dag import DAG
 from ..driver import CNVModelApply, CNVscope
 from ..job import Job
-from ..util import SampleSex, cnvscope_sex_args
+from ..shard import parse_fai
+from ..util import SampleSex, cnvscope_sex_args, unknown_sex_blocks
 from .base import Stage, StageResult, driver_job
 
 CNV_MIN_VERSIONS = {
-    # 202503.04 adds the CNVscope `--sex` and `--par` arguments
+    # 202503.04 adds the CNVscope `--sex`, `--par` and `--blocks` arguments
     "sentieon driver": packaging.version.Version("202503.04"),
 }
 
@@ -32,6 +33,8 @@ class CNVResult(StageResult):
     # The CNVscope `--sex` and `--par` arguments, None when omitted
     sex: Optional[str] = None
     par: Optional[pathlib.Path] = None
+    # The CNVscope `--blocks` BED file, used when the sex is not known
+    blocks: Optional[pathlib.Path] = None
 
 
 @dataclass(kw_only=True)
@@ -41,7 +44,9 @@ class CNVscopeStage(Stage):
     The sample sex has to be known before the jobs are built, so callers
     run this stage after ploidy estimation. Version checks stay with the
     pipelines, which run them during validation. ``dump_probes`` is the
-    path CNVscope writes its per-probe debugging output to.
+    path CNVscope writes its per-probe debugging output to. When the sex
+    is not known, CNVscope is given a `--blocks` BED file of assumed sex
+    chromosome ploidies (`unknown_sex_blocks`) in place of `--sex/--par`.
     """
 
     inputs: List[pathlib.Path]
@@ -60,6 +65,15 @@ class CNVscopeStage(Stage):
     def add_to(self, dag: DAG, upstream: Iterable[Job] = ()) -> CNVResult:
         deps = set(upstream)
         sex, par = cnvscope_sex_args(self.sample_sex, self.par_bed)
+        blocks: Optional[pathlib.Path] = None
+        if sex is None:
+            blocks = self.ctx.tmp_dir.joinpath(f"{self.name}-blocks.bed")
+            if not self.ctx.dry_run:
+                fai = parse_fai(pathlib.Path(f"{self.ctx.reference}.fai"))
+                lengths = {ctg: d["length"] for ctg, d in fai.items()}
+                with open(blocks, "w") as fh:
+                    for block in unknown_sex_blocks(lengths, self.par_bed):
+                        print(*block, sep="\t", file=fh)
 
         cnvscope = driver_job(
             self.ctx,
@@ -69,6 +83,7 @@ class CNVscopeStage(Stage):
                     self.model,
                     sex=sex,
                     par=par,
+                    blocks=blocks,
                     dump_probes=self.dump_probes,
                 )
             ],
@@ -102,6 +117,7 @@ class CNVscopeStage(Stage):
             cnv_vcf=self.cnv_vcf,
             sex=sex,
             par=par,
+            blocks=blocks,
         )
 
 
@@ -125,10 +141,10 @@ class PangenomeCNVStage(Stage):
     sets are combined by `combine_cnv.py` into `<output>_cnv.vcf.gz`.
     Both inputs -- the alignments and the SV VCF -- come from an earlier
     DAG, and the sample sex has to be known before the jobs are built.
-    `combine_cnv.py` gets the same sex and PAR BED file as CNVscope and
-    the CNVscope output as its raw segments. `combine_preset` selects its
-    rules: `PE` for paired-end CNVscope models and `SE` for single-end
-    models.
+    `combine_cnv.py` gets the same sex and PAR BED file (or `--blocks`
+    BED file) as CNVscope and the CNVscope output as its raw segments.
+    `combine_preset` selects its rules: `PE` for paired-end CNVscope
+    models and `SE` for single-end models.
     """
 
     inputs: List[pathlib.Path]
@@ -205,6 +221,7 @@ class PangenomeCNVStage(Stage):
                 preset=self.combine_preset,
                 sex=cnv_result.sex,
                 par=cnv_result.par,
+                blocks=cnv_result.blocks,
             ),
             "combine-cnv",
             0,
