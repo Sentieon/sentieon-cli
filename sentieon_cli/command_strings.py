@@ -48,6 +48,26 @@ def cmd_bedtools_subtract(
     return Pipeline(Command(*cmd), file_output=unphased_bed)
 
 
+def cmd_bedtools_intersect(
+    out_bed: pathlib.Path,
+    in_bed: pathlib.Path,
+    restrict_bed: pathlib.Path,
+    ref_fai: pathlib.Path,
+) -> Pipeline:
+    """The parts of `in_bed` inside `restrict_bed`, sorted and merged"""
+    intersect_cmd = Command(
+        "bedtools",
+        "intersect",
+        "-a",
+        str(in_bed),
+        "-b",
+        str(restrict_bed),
+    )
+    sort_cmd = Command("bedtools", "sort", "-faidx", str(ref_fai), "-i", "-")
+    merge_cmd = Command("bedtools", "merge")
+    return Pipeline(intersect_cmd, sort_cmd, merge_cmd, file_output=out_bed)
+
+
 def cmd_bedtools_slop(
     in_bed: pathlib.Path,
     out_bed: pathlib.Path,

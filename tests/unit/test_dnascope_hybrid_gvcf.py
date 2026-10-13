@@ -85,21 +85,21 @@ class TestHybridGvcf:
     def test_both_passes_are_clipped_before_the_concat(self, pipeline):
         jobs = _jobs(pipeline)
         tmp = pipeline.tmp_dir
-        stage2_bed = str(tmp / "hybrid_stage2.bed")
+        recall_bed = str(tmp / "hybrid_recall.bed")
 
         pass1, pass1_deps = jobs["subset-calls"]
         assert "gvcf_clip.py" in pass1
         assert f"-v {tmp / 'initial.g.vcf.gz'}" in pass1
-        assert f"-b {stage2_bed}" in pass1
+        assert f"-b {recall_bed}" in pass1
         assert f"-r {pipeline.reference}" in pass1
         assert "--exclude" in pass1
         assert pass1.endswith(str(tmp / "mix_subset.g.vcf.gz"))
-        assert pass1_deps == {"second-stage"}
+        assert pass1_deps == {"intersect-stage2-bed"}
 
         pass2, pass2_deps = jobs["subset-pass2-calls"]
         assert "gvcf_clip.py" in pass2
         assert f"-v {tmp / 'hybrid_pass2.g.vcf.gz'}" in pass2
-        assert f"-b {stage2_bed}" in pass2
+        assert f"-b {recall_bed}" in pass2
         assert "--exclude" not in pass2
         assert pass2.endswith(str(tmp / "hybrid_pass2_subset.g.vcf.gz"))
         assert pass2_deps == {"dnascope-2"}
@@ -195,6 +195,56 @@ class TestHybridGvcf:
         drop, _ = jobs["drop-allele-fields"]
         assert f"-o {pipeline.output_vcf} " in drop
         assert "final-norm" not in jobs
+
+
+@pytest.mark.parametrize("gvcf", [True, False])
+class TestRecallBed:
+    """The second pass and the merge stay inside --bed"""
+
+    def test_stage2_bed_is_intersected_with_the_bed(self, pipeline, gvcf):
+        pipeline.gvcf = gvcf
+        jobs = _jobs(pipeline)
+        tmp = pipeline.tmp_dir
+        stage2_bed = str(tmp / "hybrid_stage2.bed")
+        recall_bed = str(tmp / "hybrid_recall.bed")
+
+        intersect, intersect_deps = jobs["intersect-stage2-bed"]
+        assert (
+            f"bedtools intersect -a {stage2_bed} -b {pipeline.bed}"
+            in intersect
+        )
+        assert "bedtools merge" in intersect
+        assert recall_bed in intersect.rsplit(">", 1)[1]
+        assert intersect_deps == {"second-stage"}
+
+        call2, call2_deps = jobs["dnascope-2"]
+        assert f"--interval {recall_bed}" in call2
+        assert call2_deps == {"third-stage", "intersect-stage2-bed"}
+        assert recall_bed in jobs["subset-calls"][0]
+        assert jobs["subset-calls"][1] == {"intersect-stage2-bed"}
+        if gvcf:
+            assert recall_bed in jobs["subset-pass2-calls"][0]
+
+        # Stage 3 keeps the whole stage-2 BED
+        stage3, _ = jobs["third-stage"]
+        assert f"--interval {stage2_bed}" in stage3
+        assert recall_bed not in stage3
+
+    def test_without_a_bed(self, pipeline, gvcf):
+        pipeline.gvcf = gvcf
+        pipeline.bed = None
+        jobs = _jobs(pipeline)
+        stage2_bed = str(pipeline.tmp_dir / "hybrid_stage2.bed")
+
+        assert "intersect-stage2-bed" not in jobs
+        call2, call2_deps = jobs["dnascope-2"]
+        assert f"--interval {stage2_bed}" in call2
+        assert call2_deps == {"third-stage"}
+        assert stage2_bed in jobs["subset-calls"][0]
+        assert jobs["subset-calls"][1] == {"second-stage"}
+        if gvcf:
+            assert stage2_bed in jobs["subset-pass2-calls"][0]
+            assert "--interval" not in jobs["gvcftyper"][0]
 
 
 class TestHybridWithoutGvcf:

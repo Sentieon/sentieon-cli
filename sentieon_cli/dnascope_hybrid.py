@@ -1139,6 +1139,26 @@ class DNAscopeHybridPipeline(BasePipeline):
             {third_stage_job},
         )
 
+        # The stage-2 BED covers the whole genome, so with --bed the second
+        # pass and the merge use its intersection with --bed. Stage 3 and
+        # the realigned short-read alignment keep the whole stage-2 BED.
+        recall_bed = stage2_bed
+        call2_upstream: Set[Job] = {third_stage_job}
+        merge_upstream: Set[Job] = {second_stage_job}
+        if self.bed:
+            recall_bed = self.tmp_dir.joinpath("hybrid_recall.bed")
+            intersect_job = Job(
+                cmds.cmd_bedtools_intersect(
+                    recall_bed, stage2_bed, self.bed, ref_fai
+                ),
+                "intersect-stage2-bed",
+                0,
+                task_name="region-selection",
+            )
+            dag.add_job(intersect_job, {second_stage_job})
+            call2_upstream.add(intersect_job)
+            merge_upstream = {intersect_job}
+
         # pass 2 of variant calling
         pass2_vcf = self.tmp_dir.joinpath("hybrid_pass2" + vcf_suffix)
         call2 = DNAscopeStage(
@@ -1153,11 +1173,11 @@ class DNAscopeHybridPipeline(BasePipeline):
                 )
             ],
             inputs=lr_aln + [stage3_aln],
-            interval=stage2_bed,
+            interval=recall_bed,
             read_filter=rg_info.ultima_read_filter + rg_info.lr_rg_read_filter,
             replace_rg=rg_info.replace_rg_args[0],
             name="dnascope-2",
-        ).add_to(dag, {third_stage_job})
+        ).add_to(dag, call2_upstream)
 
         # Merge the calls, taking the second pass within the realigned
         # regions and the first pass elsewhere
@@ -1173,7 +1193,7 @@ class DNAscopeHybridPipeline(BasePipeline):
                 cmds.cmd_pyexec_gvcf_clip(
                     subset_vcf,
                     combined_vcf,
-                    stage2_bed,
+                    recall_bed,
                     ctx.reference,
                     gvcf_clip,
                     self.cores,
@@ -1183,7 +1203,7 @@ class DNAscopeHybridPipeline(BasePipeline):
                 0,
                 task_name="vcf-merge",
             )
-            dag.add_job(subset_job, {second_stage_job})
+            dag.add_job(subset_job, merge_upstream)
             pass2_subset_vcf = self.tmp_dir.joinpath(
                 "hybrid_pass2_subset.g.vcf.gz"
             )
@@ -1191,7 +1211,7 @@ class DNAscopeHybridPipeline(BasePipeline):
                 cmds.cmd_pyexec_gvcf_clip(
                     pass2_subset_vcf,
                     pass2_vcf,
-                    stage2_bed,
+                    recall_bed,
                     ctx.reference,
                     gvcf_clip,
                     self.cores,
@@ -1209,13 +1229,13 @@ class DNAscopeHybridPipeline(BasePipeline):
                 cmds.bcftools_subset(
                     subset_vcf,
                     combined_vcf,
-                    stage2_bed,
+                    recall_bed,
                 ),
                 "subset-calls",
                 0,
                 task_name="vcf-merge",
             )
-            dag.add_job(subset_job, {second_stage_job})
+            dag.add_job(subset_job, merge_upstream)
             concat_inputs = [subset_vcf, pass2_vcf]
             concat_upstream = {subset_job} | call2.terminal
             merge_tmp = [combined_vcf, subset_vcf, pass2_vcf]
