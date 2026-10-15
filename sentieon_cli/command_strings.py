@@ -1719,17 +1719,39 @@ def cmd_bcftools_merge_trim(
     merge_xargs: List[str] = [],
     view_xargs: List[str] = [],
 ):
-    """Merge and trim variants"""
+    """Merge and trim variants
+
+    `bcftools merge` sets QUAL to the highest QUAL of the merged records
+    and, under its default `--filter-logic +`, combines their FILTERs. The
+    population VCF's QUAL is cleared before the merge (the merge ignores
+    a missing QUAL), so the output keeps the input VCF's, and FILTER is
+    cleared from both inputs. Each input is restricted to `subset_bed` as
+    it is read, since `-R` cannot be combined with `--no-index`.
+    """
+
+    def subset(vcf: pathlib.Path, remove: str) -> Command:
+        return Command(
+            "bcftools",
+            "annotate",
+            "--no-version",
+            "--regions-file",
+            str(subset_bed),
+            "--regions-overlap",
+            "pos",
+            "-x",
+            remove,
+            str(vcf),
+        )
+
     merge_cmd = Command(
         "bcftools",
         "merge",
-        "--regions-file",
-        str(subset_bed),
+        "--no-index",
         *merge_xargs,
         "-i",
         merge_rules,
-        str(raw_vcf),
-        str(pop_vcf),
+        InputProcSub(Pipeline(subset(raw_vcf, "FILTER"))),
+        InputProcSub(Pipeline(subset(pop_vcf, "QUAL,FILTER"))),
     )
 
     trim_cmd = Command(
@@ -1749,28 +1771,28 @@ def cmd_bcftools_merge_trim(
     return Pipeline(merge_cmd, trim_cmd, view_cmd)
 
 
-def cmd_bcftools_view_regions(
+def cmd_bcftools_subset_remove(
     out_vcf: pathlib.Path,
     in_vcf: pathlib.Path,
-    regions: Optional[str] = None,
-    regions_file: Optional[pathlib.Path] = None,
-):
-    xargs = []
-    if regions:
-        xargs.extend(["--regions", regions])
-    if regions_file:
-        xargs.extend(["--regions-file", str(regions_file)])
+    regions_file: pathlib.Path,
+    remove: str,
+) -> Pipeline:
+    """Restrict a VCF to `regions_file` and remove the `remove`
+    annotations, such as `FILTER`"""
     return Pipeline(
         Command(
             "bcftools",
-            "view",
+            "annotate",
             "--no-version",
+            "--regions-file",
+            str(regions_file),
+            "-x",
+            remove,
             "-W=tbi",
             "-O",
             "z",
             "-o",
             str(out_vcf),
-            *xargs,
             str(in_vcf),
         )
     )

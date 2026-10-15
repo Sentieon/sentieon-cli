@@ -94,10 +94,12 @@ def build_transfer_jobs(
                     print(f"{shard.contig}\t0\t{ctg_len}", file=fh)
 
             view_job = Job(
-                cmds.cmd_bcftools_view_regions(
+                cmds.cmd_bcftools_subset_remove(
                     subset_vcf,
                     raw_vcf,
                     regions_file=subset_bed,
+                    # The merged shards drop FILTER too
+                    remove="FILTER",
                 ),
                 f"{name_base}-extra",
                 1,
@@ -125,13 +127,7 @@ def build_transfer_jobs(
                     trim_script,
                     subset_bed,
                     merge_rules=merge_rules,
-                    merge_xargs=[
-                        "--no-version",
-                        "--regions-overlap",
-                        "pos",
-                        "-m",
-                        "all",
-                    ],
+                    merge_xargs=["--no-version", "-m", "all"],
                     view_xargs=["--no-version"],
                 ),
                 f"{name_base}-{i}",
