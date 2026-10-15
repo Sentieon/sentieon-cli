@@ -18,6 +18,7 @@ from .archive import ar_load
 from . import command_strings as cmds
 from .dag import DAG
 from .driver import (
+    BaseAlgo,
     Driver,
     DNAscope,
     HybridStage1,
@@ -894,19 +895,32 @@ class DNAscopeHybridPipeline(BasePipeline):
         )
         small_variants_out = out_gvcf if self.gvcf else ctx.output_vcf
 
-        # First pass - combined variant calling
+        # First pass - combined variant calling. Region selection reads a
+        # VCF-mode call set, so with --gvcf the same driver run also writes
+        # one with a second DNAscope algo.
         combined_vcf = self.tmp_dir.joinpath("initial" + vcf_suffix)
-        call = DNAscopeStage(
-            ctx=ctx,
-            algos=[
+        select_vcf = self.tmp_dir.joinpath("initial.vcf.gz")
+        pass1_algos: List[BaseAlgo] = [
+            DNAscope(
+                combined_vcf,
+                dbsnp=self.dbsnp,
+                model=hybrid_model,
+                pcr_indel_model="none",
+                emit_mode=emit_mode,
+            )
+        ]
+        if self.gvcf:
+            pass1_algos.append(
                 DNAscope(
-                    combined_vcf,
+                    select_vcf,
                     dbsnp=self.dbsnp,
                     model=hybrid_model,
                     pcr_indel_model="none",
-                    emit_mode=emit_mode,
                 )
-            ],
+            )
+        call = DNAscopeStage(
+            ctx=ctx,
+            algos=pass1_algos,
             inputs=lr_aln + sr_aln,
             interval=self.bed,
             read_filter=rg_info.ultima_read_filter
@@ -924,7 +938,7 @@ class DNAscopeHybridPipeline(BasePipeline):
         select_job = Job(
             cmds.cmd_pyexec_hybrid_select(
                 out_bed=selected_bed,
-                vcf=combined_vcf,
+                vcf=select_vcf,
                 ref_fai=ref_fai,
                 hybrid_select=hybrid_select,
                 threads=self.cores,
@@ -1223,7 +1237,13 @@ class DNAscopeHybridPipeline(BasePipeline):
             dag.add_job(pass2_subset_job, call2.terminal)
             concat_inputs = [subset_vcf, pass2_subset_vcf]
             concat_upstream = {subset_job, pass2_subset_job}
-            merge_tmp = [combined_vcf, subset_vcf, pass2_vcf, pass2_subset_vcf]
+            merge_tmp = [
+                combined_vcf,
+                select_vcf,
+                subset_vcf,
+                pass2_vcf,
+                pass2_subset_vcf,
+            ]
         else:
             subset_job = Job(
                 cmds.bcftools_subset(

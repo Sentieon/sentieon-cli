@@ -75,12 +75,36 @@ class TestHybridGvcf:
     def test_calling_passes_emit_gvcfs(self, pipeline):
         jobs = _jobs(pipeline)
         tmp = pipeline.tmp_dir
-        call1, _ = jobs["dnascope-1"]
-        assert "--emit_mode gvcf" in call1
-        assert call1.endswith(str(tmp / "initial.g.vcf.gz"))
         call2, _ = jobs["dnascope-2"]
         assert "--emit_mode gvcf" in call2
         assert call2.endswith(str(tmp / "hybrid_pass2.g.vcf.gz"))
+
+    def test_pass1_also_writes_a_vcf_for_region_selection(self, pipeline):
+        jobs = _jobs(pipeline)
+        tmp = pipeline.tmp_dir
+        call1, _ = jobs["dnascope-1"]
+        # One driver run, two DNAscope algos: the gVCF, then the VCF
+        algos = call1.split(" --algo ")[1:]
+        assert len(algos) == 2
+        assert algos[0].startswith("DNAscope ")
+        assert "--emit_mode gvcf" in algos[0]
+        assert algos[0].endswith(str(tmp / "initial.g.vcf.gz"))
+        assert algos[1].startswith("DNAscope ")
+        assert "--emit_mode" not in algos[1]
+        assert algos[1].endswith(str(tmp / "initial.vcf.gz"))
+        # Both algos otherwise take the same arguments
+        assert algos[0].replace(" --emit_mode gvcf", "").rsplit(" ", 1)[0] == (
+            algos[1].rsplit(" ", 1)[0]
+        )
+
+        select, select_deps = jobs["hybrid-select"]
+        assert f"-v {tmp / 'initial.vcf.gz'}" in select
+        assert "initial.g.vcf.gz" not in select
+        assert select_deps == {"dnascope-1"}
+
+        cleanup, _ = jobs["rm-tmp5"]
+        assert str(tmp / "initial.vcf.gz") in cleanup
+        assert str(tmp / "initial.g.vcf.gz") in cleanup
 
     def test_both_passes_are_clipped_before_the_concat(self, pipeline):
         jobs = _jobs(pipeline)
@@ -253,8 +277,12 @@ class TestHybridWithoutGvcf:
         jobs = _jobs(pipeline)
         tmp = pipeline.tmp_dir
 
-        assert "--emit_mode" not in jobs["dnascope-1"][0]
+        call1, _ = jobs["dnascope-1"]
+        assert call1.count("--algo DNAscope") == 1
+        assert "--emit_mode" not in call1
+        assert call1.endswith(str(tmp / "initial.vcf.gz"))
         assert "--emit_mode" not in jobs["dnascope-2"][0]
+        assert f"-v {tmp / 'initial.vcf.gz'}" in jobs["hybrid-select"][0]
         subset, _ = jobs["subset-calls"]
         assert "bcftools view -T" in subset
         assert "gvcf_clip.py" not in subset
