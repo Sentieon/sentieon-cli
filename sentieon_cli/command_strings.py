@@ -304,7 +304,14 @@ def cmd_pyexec_hybrid_anno(
     bed: pathlib.Path,
     hybrid_anno: pathlib.Path,
     threads: int,
+    stream: bool = False,
 ) -> Pipeline:
+    """Annotate the hybrid calls with their long-read haplotype count
+
+    With `stream`, the script writes uncompressed VCF that
+    `sentieon util vcfconvert` compresses and indexes, rather than
+    compressing and indexing every record in its own parent process.
+    """
     cmd = [
         sys.executable,
         str(hybrid_anno),
@@ -314,9 +321,13 @@ def cmd_pyexec_hybrid_anno(
         str(bed),
         "-t",
         str(threads),
-        str(out_vcf),
     ]
-    return Pipeline(Command(*cmd))
+    if not stream:
+        return Pipeline(Command(*cmd, str(out_vcf)))
+    return Pipeline(
+        Command(*cmd, "-"),
+        Command("sentieon", "util", "vcfconvert", "-", str(out_vcf)),
+    )
 
 
 def cmd_pyexec_gvcf_clip(
@@ -329,7 +340,12 @@ def cmd_pyexec_gvcf_clip(
     exclude: bool = False,
 ) -> Pipeline:
     """Restrict a gVCF to the BED regions, or with `exclude` to the
-    positions outside them, clipping reference blocks at the boundaries"""
+    positions outside them, clipping reference blocks at the boundaries
+
+    The script writes uncompressed VCF that `sentieon util vcfconvert`
+    compresses and indexes, rather than compressing and indexing every
+    record in its own parent process.
+    """
     cmd = [
         sys.executable,
         str(gvcf_clip),
@@ -344,8 +360,10 @@ def cmd_pyexec_gvcf_clip(
     ]
     if exclude:
         cmd.append("--exclude")
-    cmd.append(str(out_gvcf))
-    return Pipeline(Command(*cmd))
+    return Pipeline(
+        Command(*cmd, "-"),
+        Command("sentieon", "util", "vcfconvert", "-", str(out_gvcf)),
+    )
 
 
 def cmd_pyexec_sad_lad_update(

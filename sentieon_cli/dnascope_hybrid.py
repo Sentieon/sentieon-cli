@@ -1259,8 +1259,14 @@ class DNAscopeHybridPipeline(BasePipeline):
             concat_inputs = [subset_vcf, pass2_vcf]
             concat_upstream = {subset_job} | call2.terminal
             merge_tmp = [combined_vcf, subset_vcf, pass2_vcf]
+        # The gVCFs are large enough for bcftools to use threads
+        concat_args = ["-aD"]
+        if self.gvcf:
+            concat_args += ["--threads", str(self.cores)]
         concat_job = Job(
-            cmds.bcftools_concat(combined_tmp_vcf, concat_inputs),
+            cmds.bcftools_concat(
+                combined_tmp_vcf, concat_inputs, xargs=concat_args
+            ),
             "concat-calls",
             0,
             task_name="vcf-merge",
@@ -1288,6 +1294,7 @@ class DNAscopeHybridPipeline(BasePipeline):
                 stage1_hap_bed,
                 hybrid_anno,
                 self.cores,
+                stream=self.gvcf,
             ),
             "anno-calls",
             0,

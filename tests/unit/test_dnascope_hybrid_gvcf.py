@@ -116,7 +116,7 @@ class TestHybridGvcf:
         assert f"-v {tmp / 'initial.g.vcf.gz'}" in pass1
         assert f"-b {recall_bed}" in pass1
         assert f"-r {pipeline.reference}" in pass1
-        assert "--exclude" in pass1
+        assert "--exclude - | sentieon util vcfconvert - " in pass1
         assert pass1.endswith(str(tmp / "mix_subset.g.vcf.gz"))
         assert pass1_deps == {"intersect-stage2-bed"}
 
@@ -125,10 +125,12 @@ class TestHybridGvcf:
         assert f"-v {tmp / 'hybrid_pass2.g.vcf.gz'}" in pass2
         assert f"-b {recall_bed}" in pass2
         assert "--exclude" not in pass2
+        assert " - | sentieon util vcfconvert - " in pass2
         assert pass2.endswith(str(tmp / "hybrid_pass2_subset.g.vcf.gz"))
         assert pass2_deps == {"dnascope-2"}
 
         concat, concat_deps = jobs["concat-calls"]
+        assert "-aD --threads 2 " in concat
         assert concat.endswith(
             f"{tmp / 'mix_subset.g.vcf.gz'} "
             f"{tmp / 'hybrid_pass2_subset.g.vcf.gz'}"
@@ -137,6 +139,17 @@ class TestHybridGvcf:
 
         cleanup, _ = jobs["rm-tmp5"]
         assert str(tmp / "hybrid_pass2_subset.g.vcf.gz") in cleanup
+
+    def test_annotation_streams_through_vcfconvert(self, pipeline):
+        jobs = _jobs(pipeline)
+        tmp = pipeline.tmp_dir
+        anno, anno_deps = jobs["anno-calls"]
+        assert f"-v {tmp / 'combined_tmp.g.vcf.gz'}" in anno
+        assert anno.endswith(
+            f" - | sentieon util vcfconvert - "
+            f"{tmp / 'combined_tmp_anno.g.vcf.gz'}"
+        )
+        assert anno_deps == {"concat-calls"}
 
     def test_model_apply_writes_the_output_gvcf(self, pipeline):
         jobs = _jobs(pipeline)
@@ -288,6 +301,11 @@ class TestHybridWithoutGvcf:
         assert "gvcf_clip.py" not in subset
         assert "subset-pass2-calls" not in jobs
         assert jobs["concat-calls"][1] == {"subset-calls", "dnascope-2"}
+        assert "--threads" not in jobs["concat-calls"][0]
+        assert "vcfconvert" not in jobs["anno-calls"][0]
+        assert jobs["anno-calls"][0].endswith(
+            str(tmp / "combined_tmp_anno.vcf.gz")
+        )
         assert "gvcftyper" not in jobs
         assert "drop-allele-fields" not in jobs
 
