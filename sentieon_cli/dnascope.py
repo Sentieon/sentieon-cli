@@ -268,7 +268,7 @@ class DNAscopePipeline(BasePipeline):
         self.pop_vcf_contigs: Dict[str, Optional[int]] = {}
         self.shards: List[Shard] = []
         # The bundle's sequencing platform, upper-cased, set by
-        # `validate_bundle`
+        # `validate_bundle` from its `platform` or `shortReadPlatform`
         self.tech = ""
 
     def validate(self) -> None:
@@ -337,7 +337,13 @@ class DNAscopePipeline(BasePipeline):
         if isinstance(bundle_info_bytes, list):
             bundle_info_bytes = b"{}"
         bundle_info = json.loads(bundle_info_bytes.decode())
-        self.tech = bundle_info.get("platform", "").upper()
+        # Bundles name the platform `platform` or, like the hybrid and
+        # pangenome bundles, `shortReadPlatform`
+        self.tech = (
+            bundle_info.get("platform")
+            or bundle_info.get("shortReadPlatform")
+            or ""
+        ).upper()
         bundle_vcf_id = bundle_info.get("SentieonVcfID")
 
         if not bundle_vcf_id:

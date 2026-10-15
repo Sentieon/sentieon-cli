@@ -288,8 +288,28 @@ class TestUltimaReadFilter:
             "merge-trim-concat"
         ]
 
+    @pytest.mark.parametrize("platform", ["Ultima", "ultima"])
+    def test_short_read_platform_key(self, files, platform):
+        # SentieonUltima1.1.bundle names the platform `shortReadPlatform`
+        dag = self.build_with_bundle(files, {"shortReadPlatform": platform})
+
+        cmd = str(job_named(dag, "dnascope").shell)
+        assert cmd.count("--read_filter UltimaReadFilter") == 1
+
+    def test_platform_key_takes_precedence(self, files):
+        dag = self.build_with_bundle(
+            files, {"platform": "Illumina", "shortReadPlatform": "Ultima"}
+        )
+        assert "UltimaReadFilter" not in str(job_named(dag, "dnascope").shell)
+
     @pytest.mark.parametrize(
-        "bundle_info", [None, {}, {"platform": "Illumina"}]
+        "bundle_info",
+        [
+            None,
+            {},
+            {"platform": "Illumina"},
+            {"shortReadPlatform": "Illumina"},
+        ],
     )
     def test_other_bundles_are_unfiltered(self, files, bundle_info):
         dag = self.build_with_bundle(files, bundle_info)
