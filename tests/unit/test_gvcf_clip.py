@@ -43,6 +43,9 @@ HEADER = [
     '##INFO=<ID=DP,Number=1,Type=Integer,Description="Depth">',
     '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">',
     '##FORMAT=<ID=PL,Number=G,Type=Integer,Description="Likelihoods">',
+    '##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Depth">',
+    '##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="Quality">',
+    '##FORMAT=<ID=MIN_DP,Number=1,Type=Integer,Description="Min depth">',
     "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1",
 ]
 BLOCK_SAMPLE = "GT:PL\t0/0:0,30,300"
@@ -243,3 +246,165 @@ class TestClip:
     def test_empty_bed(self, tmp_path):
         assert _run(tmp_path, exclude=True, regions="") == RECORDS
         assert _run(tmp_path, exclude=False, regions="") == []
+
+
+def _block(pos, end):
+    return (
+        f"chr1\t{pos}\t.\t{SEQ[pos - 1]}\t<NON_REF>\t.\t.\tEND={end}\t"
+        "GT:DP:GQ:MIN_DP:PL\t0/0:10:30:8:0,30,300"
+    )
+
+
+def _deletion(pos, length, gt="0/1", dp=12):
+    ref = SEQ[pos - 1 : pos - 1 + length]
+    return (
+        f"chr1\t{pos}\t.\t{ref}\t{ref[0]},<NON_REF>\t50\t.\t.\t"
+        f"GT:DP:PL\t{gt}:{dp}:500,0,600,500,600,900"
+    )
+
+
+def _snv(pos):
+    ref = SEQ[pos - 1]
+    alt = "C" if ref != "C" else "T"
+    return f"chr1\t{pos}\t.\t{ref}\t{alt},<NON_REF>\t50\t.\t.\t{VARIANT_SAMPLE}"
+
+
+def _fill(pos, end, dp=12):
+    return (
+        "chr1",
+        str(pos),
+        SEQ[pos - 1],
+        "<NON_REF>",
+        f"END={end}",
+        "GT:DP:GQ:MIN_DP:PL",
+        f"0/0:{dp}:0:{dp}:0,0,0",
+    )
+
+
+def _summary(lines):
+    """POS, END or REF span, and whether each record is a fill block"""
+    out = []
+    for line in lines:
+        cols = line.split("\t")
+        out.append(tuple(cols[i] for i in (0, 1, 3, 4, 7)) + tuple(cols[8:]))
+    return out
+
+
+OUTSIDE = list(range(1, 21)) + list(range(31, 61)) + list(range(71, 101))
+INSIDE = list(range(21, 31)) + list(range(61, 71))
+
+
+class TestFill:
+    """Positions spanned only by a dropped variant record are filled"""
+
+    def test_tail_of_a_dropped_deletion(self, tmp_path):
+        # The deletion starts at 29, inside 21-30, and spans 29-33
+        records = [_block(1, 28), _deletion(29, 5), _block(34, 60)]
+        records.append(_block(61, 100))
+        out = _run(tmp_path, exclude=True, records=records)
+
+        summary = _summary(out)
+        assert _fill(31, 33) in summary
+        assert [x[1] for x in summary] == ["1", "31", "34", "71"]
+        assert sorted(_covered(out)) == OUTSIDE
+
+    def test_records_inside_the_tail_split_the_fill(self, tmp_path):
+        # The deletion spans 29-36; a SNV at 33 is inside its span
+        records = [_block(1, 28), _deletion(29, 8), _snv(33)]
+        records += [_block(37, 60), _block(61, 100)]
+        out = _run(tmp_path, exclude=True, records=records)
+
+        summary = _summary(out)
+        assert [x[1] for x in summary] == ["1", "31", "33", "34", "37", "71"]
+        assert summary[1] == _fill(31, 32)
+        assert summary[3] == _fill(34, 36)
+        assert sorted(_covered(out)) == OUTSIDE
+
+    def test_a_block_inside_the_tail_trims_the_fill(self, tmp_path):
+        records = [_block(1, 28), _deletion(29, 8), _block(33, 60)]
+        records.append(_block(61, 100))
+        out = _run(tmp_path, exclude=True, records=records)
+
+        summary = _summary(out)
+        assert [x[1] for x in summary] == ["1", "31", "33", "71"]
+        assert summary[1] == _fill(31, 32)
+        assert sorted(_covered(out)) == OUTSIDE
+
+    def test_no_fill_where_a_kept_record_covers_the_tail(self, tmp_path):
+        # The deletion at 19 starts outside and spans 19-34
+        records = [_block(1, 18), _deletion(19, 16), _deletion(29, 5)]
+        records += [_block(35, 60), _block(61, 100)]
+        out = _run(tmp_path, exclude=True, records=records)
+
+        assert [x[1] for x in _summary(out)] == ["1", "19", "35", "71"]
+
+    def test_include_side(self, tmp_path):
+        # The deletion at 59 starts outside 61-70 and spans 59-63
+        records = [_block(1, 58), _deletion(59, 5, gt="0/0", dp=7)]
+        records.append(_block(64, 100))
+        out = _run(tmp_path, exclude=False, records=records)
+
+        summary = _summary(out)
+        assert [x[1] for x in summary] == ["21", "61", "64"]
+        assert summary[1] == _fill(61, 63, dp=7)
+        assert sorted(_covered(out)) == INSIDE
+
+    def test_the_two_sides_tile_the_contig(self, tmp_path):
+        records = [_block(1, 28), _deletion(29, 8), _snv(33)]
+        records += [_block(37, 58), _deletion(59, 5), _block(64, 100)]
+        outside = _run(tmp_path, exclude=True, records=records)
+        inside = _run(tmp_path, exclude=False, records=records)
+        positions = _covered(outside) + _covered(inside)
+        assert set(positions) == set(range(1, 101))
+        # The deletion kept at 59 spans 61-63, inside 61-70, as in the input
+        assert sorted(_covered(outside)) == sorted(OUTSIDE + [61, 62, 63])
+
+    def test_sharded_matches_single_thread(self, tmp_path):
+        records = [_block(1, 28), _deletion(29, 8), _snv(33)]
+        records += [_block(37, 60), _block(61, 100)]
+        single = _run(tmp_path, exclude=True, records=records)
+        # A shard boundary between positions 32 and 33
+        sharded = _run(
+            tmp_path, exclude=True, threads=2, step_size=32, records=records
+        )
+        assert sharded == single
+
+    def test_fill_is_cut_at_a_shard_boundary(self, tmp_path):
+        records = [_block(1, 28), _deletion(29, 5), _block(34, 60)]
+        records.append(_block(61, 100))
+        out = _run(
+            tmp_path, exclude=True, threads=2, step_size=32, records=records
+        )
+
+        summary = _summary(out)
+        assert summary[1] == _fill(31, 32)
+        assert summary[2] == _fill(33, 33)
+        assert sorted(_covered(out)) == OUTSIDE
+
+    def test_stdout_output(self, tmp_path):
+        records = [_block(1, 28), _deletion(29, 5), _block(34, 60)]
+        records.append(_block(61, 100))
+        expected = _run(tmp_path, exclude=True, records=records)
+        gvcf, bed, ref = _write_inputs(tmp_path, records=records)
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "-v",
+                str(gvcf),
+                "-b",
+                str(bed),
+                "-r",
+                str(ref),
+                "-t",
+                "2",
+                "--exclude",
+                "-",
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        lines = result.stdout.splitlines()
+        assert lines[0] == "##fileformat=VCFv4.2"
+        assert [x for x in lines if not x.startswith("#")] == expected
