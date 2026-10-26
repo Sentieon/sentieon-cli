@@ -15,9 +15,9 @@ pip install sentieon_cli
 
 Install the sentieon-cli through a container image:
 ```sh
-docker pull sentieon/sentieon_cli:latest
+docker pull sentieon/sentieon-cli:latest
 docker run --rm -v "$PWD:/data" -w /data \
-    sentieon/sentieon_cli:latest \
+    sentieon/sentieon-cli:latest \
     sentieon-cli dnascope-pangenome --help
 ```
 
