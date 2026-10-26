@@ -12,6 +12,8 @@ from types import SimpleNamespace
 import pytest
 
 from sentieon_cli.command_strings import (
+    KEEP_CONTIG_AWK,
+    bcftools_concat,
     cmd_bcftools_merge_trim,
     cmd_bcftools_subset_remove,
 )
@@ -131,7 +133,7 @@ class TestMergeCommand:
 
         beds = set()
         for sub, vcf in zip(merge.args[-2:], ("raw.vcf.gz", "pop.vcf.gz")):
-            (annotate,) = sub.node.nodes
+            annotate, _ = sub.node.nodes
             assert annotate.args[0] == "annotate"
             assert annotate.args[-1] == str(tmp_path / vcf)
             i = annotate.args.index("--regions-file")
@@ -146,11 +148,18 @@ class TestMergeCommand:
         merge = self.merge_cmd(tmp_path)
         removed = []
         for sub in merge.args[-2:]:
-            (annotate,) = sub.node.nodes
+            annotate, _ = sub.node.nodes
             removed.append(annotate.args[annotate.args.index("-x") + 1])
 
         # QUAL goes from the pop VCF only; FILTER from both
         assert removed == ["FILTER", "QUAL,FILTER"]
+
+    def test_both_inputs_keep_only_the_shard_contig(self, tmp_path):
+        merge = self.merge_cmd(tmp_path)
+        for sub in merge.args[-2:]:
+            _, keep = sub.node.nodes
+            assert keep.executable == "awk"
+            assert keep.args == ["-v", "contig=chr1", KEEP_CONTIG_AWK]
 
     def test_extra_contig_drops_filter_too(self, tmp_path):
         (annotate,) = self.shard_job(tmp_path, "merge-trim-extra").shell.nodes
@@ -235,6 +244,7 @@ class TestMergeTrimRun:
             pop_vcf,
             trim_script,
             subset_bed,
+            "chr1",
             merge_rules="AF_v20:sum",
             merge_xargs=["--no-version", "-m", "all"],
             view_xargs=["--no-version"],
@@ -265,6 +275,140 @@ class TestMergeTrimRun:
             # The pop allele is trimmed and its QUAL does not survive
             ["600", "rs600", "C", "35", ".", "0"],
         ]
+
+    def merge_shard(self, tmp_path, raw_vcf, pop_vcf, contig, i):
+        """Run the merge of one whole-contig shard"""
+        subset_bed = tmp_path / f"shard{i}.bed"
+        subset_bed.write_text(f"{contig}\t0\t1000\n")
+        shard_vcf = tmp_path / f"shard{i}.vcf.gz"
+        trim_script = pathlib.Path(
+            str(files("sentieon_cli.scripts").joinpath("trimalt.py"))
+        )
+        pipeline = cmd_bcftools_merge_trim(
+            shard_vcf,
+            raw_vcf,
+            pop_vcf,
+            trim_script,
+            subset_bed,
+            contig,
+            merge_rules="AF_v20:sum",
+            merge_xargs=["--no-version", "-m", "all"],
+            view_xargs=["--no-version"],
+        )
+        assert asyncio.run(self.run(pipeline)) == 0
+        return shard_vcf
+
+    @staticmethod
+    def contig_lines(vcf):
+        header = subprocess.run(
+            ["bcftools", "view", "-h", str(vcf)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return [
+            line
+            for line in header.stdout.splitlines()
+            if line.startswith("##contig")
+        ]
+
+    def test_contig_lists_that_differ(self, tmp_path):
+        # The input VCF lists the reference's contigs; the pop VCF lists
+        # other contigs, in another order
+        raw_vcf = self.bgzip(
+            tmp_path,
+            "raw",
+            RAW_VCF.replace(
+                "##contig=<ID=chr1,length=1000>\n",
+                "##contig=<ID=chrM,length=1000>\n"
+                "##contig=<ID=chr1,length=1000>\n"
+                "##contig=<ID=chr2,length=1000>\n",
+            ),
+        )
+        pop_vcf = self.bgzip(
+            tmp_path,
+            "pop",
+            POP_VCF.replace(
+                "##contig=<ID=chr1,length=1000>\n",
+                "##contig=<ID=chr2,length=1000,assembly=b38>\n"
+                "##contig=<ID=chrUn_pop,length=1000>\n"
+                "##contig=<length=1000,ID=chr1>\n",
+            ),
+        )
+        shard_vcf = self.merge_shard(tmp_path, raw_vcf, pop_vcf, "chr1", 0)
+
+        query = subprocess.run(
+            ["bcftools", "query", "-f", "%POS\t%ID\t%QUAL\n", str(shard_vcf)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert query.stdout.splitlines() == [
+            "100\trs100\t30",
+            "200\trs200\t150",
+            "300\trs300\t.",
+            "500\t.\t25",
+            "600\trs600\t35",
+        ]
+        # The shard lists its own contig, with the input VCF's line
+        assert self.contig_lines(shard_vcf) == [
+            "##contig=<ID=chr1,length=1000>"
+        ]
+
+    def test_concat_lists_the_contigs_in_reference_order(self, tmp_path):
+        # chrM, which the pop VCF lacks, sits between the merged contigs
+        contigs = "".join(
+            f"##contig=<ID={c},length=1000>\n" for c in ("chr1", "chrM", "chr2")
+        )
+        raw_vcf = self.bgzip(
+            tmp_path,
+            "raw",
+            RAW_VCF.replace("##contig=<ID=chr1,length=1000>\n", contigs)
+            + "chrM\t10\t.\tA\tC\t40\tPASS\tAF=0.5\tGT\t0/1\n"
+            + "chr2\t10\t.\tA\tC\t40\tPASS\tAF=0.5\tGT\t0/1\n",
+        )
+        pop_vcf = self.bgzip(
+            tmp_path,
+            "pop",
+            POP_VCF.replace(
+                "##contig=<ID=chr1,length=1000>\n",
+                "##contig=<ID=chr2,length=1000>\n"
+                "##contig=<ID=chr1,length=1000>\n",
+            ),
+        )
+        shard0 = self.merge_shard(tmp_path, raw_vcf, pop_vcf, "chr1", 0)
+        extra_bed = tmp_path / "extra.bed"
+        extra_bed.write_text("chrM\t0\t1000\n")
+        shard1 = tmp_path / "extra.vcf.gz"
+        assert (
+            asyncio.run(
+                self.run(
+                    cmd_bcftools_subset_remove(
+                        shard1, raw_vcf, regions_file=extra_bed, remove="FILTER"
+                    )
+                )
+            )
+            == 0
+        )
+        shard2 = self.merge_shard(tmp_path, raw_vcf, pop_vcf, "chr2", 2)
+
+        out_vcf = tmp_path / "transfer.vcf.gz"
+        concat = bcftools_concat(
+            out_vcf, [shard0, shard1, shard2], xargs=["--no-version"]
+        )
+        assert asyncio.run(self.run(concat)) == 0
+        assert self.contig_lines(out_vcf) == [
+            "##contig=<ID=chr1,length=1000>",
+            "##contig=<ID=chrM,length=1000>",
+            "##contig=<ID=chr2,length=1000>",
+        ]
+        query = subprocess.run(
+            ["bcftools", "query", "-f", "%CHROM:%POS\n", str(out_vcf)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert query.stdout.splitlines()[-2:] == ["chrM:10", "chr2:10"]
 
     def test_extra_contig_subset_drops_filter(self, tmp_path):
         raw_vcf = self.bgzip(tmp_path, "raw", RAW_VCF)

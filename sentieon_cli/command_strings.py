@@ -1727,17 +1727,28 @@ def cmd_samtools_faidx(
     return Pipeline(Command("samtools", "faidx", str(fasta)))
 
 
+# An awk program that drops every `##contig` header line except the one
+# for the `contig` variable, whether its ID comes first or not
+KEEP_CONTIG_AWK = (
+    "/^##contig=/ { "
+    'if (index($0, "<ID=" contig ",") || index($0, "<ID=" contig ">") '
+    '|| index($0, ",ID=" contig ",") || index($0, ",ID=" contig ">")) '
+    "print; next } 1"
+)
+
+
 def cmd_bcftools_merge_trim(
     shard_vcf: pathlib.Path,
     raw_vcf: pathlib.Path,
     pop_vcf: pathlib.Path,
     trim_script: pathlib.Path,
     subset_bed: pathlib.Path,
+    contig: str,
     merge_rules: str,
     merge_xargs: List[str] = [],
     view_xargs: List[str] = [],
 ):
-    """Merge and trim variants
+    """Merge and trim the variants of one shard, on `contig`
 
     `bcftools merge` sets QUAL to the highest QUAL of the merged records
     and, under its default `--filter-logic +`, combines their FILTERs. The
@@ -1745,20 +1756,30 @@ def cmd_bcftools_merge_trim(
     a missing QUAL), so the output keeps the input VCF's, and FILTER is
     cleared from both inputs. Each input is restricted to `subset_bed` as
     it is read, since `-R` cannot be combined with `--no-index`.
+
+    `--no-index` refuses inputs whose headers list different contigs, or
+    the same contigs in a different order, as the input VCF (the
+    reference's contigs) and a population VCF generally do. Both inputs
+    keep only the `##contig` line of the shard's contig, so the shard VCF
+    lists that contig alone; concatenating the shards in reference order
+    lists the contigs in that order again.
     """
 
-    def subset(vcf: pathlib.Path, remove: str) -> Command:
-        return Command(
-            "bcftools",
-            "annotate",
-            "--no-version",
-            "--regions-file",
-            str(subset_bed),
-            "--regions-overlap",
-            "pos",
-            "-x",
-            remove,
-            str(vcf),
+    def subset(vcf: pathlib.Path, remove: str) -> Pipeline:
+        return Pipeline(
+            Command(
+                "bcftools",
+                "annotate",
+                "--no-version",
+                "--regions-file",
+                str(subset_bed),
+                "--regions-overlap",
+                "pos",
+                "-x",
+                remove,
+                str(vcf),
+            ),
+            Command("awk", "-v", f"contig={contig}", KEEP_CONTIG_AWK),
         )
 
     merge_cmd = Command(
@@ -1768,8 +1789,8 @@ def cmd_bcftools_merge_trim(
         *merge_xargs,
         "-i",
         merge_rules,
-        InputProcSub(Pipeline(subset(raw_vcf, "FILTER"))),
-        InputProcSub(Pipeline(subset(pop_vcf, "QUAL,FILTER"))),
+        InputProcSub(subset(raw_vcf, "FILTER")),
+        InputProcSub(subset(pop_vcf, "QUAL,FILTER")),
     )
 
     trim_cmd = Command(

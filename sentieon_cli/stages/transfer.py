@@ -126,6 +126,7 @@ def build_transfer_jobs(
                     pop_vcf,
                     trim_script,
                     subset_bed,
+                    shard.contig,
                     merge_rules=merge_rules,
                     merge_xargs=["--no-version", "-m", "all"],
                     view_xargs=["--no-version"],
