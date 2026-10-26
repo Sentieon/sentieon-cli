@@ -1,4 +1,4 @@
-FROM debian:13.4-slim AS downloader
+FROM debian:13.7-slim AS downloader
 
 # Tool versions and pinned SHA-256 checksums. Bumping a version is a
 # two-line edit (version + hash) in this block.
@@ -155,7 +155,7 @@ RUN /opt/poetry-venv/bin/pip install --no-cache-dir \
 
 # Build the Python environment in an isolated stage. The venv is
 # later COPY'd over as-is.
-FROM debian:13.4-slim AS python-builder
+FROM debian:13.7-slim AS python-builder
 ARG SENTIEON_VERSION
 
 COPY --from=downloader /opt/sentieon-cli/dist /opt/sentieon-cli/dist
@@ -185,7 +185,7 @@ RUN apt-get update && \
       -depth -type d -name __pycache__ -exec rm -rf {} +
 
 # Build the container
-FROM debian:13.4-slim
+FROM debian:13.7-slim
 ARG SENTIEON_VERSION
 ARG BEDTOOLS_VERSION=2.30.0
 ARG MOSDEPTH_VERSION=0.3.9
