@@ -3,7 +3,9 @@ Unit tests for the CNVscope stage
 """
 
 import dataclasses
+import importlib.util
 from importlib.resources import files
+import json
 import logging
 import pathlib
 import sys
@@ -20,6 +22,7 @@ from sentieon_cli.stages.cnv import (
     PangenomeCNVStage,
 )
 from sentieon_cli.util import SampleSex
+from tests.utils.test_helpers import write_bundle
 
 PACKAGE_LOGGER = "sentieon_cli"
 
@@ -98,12 +101,14 @@ class TestCommands:
     def test_cnv_model_apply_command(self, tmp_path):
         result = make_stage(tmp_path).add_to(DAG())
 
-        # CNVModelApply reads the CNVscope VCF; it takes no alignment
+        # CNVModelApply reads the CNVscope VCF; it takes no alignment.
+        # `--emit_conf 0` writes the rejected segments too
         assert str(result.apply_job.shell) == (
             f"sentieon driver --reference {tmp_path}/ref.fa "
             f"--thread_count 4 --algo CNVModelApply "
             f"--model {tmp_path}/bundle/cnv.model "
             f"--vcf {tmp_path}/cnvscope.vcf.gz "
+            "--emit_conf 0 "
             f"{tmp_path}/output.cnv.vcf.gz"
         )
 
@@ -317,6 +322,16 @@ class TestPangenomeCNVStage:
 
         assert result.cnv_vcf == tmp_path / "output_cnv.vcf.gz"
 
+    def test_cnv_model_apply_writes_every_segment(self, tmp_path):
+        """combine_cnv.py reads the rejected segments from CNVModelApply"""
+        result = make_pangenome_stage(tmp_path).add_to(DAG())
+
+        assert "--emit_conf 0 " in str(result.apply_job.shell)
+        # So it needs no raw CNVscope VCF
+        combine_shell = str(result.combine_job.shell)
+        assert "--raw" not in combine_shell
+        assert "sample-cnvscope.vcf.gz" not in combine_shell
+
     def test_indel2cnv_command(self, tmp_path):
         result = make_pangenome_stage(tmp_path).add_to(DAG())
 
@@ -327,24 +342,31 @@ class TestPangenomeCNVStage:
         )
 
     def test_combine_cnv_command(self, tmp_path):
+        """Without a preset combine_cnv.py uses its defaults"""
         result = make_pangenome_stage(tmp_path).add_to(DAG())
 
         assert str(result.combine_job.shell) == (
             f"{sys.executable} {script_path('combine_cnv.py')} "
-            "--preset PE "
             f"--cnv {tmp_path}/sample-cnv_model_apply.vcf.gz "
             f"--converted {tmp_path}/sample-sv_cnv.vcf.gz "
-            f"--raw {tmp_path}/sample-cnvscope.vcf.gz "
             f"--blocks {tmp_path}/cnvscope-blocks.bed "
             f"-o {tmp_path}/output_cnv.vcf.gz"
         )
 
-    def test_combine_cnv_single_end_preset(self, tmp_path):
-        result = make_pangenome_stage(
-            tmp_path, combine_preset="SE"
-        ).add_to(DAG())
+    def test_combine_cnv_preset(self, tmp_path):
+        """The preset, a model bundle member, is passed as it is"""
+        preset = tmp_path / "model.bundle" / "combine_cnv.json"
+        stage = make_pangenome_stage(tmp_path, combine_preset=preset)
+        result = stage.add_to(DAG())
 
-        assert "--preset SE" in str(result.combine_job.shell)
+        assert str(result.combine_job.shell) == (
+            f"{sys.executable} {script_path('combine_cnv.py')} "
+            f"--cnv {tmp_path}/sample-cnv_model_apply.vcf.gz "
+            f"--converted {tmp_path}/sample-sv_cnv.vcf.gz "
+            f"--preset {preset} "
+            f"--blocks {tmp_path}/cnvscope-blocks.bed "
+            f"-o {tmp_path}/output_cnv.vcf.gz"
+        )
 
     def test_combine_cnv_male_sample(self, tmp_path):
         """combine_cnv.py gets the same sex and PAR BED file as CNVscope"""
@@ -355,10 +377,8 @@ class TestPangenomeCNVStage:
 
         assert str(result.combine_job.shell) == (
             f"{sys.executable} {script_path('combine_cnv.py')} "
-            "--preset PE "
             f"--cnv {tmp_path}/sample-cnv_model_apply.vcf.gz "
             f"--converted {tmp_path}/sample-sv_cnv.vcf.gz "
-            f"--raw {tmp_path}/sample-cnvscope.vcf.gz "
             f"--sex M --par {par_bed} "
             f"-o {tmp_path}/output_cnv.vcf.gz"
         )
@@ -462,3 +482,41 @@ class TestPangenomeCNVStage:
         ]
         assert result.terminal == {result.combine_job}
         assert result.cnv_vcf == tmp_path / "output_cnv.vcf.gz"
+
+
+def load_combine_cnv():
+    """The packaged combine_cnv.py, imported as a module"""
+    spec = importlib.util.spec_from_file_location(
+        "combine_cnv", script_path("combine_cnv.py")
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class TestCombinePreset:
+    """combine_cnv.py reads the preset the pipelines pass"""
+
+    def test_bundle_preset_loads_with_combine_cnv(self, tmp_path):
+        """`--preset <bundle>/combine_cnv.json` names a bundle member"""
+        preset = {
+            "description": "Single-end CNVscope models",
+            "max_converted_loss": 3000,
+            "loss_support_size": 10000,
+        }
+        bundle = write_bundle(
+            tmp_path / "model.bundle",
+            {
+                "cnv.model": b"",
+                "combine_cnv.json": json.dumps(preset).encode(),
+            },
+        )
+        combine_cnv = load_combine_cnv()
+
+        rules = combine_cnv.load_preset(bundle / "combine_cnv.json")
+        assert rules == dict(
+            combine_cnv.DEFAULTS,
+            max_converted_loss=3000,
+            loss_support_size=10000,
+        )

@@ -26,6 +26,7 @@ from sentieon_cli.hybrid_pangenome import HybridPangenome
 from sentieon_cli.command_strings import LONGREAD_SV_BED_AWK
 from sentieon_cli.dag import DAG
 from sentieon_cli.util import SampleSex
+from tests.utils.test_helpers import write_bundle
 
 PACKAGE_LOGGER = "sentieon_cli"
 
@@ -1475,7 +1476,8 @@ class TestHybridPangenome:
         assert "--interval" not in str(job.shell)
 
     def test_cnv_model_apply_command(self):
-        """CNVModelApply filters the CNVscope output"""
+        """CNVModelApply filters the CNVscope output, keeping the rejected
+        segments"""
         pipeline = self.enable_cnv(self.create_pipeline())
         job = self._second_dag_job(pipeline, "cnv-model-apply")
 
@@ -1484,6 +1486,7 @@ class TestHybridPangenome:
             f"--thread_count {pipeline.cores} "
             f"--algo CNVModelApply --model {self.mock_bundle}/cnv.model "
             f"--vcf {self.mock_dir}/sample-cnvscope.vcf.gz "
+            "--emit_conf 0 "
             f"{self.mock_dir}/sample-cnv_model_apply.vcf.gz"
         )
         # The BED restricts CNVscope, not the model apply
@@ -1542,10 +1545,8 @@ class TestHybridPangenome:
         cnv_vcf = str(self.mock_vcf).replace(".vcf.gz", "_cnv.vcf.gz")
         assert str(job.shell) == (
             f"{sys.executable} {self.script_path('combine_cnv.py')} "
-            "--preset PE "
             f"--cnv {self.mock_dir}/sample-cnv_model_apply.vcf.gz "
             f"--converted {self.mock_dir}/sample-sv_cnv.vcf.gz "
-            f"--raw {self.mock_dir}/sample-cnvscope.vcf.gz "
             "--sex F "
             f"-o {cnv_vcf}"
         )
@@ -1559,13 +1560,28 @@ class TestHybridPangenome:
 
         assert f"--sex M --par {pipeline.cnv_par_bed}" in str(job.shell)
 
-    def test_combine_cnv_ultima_preset(self):
-        """Ultima short reads use the single-end preset"""
+    def bundle_combine_cnv_shell(self, members):
+        """The combine-cnv command for a bundle of Ultima short reads"""
+        self.write_bundle(
+            members + ["cnv.model"], {"shortReadPlatform": "Ultima"}
+        )
         pipeline = self.enable_cnv(self.create_pipeline())
-        pipeline.sr_platform = "ULTIMA"
-        job = self._second_dag_job(pipeline, "combine-cnv")
+        pipeline.validate_bundle()
+        return str(self._second_dag_job(pipeline, "combine-cnv").shell)
 
-        assert "--preset SE " in str(job.shell)
+    def test_combine_cnv_bundle_preset(self):
+        """The bundle's `combine_cnv.json` is the preset"""
+        shell = self.bundle_combine_cnv_shell(
+            self.BUNDLE_MEMBERS + ["combine_cnv.json"]
+        )
+
+        assert f"--preset {self.mock_bundle}/combine_cnv.json " in shell
+
+    def test_combine_cnv_without_a_bundle_preset(self):
+        """Without one the script uses its defaults, whatever the platform"""
+        shell = self.bundle_combine_cnv_shell(self.BUNDLE_MEMBERS)
+
+        assert "--preset" not in shell
 
     def test_expansion_hunter_command(self):
         """ExpansionHunter genotypes the short reads"""
@@ -1850,6 +1866,17 @@ class TestHybridPangenome:
         monkeypatch.setattr(hybrid_pangenome, "ar_load", fake_ar_load)
         return pipeline
 
+    def write_bundle(self, members, bundle_info=None):
+        """Write the model bundle with `members` and a bundle_info.json"""
+        info = {"pipeline": "Hybrid pangenome", **(bundle_info or {})}
+        write_bundle(
+            self.mock_bundle,
+            {
+                "bundle_info.json": json.dumps(info).encode(),
+                **{name: b"" for name in members},
+            },
+        )
+
     BUNDLE_MEMBERS = [
         "dnascope.model",
         "longreadsv.model",
@@ -1918,26 +1945,30 @@ class TestHybridPangenome:
         pipeline.r1_fastq = []
         pipeline.validate_bundle()  # no SystemExit
 
-    def test_validate_bundle_short_read_platform(self, monkeypatch):
-        """The CNV combine preset follows the short-read platform"""
-        pipeline = self.bundle_pipeline(
-            monkeypatch,
-            self.BUNDLE_MEMBERS,
-            {"shortReadPlatform": "Ultima"},
-        )
-        pipeline.validate_bundle()
-        assert pipeline.sr_platform == "ULTIMA"
-        assert pipeline.cnv_combine_preset() == "SE"
-
-        pipeline = self.bundle_pipeline(
-            monkeypatch,
-            self.BUNDLE_MEMBERS,
+    @pytest.mark.parametrize(
+        "bundle_info",
+        [
+            {},
             {"shortReadPlatform": "Illumina"},
+            {"shortReadPlatform": "Ultima"},
+        ],
+    )
+    def test_validate_bundle_combine_preset(self, bundle_info):
+        """The CNV combine preset is the bundle's `combine_cnv.json`"""
+        self.write_bundle(
+            self.BUNDLE_MEMBERS + ["combine_cnv.json"], bundle_info
         )
+        pipeline = self.create_pipeline()
         pipeline.validate_bundle()
-        assert pipeline.cnv_combine_preset() == "PE"
+        assert pipeline.has_combine_preset is True
+        assert (
+            pipeline.cnv_combine_preset()
+            == self.mock_bundle / "combine_cnv.json"
+        )
 
-        pipeline = self.bundle_pipeline(monkeypatch, self.BUNDLE_MEMBERS)
+        # Without one, whatever the platform, the script's defaults apply
+        self.write_bundle(self.BUNDLE_MEMBERS, bundle_info)
+        pipeline = self.create_pipeline()
         pipeline.validate_bundle()
-        assert pipeline.sr_platform == ""
-        assert pipeline.cnv_combine_preset() == "PE"
+        assert pipeline.has_combine_preset is False
+        assert pipeline.cnv_combine_preset() is None

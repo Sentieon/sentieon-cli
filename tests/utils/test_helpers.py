@@ -26,6 +26,42 @@ def create_mock_args(loglevel="WARNING"):
     return args
 
 
+def write_bundle(
+    path: pathlib.Path, members: Dict[str, bytes]
+) -> pathlib.Path:
+    """Write a model bundle: a GNU ar archive of `members`.
+
+    As in GNU ar, names of 16 or more characters, `combine_cnv.json`
+    among them, go to the archive's `//` name table.
+    """
+
+    def entry(name: bytes, body: bytes) -> bytes:
+        header = (
+            name.ljust(16)
+            + b"0".ljust(12)
+            + b"0".ljust(6)
+            + b"0".ljust(6)
+            + b"644".ljust(8)
+            + str(len(body)).encode().ljust(10)
+            + b"`\n"
+        )
+        return header + body + (b"\n" if len(body) % 2 else b"")
+
+    names = b""
+    entries = b""
+    for name, body in members.items():
+        if len(name) < 16:
+            entries += entry(f"{name}/".encode(), body)
+        else:
+            entries += entry(f"/{len(names)}".encode(), body)
+            names += f"{name}/\n".encode()
+    data = b"!<arch>\n"
+    if names:
+        data += entry(b"//", names)
+    path.write_bytes(data + entries)
+    return path
+
+
 class MockFileSystem:
     """Helper class for creating mock file systems for testing"""
 

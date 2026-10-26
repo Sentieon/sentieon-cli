@@ -47,6 +47,8 @@ class CNVscopeStage(Stage):
     path CNVscope writes its per-probe debugging output to. When the sex
     is not known, CNVscope is given a `--blocks` BED file of assumed sex
     chromosome ploidies (`unknown_sex_blocks`) in place of `--sex/--par`.
+    CNVModelApply runs with `--emit_conf 0`, so `cnv_vcf` keeps the
+    segments the model rejects too, with FILTER `MLrejected`.
     """
 
     inputs: List[pathlib.Path]
@@ -100,6 +102,8 @@ class CNVscopeStage(Stage):
                     self.cnv_vcf,
                     self.model,
                     vcf=self.cnvscope_vcf,
+                    # Downstream tools need the rejected segments too
+                    emit_conf=0,
                 )
             ],
             name=self.apply_name,
@@ -142,9 +146,9 @@ class PangenomeCNVStage(Stage):
     Both inputs -- the alignments and the SV VCF -- come from an earlier
     DAG, and the sample sex has to be known before the jobs are built.
     `combine_cnv.py` gets the same sex and PAR BED file (or `--blocks`
-    BED file) as CNVscope and the CNVscope output as its raw segments.
-    `combine_preset` selects its rules: `PE` for paired-end CNVscope
-    models and `SE` for single-end models.
+    BED file) as CNVscope. `combine_preset` is the JSON file of its rule
+    overrides, the model bundle's `combine_cnv.json`; without one,
+    `combine_cnv.py` uses its defaults, the paired-end values.
     """
 
     inputs: List[pathlib.Path]
@@ -152,7 +156,7 @@ class PangenomeCNVStage(Stage):
     sv_vcf: pathlib.Path
     sample_sex: Optional[SampleSex] = None
     par_bed: Optional[pathlib.Path] = None
-    combine_preset: str = "PE"
+    combine_preset: Optional[pathlib.Path] = None
     interval: Optional[pathlib.Path] = None
     replace_rg: Optional[List[List[str]]] = None
     task_name: str = "cnv"
@@ -204,10 +208,8 @@ class PangenomeCNVStage(Stage):
         )
         dag.add_job(indel2cnv_job, deps)
 
-        # Combine the CNVModelApply output with the converted SVs. The
-        # CNVscope output, written before CNVModelApply runs, is the raw
-        # segmentation that `combine_cnv.py` checks long converted gains
-        # against
+        # Combine the CNVModelApply output, rejected segments included,
+        # with the converted SVs
         combine_script = pathlib.Path(
             str(files("sentieon_cli.scripts").joinpath("combine_cnv.py"))
         )
@@ -217,7 +219,6 @@ class PangenomeCNVStage(Stage):
                 apply_vcf,
                 converted_vcf,
                 combine_script,
-                raw_vcf=cnvscope_vcf,
                 preset=self.combine_preset,
                 sex=cnv_result.sex,
                 par=cnv_result.par,

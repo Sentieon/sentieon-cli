@@ -469,32 +469,27 @@ def cmd_pyexec_combine_cnv(
     converted_vcf: pathlib.Path,
     combine_script: pathlib.Path,
     *,
-    raw_vcf: pathlib.Path,
-    preset: str = "PE",
+    preset: Optional[pathlib.Path] = None,
     sex: Optional[str] = None,
     par: Optional[pathlib.Path] = None,
     blocks: Optional[pathlib.Path] = None,
 ) -> Pipeline:
     """Combine CNVscope and converted SV calls.
 
-    `raw_vcf` is the CNVscope output before CNVModelApply, the raw
-    segments. `sex` and `par`, or `blocks`, are the ploidy CNVscope was
-    called with.
-    `preset` is `PE` for paired-end CNVscope models and `SE` for
-    single-end models.
+    `preset` is the JSON file of rule overrides; without it the script
+    uses its defaults. `sex` and `par`, or `blocks`, are the ploidy
+    CNVscope was called with.
     """
     cmd = [
         sys.executable,
         str(combine_script),
-        "--preset",
-        preset,
         "--cnv",
         str(cnv_vcf),
         "--converted",
         str(converted_vcf),
-        "--raw",
-        str(raw_vcf),
     ]
+    if preset:
+        cmd.extend(["--preset", str(preset)])
     if sex:
         cmd.extend(["--sex", sex])
     if par:

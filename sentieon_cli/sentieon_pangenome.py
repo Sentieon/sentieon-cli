@@ -155,10 +155,6 @@ class SentieonPangenome(BasePangenome):
         """CNV calling runs in the second, sex-aware DAG"""
         return self.call_svs and self.has_cnv_model
 
-    def cnv_combine_preset(self) -> str:
-        """Ultima bundles carry a single-end CNVscope model"""
-        return "SE" if self.tech.upper() == "ULTIMA" else "PE"
-
     def _needs_second_dag(self) -> bool:
         """The run has jobs that depend on the estimated sample sex"""
         return bool(
@@ -353,6 +349,7 @@ class SentieonPangenome(BasePangenome):
             sys.exit(2)
 
         self.has_cnv_model = "cnv.model" in bundle_members
+        self.has_combine_preset = "combine_cnv.json" in bundle_members
         if self.call_svs and not self.has_cnv_model:
             self.logger.warning(
                 "The model bundle does not contain a 'cnv.model' file. "

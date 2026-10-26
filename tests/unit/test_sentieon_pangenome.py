@@ -18,6 +18,7 @@ sys.path.insert(
 from sentieon_cli.sentieon_pangenome import SentieonPangenome
 from sentieon_cli.util import SampleSex
 from sentieon_cli.dag import DAG
+from tests.utils.test_helpers import write_bundle
 
 
 class TestSentieonPangenome:
@@ -956,6 +957,8 @@ class TestSentieonPangenome:
         cmd_str = str(job.shell)
         assert "--algo CNVModelApply" in cmd_str
         assert "cnv.model" in cmd_str
+        # The rejected segments are written too
+        assert "--emit_conf 0 " in cmd_str
 
     def test_indel2cnv_command(self):
         """Test indel2cnv script command"""
@@ -991,10 +994,10 @@ class TestSentieonPangenome:
         assert "combine_cnv.py" in cmd_str
         assert "--cnv" in cmd_str
         assert "--converted" in cmd_str
-        # The CNVscope output is the raw segmentation
-        assert f"--raw {pipeline.tmp_dir}/sample-cnvscope.vcf.gz" in cmd_str
-        # Illumina bundles carry a paired-end CNVscope model
-        assert "--preset PE" in cmd_str
+        # CNVModelApply keeps the rejected segments, so there is no raw VCF
+        assert "--raw" not in cmd_str
+        # A bundle without `combine_cnv.json` leaves the script its defaults
+        assert "--preset" not in cmd_str
         # The same ploidy as CNVscope, a female sample
         assert "--sex F" in cmd_str
         assert "--par" not in cmd_str
@@ -1002,16 +1005,54 @@ class TestSentieonPangenome:
         cnv_vcf = str(pipeline.output_vcf).replace(".vcf.gz", "_cnv.vcf.gz")
         assert cnv_vcf in cmd_str
 
-    def test_combine_cnv_ultima_preset(self):
-        """Ultima bundles carry a single-end CNVscope model"""
+    BUNDLE_MEMBERS = [
+        "dnascope.model",
+        "extract.model",
+        "minimap2.model",
+        "cnv.model",
+    ]
+
+    def write_bundle(self, members, platform):
+        """Write the model bundle with `members` and a bundle_info.json"""
+        bundle_info = {
+            "minScriptVersion": "1.0.0",
+            "pipeline": "Sentieon pangenome",
+            "platform": platform,
+            "SentieonVcfID": "population",
+        }
+        write_bundle(
+            self.mock_bundle,
+            {
+                "bundle_info.json": json.dumps(bundle_info).encode(),
+                **{name: b"" for name in members},
+            },
+        )
+
+    def bundle_combine_cnv_shell(self):
+        """The combine-cnv command for the bundle on disk"""
         pipeline = self.create_pipeline()
         pipeline.call_svs = True
-        pipeline.tech = "ULTIMA"
+        pipeline.validate_bundle()
         dag = self._build_cnv_dag(pipeline)
 
         _, all_jobs = self._get_all_job_names(dag)
         job = next(j for j in all_jobs if j.name == "combine-cnv")
-        assert "--preset SE" in str(job.shell)
+        return str(job.shell)
+
+    @pytest.mark.parametrize("platform", ["Illumina", "Ultima"])
+    def test_combine_cnv_bundle_preset(self, platform):
+        """The bundle's `combine_cnv.json` is the preset"""
+        self.write_bundle(self.BUNDLE_MEMBERS + ["combine_cnv.json"], platform)
+
+        shell = self.bundle_combine_cnv_shell()
+        assert f"--preset {self.mock_bundle}/combine_cnv.json " in shell
+
+    @pytest.mark.parametrize("platform", ["Illumina", "Ultima"])
+    def test_combine_cnv_without_a_bundle_preset(self, platform):
+        """Without one the script uses its defaults, whatever the platform"""
+        self.write_bundle(self.BUNDLE_MEMBERS, platform)
+
+        assert "--preset" not in self.bundle_combine_cnv_shell()
 
     def test_combine_cnv_male_sample(self):
         """A male sample is combined with the PAR BED file"""

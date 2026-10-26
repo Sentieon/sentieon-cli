@@ -183,6 +183,22 @@ class TestDNAscopeHybridCnv:
         assert f"--dump_probes {probes}" in str(jobs["cnvscope"].shell)
         assert "--dump_probes" not in str(jobs["cnv-model-apply"].shell)
 
+    def test_cnv_model_apply_writes_every_segment(self):
+        # The CNV VCF keeps the rejected segments too, as MLrejected
+        pipeline = self.create_pipeline()
+        pipeline.sample_sex = SampleSex.FEMALE
+        self.build_dag(pipeline)
+        _dag, jobs = self.build_second_dag(pipeline)
+
+        cnv_vcf = self.mock_dir / "output.cnv.vcf.gz"
+        assert str(jobs["cnv-model-apply"].shell) == (
+            f"sentieon driver --reference {self.mock_ref} "
+            "--thread_count 2 --algo CNVModelApply "
+            f"--model {self.mock_bundle}/cnv.model "
+            f"--vcf {self.mock_dir}/cnvscope.vcf.gz "
+            f"--emit_conf 0 {cnv_vcf}"
+        )
+
     def test_a_dry_run_assumes_a_male_sample(self):
         # Validation has already confirmed a PAR BED file is available
         pipeline = self.create_pipeline()

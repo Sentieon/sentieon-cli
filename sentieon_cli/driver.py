@@ -523,10 +523,13 @@ class CNVModelApply(BaseAlgo):
         output: Union[pathlib.Path, str],
         model: pathlib.Path,
         vcf: pathlib.Path,
+        *,
+        emit_conf: Optional[float] = None,
     ):
         self.output = output
         self.model = model
         self.vcf = vcf
+        self.emit_conf = emit_conf
 
 
 class PangenomeSV(BaseAlgo):
