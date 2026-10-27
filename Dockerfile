@@ -17,8 +17,8 @@ ARG VG_VERSION=1.73.0
 ARG VG_SHA256=d5752977237e801d971f0d044f43fde4f3005da35f0451b4f452d1c1c9b8414b
 # Sentieon's KMC fork adds the `-fa /dev/stdin` patch used by the pangenome pipeline.
 ARG KMC_VERSION=3.2.4
-ARG KMC_RELEASE_TAG=v3.2.4-pipe2
-ARG KMC_SHA256=d8bdf8edcd0577dba32e86e8f194b2eb04eb168c75a3e6d46721d5bef515ac96
+ARG KMC_RELEASE_TAG=v3.2.4-pipe3
+ARG KMC_SHA256=6ae37ac28c215919a67bd77edf004f9e323013bba5700bc44ad23c0b59da9a91
 ARG EXPANSIONHUNTER_VERSION=5.0.0
 ARG EXPANSIONHUNTER_SHA256=ebf3ec0ace6e6e3bbce12c26463da5d9f8e16374eff1ad10f0f1a9123050fa86
 # T1K and segdup-caller are built from git; pin the tag and verify the
