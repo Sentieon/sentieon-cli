@@ -709,15 +709,13 @@ def main(args):
         n_threads = args.threads or os.cpu_count()
         # Sort by expected difficulty (sequence length) descending so that
         # expensive variants are dispatched first and don't pile up at the end.
-        # Use small batches (5) for better load balancing across workers.
+        # Hand out one variant at a time: with larger batches, or starmap's
+        # default chunksize, the most expensive variants all land on one worker.
         variants.sort(key=lambda v: max(len(a) for a in [v.ref] + v.alt), reverse=True)
-        batch_size = 5
-        args_in = []
-        for i in range(0, len(variants), batch_size):
-            args_in.append((ref, variants[i:i+batch_size], args.thresh))
+        args_in = [(ref, [v], args.thresh) for v in variants]
         all_vars = []
         with Pool(n_threads) as p:
-            for result in p.starmap(proc_batch, args_in):
+            for result in p.starmap(proc_batch, args_in, chunksize=1):
                 for vs, t in result:
                     all_vars += vs
     # Merge overlapping output calls (same array, different haplotypes) and write
