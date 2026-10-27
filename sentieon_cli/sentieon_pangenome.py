@@ -59,6 +59,13 @@ from .shard import (
     parse_fai,
 )
 
+# Peak memory, in GB, of vg haplotypes on the HPRC v2.0 and v2.1 graphs
+# (about 60 with vg 1.78.0, up to 92 with a build that samples in parallel)
+# and of one bwa-extract lane (about 20), measured on HG002 and HG005.
+# vg-haplotypes runs alongside bwa only if the two fit together.
+VG_HAPLOTYPES_MEM_GB = 100
+BWA_LANE_MEM_GB = 32
+
 SENT_PANGENOME_MIN_VERSIONS = {
     "kmc": None,
     "sentieon driver": packaging.version.Version("202503.02"),
@@ -485,12 +492,17 @@ class SentieonPangenome(BasePangenome):
             bwa_jobs = list(bwa_result.jobs)
             mm2_dependencies.update(bwa_jobs)
             bwa_lc_dependencies.update(bwa_jobs)
-            # Do not run vg-haplotypes with bwa in low-mem environments
-            if total_mem_gb < 70:
+            # Run vg-haplotypes alongside bwa when both fit in memory
+            vg_with_bwa = (
+                total_mem_gb
+                >= VG_HAPLOTYPES_MEM_GB + BWA_LANE_MEM_GB * len(bwa_jobs)
+            )
+            if not vg_with_bwa:
                 haplotype_dependencies.update(bwa_jobs)
         else:
             lanes = [(bwa_bam, ext_fastq)]
             bwa_jobs = []
+            vg_with_bwa = False
             dnascope_bams = copy.deepcopy(self.sample_input)
             # ReadWriter cannot write to /dev/stdout directly; pre-create a
             # symlink so the driver writes to a real path that resolves to
@@ -523,7 +535,14 @@ class SentieonPangenome(BasePangenome):
             haplotype_dependencies.add(extract_kmc_job)
 
         # vg haplotypes - create a sample-specific pangenome
-        haplotypes_job = self.build_haplotypes_job(sample_pangenome, kmer_file)
+        # Alongside bwa, vg-haplotypes reserves no threads, as kmc does.
+        # Otherwise the scheduler holds it until bwa releases its threads,
+        # whatever its dependencies say.
+        haplotypes_job = self.build_haplotypes_job(
+            sample_pangenome,
+            kmer_file,
+            job_threads=0 if vg_with_bwa else self.cores,
+        )
         dag.add_job(haplotypes_job, haplotype_dependencies)
 
         # Confirm the sampled pangenome kept its reference paths before
@@ -769,7 +788,10 @@ class SentieonPangenome(BasePangenome):
         )
 
     def build_haplotypes_job(
-        self, output_gbz: pathlib.Path, kmer_file: pathlib.Path
+        self,
+        output_gbz: pathlib.Path,
+        kmer_file: pathlib.Path,
+        job_threads: Optional[int] = None,
     ) -> Job:
         """Build vg haplotypes job"""
         hapl_file = self.required(self.hapl, "hapl")
@@ -790,7 +812,7 @@ class SentieonPangenome(BasePangenome):
                 ],
             ),
             "vg-haplotypes",
-            self.cores,
+            self.cores if job_threads is None else job_threads,
             task_name="pangenome",
         )
         return haplotypes_job
