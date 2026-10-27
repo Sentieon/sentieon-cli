@@ -23,6 +23,15 @@ logger = get_logger(__name__)
 # fs.pipe-max-size and non-Linux platforms keep their default size.
 ALN_PIPE_SIZE = 268435456
 
+# KMC rejects more threads than this: "number of threads for 2nd stage
+# must be in range <1,128>"
+KMC_MAX_THREADS = 128
+
+
+def kmc_threads(threads: int) -> int:
+    """The thread count to pass to KMC"""
+    return min(threads, KMC_MAX_THREADS)
+
 
 def cmd_fai_to_bed(
     fai: pathlib.Path,
@@ -1000,7 +1009,7 @@ def cmd_kmc(
         f"-k{k}",
         f"-m{memory}",
         "-okff",
-        f"-t{threads}",
+        f"-t{kmc_threads(threads)}",
         "-hp",
         f"@{file_list}",
         str(output_prefix),
@@ -1084,7 +1093,7 @@ def cmd_extract_kmc(
         "-k29",
         "-m32",
         "-okff",
-        f"-t{threads}",
+        f"-t{kmc_threads(threads)}",
         "-fa",
         "/dev/stdin",
         str(output_prefix),
@@ -1480,7 +1489,7 @@ def _kmc_stdin_cmd(
         f"-k{k}",
         f"-m{memory}",
         "-okff",
-        f"-t{threads}",
+        f"-t{kmc_threads(threads)}",
         "-fa",
         "/dev/stdin",
         str(output_prefix),
