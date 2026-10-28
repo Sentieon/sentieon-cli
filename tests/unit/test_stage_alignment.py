@@ -396,6 +396,26 @@ class TestBwaExtractStage:
 
         assert "igzip -dc" in str(result.jobs[0].shell)
 
+    def test_bwa_k_default_and_override(self, tmp_path):
+        default = str(self.make(tmp_path).build().jobs[0].shell)
+        override = str(
+            self.make(tmp_path, bwa_k="10000000").build().jobs[0].shell
+        )
+
+        assert "-K 2000000" in default
+        assert "-K 10000000" in override and "-K 2000000" not in override
+
+    def test_split_lanes_have_unique_names(self, tmp_path):
+        result = self.make(tmp_path, numa_nodes=["0-47", "48-95"]).build()
+
+        assert [j.name for j in result.jobs] == [
+            "bwa-extract-0",
+            "bwa-extract-1",
+        ]
+        # fqidx extract needs -K of at least 10,000,000
+        for job in result.jobs:
+            assert str(job.shell).count("-K 10000000") == 2
+
 
 class TestReadWriterStage:
     """`sentieon driver --algo ReadWriter` merges and extracts"""

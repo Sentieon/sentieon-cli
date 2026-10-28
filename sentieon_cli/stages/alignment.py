@@ -377,10 +377,11 @@ class Minimap2FastqStage(AlignmentStage):
         )
 
 
-# `sentieon fqidx extract` rejects -K below 10,000,000 (the pangenome bwa
-# default is 2,000,000), so a split run aligns with this -K in both, keeping
-# each lane's batches the ones an unsplit run at the same -K would form
-SPLIT_BWA_K = "10000000"
+# `sentieon fqidx extract` rejects -K below 10,000,000, so a split run needs
+# at least this. dnascope-pangenome uses it whether or not it splits: each
+# lane then forms the batches an unsplit run would, and results match
+# across machines
+PANGENOME_BWA_K = "10000000"
 
 
 def lane_path(path: pathlib.Path, lane: int) -> pathlib.Path:
@@ -409,6 +410,8 @@ class BwaExtractStage(AlignmentStage):
     name: str = "bwa-extract"
     task_name: str = "alignment"
     numa_nodes: List[str] = field(default_factory=list)
+    # None keeps cmd_bwa_extract's default, or PANGENOME_BWA_K when split
+    bwa_k: Optional[str] = None
 
     def lane_paths(self) -> List[Tuple[pathlib.Path, pathlib.Path]]:
         """(bam, fastq) per lane: one lane per NUMA node when there are
@@ -424,6 +427,7 @@ class BwaExtractStage(AlignmentStage):
         lanes = self.lane_paths()
         n = len(lanes)
         cores = max(1, int(self.ctx.cores / n))
+        bwa_k = self.bwa_k or (PANGENOME_BWA_K if n > 1 else None)
         jobs: List[Job] = []
         for j, (bam, fastq) in enumerate(lanes):
             jobs.append(
@@ -439,11 +443,11 @@ class BwaExtractStage(AlignmentStage):
                         self.bwa_model,
                         cores,
                         unzip=self.unzip,
-                        **({"bwa_k": SPLIT_BWA_K} if n > 1 else {}),
+                        **({"bwa_k": bwa_k} if bwa_k else {}),
                         numa=self.numa_nodes[j] if n > 1 else None,
                         split=f"{j}/{n}" if n > 1 else None,
                     ),
-                    self.name,
+                    f"{self.name}-{j}" if n > 1 else self.name,
                     cores,
                     resources={f"node{j}": 1} if n > 1 else None,
                     task_name=self.task_name,

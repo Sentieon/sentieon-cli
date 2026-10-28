@@ -41,7 +41,7 @@ class TestVgHaplotypesScheduling:
         """No bwa dependency, and no threads reserved from the scheduler"""
         _, dag, vg = self.build(384, cores=192, nodes=TWO_NODES)
         deps = {d.name for d in self.base._get_deps(dag, vg)}
-        assert "bwa-extract" not in deps
+        assert not any(d.startswith("bwa-extract") for d in deps)
         assert "kmc" in deps
         assert vg.threads == 0
         # vg itself still uses every core
@@ -58,7 +58,11 @@ class TestVgHaplotypesScheduling:
         """The memory check counts each lane, and vg waits for all of them"""
         _, dag, vg = self.build(200, cores=192, nodes=TWO_NODES)
         bwa = [
-            d for d in self.base._get_deps(dag, vg) if d.name == "bwa-extract"
+            d
+            for d in self.base._get_deps(dag, vg)
+            if d.name.startswith("bwa-extract")
         ]
-        assert len(bwa) == 4
+        assert sorted(d.name for d in bwa) == [
+            f"bwa-extract-{j}" for j in range(4)
+        ]
         assert vg.threads == 192

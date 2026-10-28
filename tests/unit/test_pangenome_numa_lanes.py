@@ -30,8 +30,13 @@ class TestNumaLanes:
         return pipeline
 
     def jobs(self, dag, name):
+        """The step's jobs: `name`, or `name-<lane>` when split"""
         everything = list(dag.waiting_jobs) + list(dag.ready_jobs)
-        return [j for j in everything if j.name == name]
+        return [
+            j
+            for j in everything
+            if j.name == name or j.name.rpartition("-")[0] == name
+        ]
 
     def test_configure_splits_like_dnascope(self):
         assert self.lane_pipeline().numa_nodes == LANES
@@ -43,6 +48,7 @@ class TestNumaLanes:
         for j, cpus in enumerate(LANES):
             job = next(b for b in bwa if f"taskset -c {cpus} " in str(b.shell))
             cmd = str(job.shell)
+            assert job.name == f"bwa-extract-{j}"
             assert job.threads == 48
             assert job.resources == {f"node{j}": 1}
             assert f"fqidx extract -F {j}/4 -K 10000000" in cmd
@@ -64,12 +70,13 @@ class TestNumaLanes:
                 m for m in mm2 if f"sample-bwa-{j}.fq.gz" in str(m.shell)
             )
             cmd = str(job.shell)
+            assert job.name == f"mm2-lift-{j}"
             assert job.threads == 48 and job.resources == {f"node{j}": 1}
             assert cmd.count(f"taskset -c {cpus}") == 3  # minimap2, lift, sort
             assert f"sample-mm2-{j}.bam" in cmd
             deps = self.base._get_deps(dag, job)
-            lane_bwa = [d for d in deps if d.name == "bwa-extract"]
-            assert len(lane_bwa) == 1
+            lane_bwa = [d for d in deps if d.name.startswith("bwa-extract")]
+            assert [d.name for d in lane_bwa] == [f"bwa-extract-{j}"]
             assert f"sample-bwa-{j}.fq.gz" in str(lane_bwa[0].shell)
             assert {"check-sample-gfa", "vg-paths-fasta"} <= {
                 d.name for d in deps
@@ -97,12 +104,25 @@ class TestNumaLanes:
         assert "taskset" not in str(bwa[0].shell) + str(mm2[0].shell)
         assert "fqidx" not in str(bwa[0].shell)
         assert "sample-bwa.bam" in str(bwa[0].shell)
-        assert "-K 2000000" in str(bwa[0].shell)  # unsplit keeps the default
+        assert bwa[0].name == "bwa-extract" and mm2[0].name == "mm2-lift"
+        # the same -K as a split run, so the alignments match
+        assert "-K 10000000" in str(bwa[0].shell)
+        assert "-K 2000000" not in str(bwa[0].shell)
 
     def test_small_machine_keeps_one_job(self):
         dag = self.lane_pipeline(cores=48, nodes=["0-47"]).build_dag()
         assert len(self.jobs(dag, "bwa-extract")) == 1
         assert len(self.jobs(dag, "mm2-lift")) == 1
+
+    def test_job_names_are_unique(self):
+        dag = self.lane_pipeline().build_dag()
+        everything = list(dag.waiting_jobs) + list(dag.ready_jobs)
+        names = [
+            j.name
+            for j in everything
+            if j.name.startswith(("bwa-extract", "mm2-lift"))
+        ]
+        assert len(names) == 8 and len(set(names)) == 8
 
     def test_bam_input_is_unchanged(self):
         pipeline = self.base.create_pipeline()

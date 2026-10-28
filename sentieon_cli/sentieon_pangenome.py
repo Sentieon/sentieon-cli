@@ -28,6 +28,7 @@ from .shell_pipeline import Command, Pipeline
 from .stages.alignment import (
     lane_path,
     BwaExtractStage,
+    PANGENOME_BWA_K,
     find_unzip,
 )
 from .stages.base import StageContext
@@ -785,6 +786,7 @@ class SentieonPangenome(BasePangenome):
             bwa_model=bundle.joinpath("bwa.model"),
             unzip=find_unzip(self.logger),
             numa_nodes=self.numa_nodes,
+            bwa_k=PANGENOME_BWA_K,
         )
 
     def build_haplotypes_job(
@@ -887,7 +889,7 @@ class SentieonPangenome(BasePangenome):
                 lift_prefix=self.contig_prefix(),
                 numa=self.numa_nodes[lane] if lane is not None else None,
             ),
-            "mm2-lift",
+            "mm2-lift" if lane is None else f"mm2-lift-{lane}",
             threads,
             resources={f"node{lane}": 1} if lane is not None else None,
             task_name="pangenome-alignment",
