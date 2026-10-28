@@ -26,7 +26,9 @@ from .job import Job
 from .logging import get_logger
 from .shell_pipeline import Command, Pipeline
 from .stages.alignment import (
+    lane_path,
     BwaExtractStage,
+    PANGENOME_BWA_K,
     find_unzip,
 )
 from .stages.base import StageContext
@@ -50,12 +52,20 @@ from .util import (
     parse_rg_line,
     path_arg,
     require_versions,
+    split_alignment,
     total_memory,
 )
 from .shard import (
     determine_shards_from_fai,
     parse_fai,
 )
+
+# Peak memory, in GB, of vg haplotypes on the HPRC v2.0 and v2.1 graphs
+# (about 60 with vg 1.78.0, up to 92 with a build that samples in parallel)
+# and of one bwa-extract lane (about 20), measured on HG002 and HG005.
+# vg-haplotypes runs alongside bwa only if the two fit together.
+VG_HAPLOTYPES_MEM_GB = 100
+BWA_LANE_MEM_GB = 32
 
 SENT_PANGENOME_MIN_VERSIONS = {
     "kmc": None,
@@ -131,6 +141,10 @@ class SentieonPangenome(BasePangenome):
                 "help": argparse.SUPPRESS,
                 "action": "store_true",
             },
+            "no_split_alignment": {
+                "help": argparse.SUPPRESS,
+                "action": "store_true",
+            },
         }
     )
 
@@ -149,6 +163,7 @@ class SentieonPangenome(BasePangenome):
         self.skip_multiqc = False
         self.skip_pop_vcf_id_check: bool = False
         self.skip_model_apply = False
+        self.no_split_alignment = False
         self.skip_small_variants = False
 
     def _cnv_in_second_dag(self) -> bool:
@@ -413,7 +428,10 @@ class SentieonPangenome(BasePangenome):
 
     def configure(self) -> None:
         """Configure pipeline parameters"""
-        pass
+        # bwa and minimap2 run as one lane per NUMA node (pieces of at most
+        # 64 CPUs, as in DNAscope) on large machines with fastq input
+        if self.r1_fastq and not self.no_split_alignment:
+            self.numa_nodes = split_alignment(self.cores)
 
     def build_dag(self) -> DAG:
         """Build the first DAG for the Sentieon pangenome pipeline"""
@@ -468,17 +486,24 @@ class SentieonPangenome(BasePangenome):
             dag.add_job(kmc_job)
             haplotype_dependencies.add(kmc_job)
 
-            # BWA alignment and extraction
-            bwa_result = self.bwa_extract_stage(
-                ctx, bwa_bam, ext_fastq
-            ).add_to(dag)
-            bwa_job = bwa_result.jobs[0]
-            mm2_dependencies.add(bwa_job)
-            bwa_lc_dependencies.add(bwa_job)
-            # Do not run vg-haplotypes with bwa in low-mem environments
-            if total_mem_gb < 70:
-                haplotype_dependencies.add(bwa_job)
+            # BWA alignment and extraction, one lane per NUMA node
+            bwa_stage = self.bwa_extract_stage(ctx, bwa_bam, ext_fastq)
+            lanes = bwa_stage.lane_paths()
+            bwa_result = bwa_stage.add_to(dag)
+            bwa_jobs = list(bwa_result.jobs)
+            mm2_dependencies.update(bwa_jobs)
+            bwa_lc_dependencies.update(bwa_jobs)
+            # Run vg-haplotypes alongside bwa when both fit in memory
+            vg_with_bwa = (
+                total_mem_gb
+                >= VG_HAPLOTYPES_MEM_GB + BWA_LANE_MEM_GB * len(bwa_jobs)
+            )
+            if not vg_with_bwa:
+                haplotype_dependencies.update(bwa_jobs)
         else:
+            lanes = [(bwa_bam, ext_fastq)]
+            bwa_jobs = []
+            vg_with_bwa = False
             dnascope_bams = copy.deepcopy(self.sample_input)
             # ReadWriter cannot write to /dev/stdout directly; pre-create a
             # symlink so the driver writes to a real path that resolves to
@@ -511,7 +536,14 @@ class SentieonPangenome(BasePangenome):
             haplotype_dependencies.add(extract_kmc_job)
 
         # vg haplotypes - create a sample-specific pangenome
-        haplotypes_job = self.build_haplotypes_job(sample_pangenome, kmer_file)
+        # Alongside bwa, vg-haplotypes reserves no threads, as kmc does.
+        # Otherwise the scheduler holds it until bwa releases its threads,
+        # whatever its dependencies say.
+        haplotypes_job = self.build_haplotypes_job(
+            sample_pangenome,
+            kmer_file,
+            job_threads=0 if vg_with_bwa else self.cores,
+        )
         dag.add_job(haplotypes_job, haplotype_dependencies)
 
         # Confirm the sampled pangenome kept its reference paths before
@@ -532,14 +564,24 @@ class SentieonPangenome(BasePangenome):
 
         # minimap2 alignment of the extracted fastq
         dnascope_dependencies = set()
-        mm2_job = self.build_minimap2_lift_job(
-            mm2_bam,
-            ext_fastq,
-            sample_fasta,
-            sample_gfa,
-        )
-        dag.add_job(mm2_job, mm2_dependencies | {check_gfa_job, fasta_job})
-        dnascope_dependencies.add(mm2_job)
+        n_lanes = len(lanes)
+        mm2_jobs: List[Job] = []
+        mm2_bams: List[pathlib.Path] = []
+        for j, (_, lane_fastq) in enumerate(lanes):
+            lane_bam = mm2_bam if n_lanes == 1 else lane_path(mm2_bam, j)
+            lane_job = self.build_minimap2_lift_job(
+                lane_bam,
+                lane_fastq,
+                sample_fasta,
+                sample_gfa,
+                lane=j if n_lanes > 1 else None,
+                n_lanes=n_lanes,
+            )
+            lane_deps = {bwa_jobs[j]} if n_lanes > 1 else mm2_dependencies
+            dag.add_job(lane_job, lane_deps | {check_gfa_job, fasta_job})
+            dnascope_dependencies.add(lane_job)
+            mm2_jobs.append(lane_job)
+            mm2_bams.append(lane_bam)
 
         # With fastq input, perform dedup and metrics
         sr_alignments: List[pathlib.Path] = []
@@ -559,7 +601,7 @@ class SentieonPangenome(BasePangenome):
             bwa_dedup = DedupStage(
                 ctx=ctx,
                 tag="bwa",
-                inputs=[bwa_bam],
+                inputs=[bam for bam, _ in lanes],
                 output=out_bwa_aln,
                 score_file=self.tmp_dir.joinpath("sample-bwa-score.txt.gz"),
                 dedup_metrics=dedup_metrics,
@@ -569,14 +611,14 @@ class SentieonPangenome(BasePangenome):
             mm2_dedup = DedupStage(
                 ctx=ctx,
                 tag="mm2",
-                inputs=[mm2_bam],
+                inputs=mm2_bams,
                 output=out_mm2_aln,
                 score_file=self.tmp_dir.joinpath("sample-mm2-score.txt.gz"),
                 read_filters=[
                     "IndelLeftAlignReadTransform,rgid="
                     f"{self.fastq_readgroup['ID']}-mm2"
                 ],
-            ).add_to(dag, {mm2_job})
+            ).add_to(dag, set(mm2_jobs))
             dnascope_dependencies.add(mm2_dedup.dedup_job)
 
             sr_alignments = [out_bwa_aln]
@@ -743,10 +785,15 @@ class SentieonPangenome(BasePangenome):
             extract_model=bundle.joinpath(self.extract_model_name),
             bwa_model=bundle.joinpath("bwa.model"),
             unzip=find_unzip(self.logger),
+            numa_nodes=self.numa_nodes,
+            bwa_k=PANGENOME_BWA_K,
         )
 
     def build_haplotypes_job(
-        self, output_gbz: pathlib.Path, kmer_file: pathlib.Path
+        self,
+        output_gbz: pathlib.Path,
+        kmer_file: pathlib.Path,
+        job_threads: Optional[int] = None,
     ) -> Job:
         """Build vg haplotypes job"""
         hapl_file = self.required(self.hapl, "hapl")
@@ -767,7 +814,7 @@ class SentieonPangenome(BasePangenome):
                 ],
             ),
             "vg-haplotypes",
-            self.cores,
+            self.cores if job_threads is None else job_threads,
             task_name="pangenome",
         )
         return haplotypes_job
@@ -810,8 +857,12 @@ class SentieonPangenome(BasePangenome):
         ext_fastq: pathlib.Path,
         sample_fasta: pathlib.Path,
         sample_gfa: pathlib.Path,
+        lane: Optional[int] = None,
+        n_lanes: int = 1,
     ) -> Job:
-        """Build minimap2 alignment with pgutil lift job"""
+        """Build minimap2 alignment with pgutil lift job; with ``lane`` it is
+        that NUMA lane's share, pinned to its node"""
+        threads = max(1, int(self.cores / n_lanes))
         bundle = self.required(self.model_bundle, "model_bundle")
         reference = self.required(self.reference, "reference")
 
@@ -834,11 +885,13 @@ class SentieonPangenome(BasePangenome):
                 reference,
                 "@RG\\t" + "\\t".join([f"{x[0]}:{x[1]}" for x in rg2.items()]),
                 mm2_model,
-                threads=self.cores,
+                threads=threads,
                 lift_prefix=self.contig_prefix(),
+                numa=self.numa_nodes[lane] if lane is not None else None,
             ),
-            "mm2-lift",
-            self.cores,
+            "mm2-lift" if lane is None else f"mm2-lift-{lane}",
+            threads,
+            resources={f"node{lane}": 1} if lane is not None else None,
             task_name="pangenome-alignment",
         )
         return mm2_job

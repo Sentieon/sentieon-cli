@@ -13,7 +13,7 @@ import itertools
 import logging
 import pathlib
 import shutil
-from typing import Iterable, List, Optional, Union
+from typing import Iterable, List, Optional, Tuple, Union
 
 import packaging.version
 
@@ -377,6 +377,19 @@ class Minimap2FastqStage(AlignmentStage):
         )
 
 
+# `sentieon fqidx extract` rejects -K below 10,000,000, so a split run needs
+# at least this. dnascope-pangenome uses it whether or not it splits: each
+# lane then forms the batches an unsplit run would, and results match
+# across machines
+PANGENOME_BWA_K = "10000000"
+
+
+def lane_path(path: pathlib.Path, lane: int) -> pathlib.Path:
+    """`sample-bwa.fq.gz` -> `sample-bwa-<lane>.fq.gz`"""
+    stem, _, ext = path.name.partition(".")
+    return path.with_name(f"{stem}-{lane}.{ext}" if ext else f"{stem}-{lane}")
+
+
 @dataclass(kw_only=True)
 class BwaExtractStage(AlignmentStage):
     """Align short-read fastq with bwa and extract the reads a pangenome
@@ -396,29 +409,54 @@ class BwaExtractStage(AlignmentStage):
     unzip: str = "gzip"
     name: str = "bwa-extract"
     task_name: str = "alignment"
+    numa_nodes: List[str] = field(default_factory=list)
+    # None keeps cmd_bwa_extract's default, or PANGENOME_BWA_K when split
+    bwa_k: Optional[str] = None
+
+    def lane_paths(self) -> List[Tuple[pathlib.Path, pathlib.Path]]:
+        """(bam, fastq) per lane: one lane per NUMA node when there are
+        several, else the single output pair"""
+        if len(self.numa_nodes) <= 1:
+            return [(self.output_bam, self.output_fastq)]
+        return [
+            (lane_path(self.output_bam, j), lane_path(self.output_fastq, j))
+            for j in range(len(self.numa_nodes))
+        ]
 
     def build(self) -> AlignResult:
-        job = Job(
-            cmds.cmd_bwa_extract(
-                self.output_bam,
-                self.output_fastq,
-                self.ctx.reference,
-                self.r1_fastq,
-                self.r2_fastq,
-                self.readgroup,
-                self.extract_model,
-                self.bwa_model,
-                self.ctx.cores,
-                unzip=self.unzip,
-            ),
-            self.name,
-            self.ctx.cores,
-            task_name=self.task_name,
-        )
+        lanes = self.lane_paths()
+        n = len(lanes)
+        cores = max(1, int(self.ctx.cores / n))
+        bwa_k = self.bwa_k or (PANGENOME_BWA_K if n > 1 else None)
+        jobs: List[Job] = []
+        for j, (bam, fastq) in enumerate(lanes):
+            jobs.append(
+                Job(
+                    cmds.cmd_bwa_extract(
+                        bam,
+                        fastq,
+                        self.ctx.reference,
+                        self.r1_fastq,
+                        self.r2_fastq,
+                        self.readgroup,
+                        self.extract_model,
+                        self.bwa_model,
+                        cores,
+                        unzip=self.unzip,
+                        **({"bwa_k": bwa_k} if bwa_k else {}),
+                        numa=self.numa_nodes[j] if n > 1 else None,
+                        split=f"{j}/{n}" if n > 1 else None,
+                    ),
+                    f"{self.name}-{j}" if n > 1 else self.name,
+                    cores,
+                    resources={f"node{j}": 1} if n > 1 else None,
+                    task_name=self.task_name,
+                )
+            )
         return AlignResult(
-            jobs=[job],
-            terminal={job},
-            outputs=[self.output_bam, self.output_fastq],
+            jobs=jobs,
+            terminal=set(jobs),
+            outputs=[x for lane in lanes for x in lane],
             cleanup_paths=[],
         )
 

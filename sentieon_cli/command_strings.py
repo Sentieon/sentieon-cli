@@ -1378,8 +1378,15 @@ def cmd_bwa_extract(
     threads=1,
     unzip: str = "gzip",
     bwa_k: str = "2000000",
+    numa: Optional[str] = None,
+    split: Optional[str] = None,
 ) -> Pipeline:
-    """BWA alignment with pgutil extract"""
+    """BWA alignment with pgutil extract
+
+    With ``split`` ("j/n") the job aligns one share of the read pairs, read
+    interleaved through `fqidx extract` with the same -K, so the batches and
+    the alignments match an unsplit run; ``numa`` pins it with `taskset`.
+    """
     fq1_cmd = Pipeline(
         Command(
             unzip,
@@ -1395,7 +1402,30 @@ def cmd_bwa_extract(
         )
     )
 
+    pin = ["taskset", "-c", numa] if numa else []
+    if split:
+        reads = [
+            InputProcSub(
+                Pipeline(
+                    Command(
+                        "sentieon",
+                        "fqidx",
+                        "extract",
+                        "-F",
+                        split,
+                        "-K",
+                        bwa_k,
+                        InputProcSub(fq1_cmd),
+                        InputProcSub(fq2_cmd),
+                    )
+                )
+            )
+        ]
+    else:
+        reads = [InputProcSub(fq1_cmd), InputProcSub(fq2_cmd)]
+
     bwa_cmd = Command(
+        *pin,
         "sentieon",
         "bwa",
         "mem",
@@ -1407,12 +1437,13 @@ def cmd_bwa_extract(
         str(bwa_model),
         "-K",
         bwa_k,
+        *(["-p"] if split else []),
         str(reference),
-        InputProcSub(fq1_cmd),
-        InputProcSub(fq2_cmd),
+        *reads,
     )
 
     extract_cmd = Command(
+        *pin,
         "sentieon",
         "pgutil",
         "extract",
@@ -1494,9 +1525,12 @@ def cmd_minimap2_lift(
     threads=1,
     mm2_xargs: List[str] = [],
     lift_prefix: str = "GRCh38#0#",
+    numa: Optional[str] = None,
 ) -> Pipeline:
-    """Minimap2 alignment with pgutil lift"""
+    """Minimap2 alignment with pgutil lift; ``numa`` pins it with `taskset`"""
+    pin = ["taskset", "-c", numa] if numa else []
     mm2_cmd = Command(
+        *pin,
         "sentieon",
         "minimap2",
         "-t",
@@ -1515,6 +1549,7 @@ def cmd_minimap2_lift(
     )
 
     lift_cmd = Command(
+        *pin,
         "sentieon",
         "pgutil",
         "lift",
@@ -1529,6 +1564,7 @@ def cmd_minimap2_lift(
     )
 
     sort_cmd = Command(
+        *pin,
         "sentieon",
         "util",
         "sort",
