@@ -48,6 +48,26 @@ def cmd_bedtools_subtract(
     return Pipeline(Command(*cmd), file_output=unphased_bed)
 
 
+def cmd_bedtools_intersect(
+    out_bed: pathlib.Path,
+    in_bed: pathlib.Path,
+    restrict_bed: pathlib.Path,
+    ref_fai: pathlib.Path,
+) -> Pipeline:
+    """The parts of `in_bed` inside `restrict_bed`, sorted and merged"""
+    intersect_cmd = Command(
+        "bedtools",
+        "intersect",
+        "-a",
+        str(in_bed),
+        "-b",
+        str(restrict_bed),
+    )
+    sort_cmd = Command("bedtools", "sort", "-faidx", str(ref_fai), "-i", "-")
+    merge_cmd = Command("bedtools", "merge")
+    return Pipeline(intersect_cmd, sort_cmd, merge_cmd, file_output=out_bed)
+
+
 def cmd_bedtools_slop(
     in_bed: pathlib.Path,
     out_bed: pathlib.Path,
@@ -284,7 +304,14 @@ def cmd_pyexec_hybrid_anno(
     bed: pathlib.Path,
     hybrid_anno: pathlib.Path,
     threads: int,
+    stream: bool = False,
 ) -> Pipeline:
+    """Annotate the hybrid calls with their long-read haplotype count
+
+    With `stream`, the script writes uncompressed VCF that
+    `sentieon util vcfconvert` compresses and indexes, rather than
+    compressing and indexing every record in its own parent process.
+    """
     cmd = [
         sys.executable,
         str(hybrid_anno),
@@ -294,9 +321,49 @@ def cmd_pyexec_hybrid_anno(
         str(bed),
         "-t",
         str(threads),
-        str(out_vcf),
     ]
-    return Pipeline(Command(*cmd))
+    if not stream:
+        return Pipeline(Command(*cmd, str(out_vcf)))
+    return Pipeline(
+        Command(*cmd, "-"),
+        Command("sentieon", "util", "vcfconvert", "-", str(out_vcf)),
+    )
+
+
+def cmd_pyexec_gvcf_clip(
+    out_gvcf: pathlib.Path,
+    gvcf: pathlib.Path,
+    regions_bed: pathlib.Path,
+    reference: pathlib.Path,
+    gvcf_clip: pathlib.Path,
+    threads: int,
+    exclude: bool = False,
+) -> Pipeline:
+    """Restrict a gVCF to the BED regions, or with `exclude` to the
+    positions outside them, clipping reference blocks at the boundaries
+
+    The script writes uncompressed VCF that `sentieon util vcfconvert`
+    compresses and indexes, rather than compressing and indexing every
+    record in its own parent process.
+    """
+    cmd = [
+        sys.executable,
+        str(gvcf_clip),
+        "-v",
+        str(gvcf),
+        "-b",
+        str(regions_bed),
+        "-r",
+        str(reference),
+        "-t",
+        str(threads),
+    ]
+    if exclude:
+        cmd.append("--exclude")
+    return Pipeline(
+        Command(*cmd, "-"),
+        Command("sentieon", "util", "vcfconvert", "-", str(out_gvcf)),
+    )
 
 
 def cmd_pyexec_sad_lad_update(
@@ -401,8 +468,18 @@ def cmd_pyexec_combine_cnv(
     cnv_vcf: pathlib.Path,
     converted_vcf: pathlib.Path,
     combine_script: pathlib.Path,
+    *,
+    preset: Optional[pathlib.Path] = None,
+    sex: Optional[str] = None,
+    par: Optional[pathlib.Path] = None,
+    blocks: Optional[pathlib.Path] = None,
 ) -> Pipeline:
-    """Combine CNVscope and converted SV calls"""
+    """Combine CNVscope and converted SV calls.
+
+    `preset` is the JSON file of rule overrides; without it the script
+    uses its defaults. `sex` and `par`, or `blocks`, are the ploidy
+    CNVscope was called with.
+    """
     cmd = [
         sys.executable,
         str(combine_script),
@@ -410,9 +487,16 @@ def cmd_pyexec_combine_cnv(
         str(cnv_vcf),
         "--converted",
         str(converted_vcf),
-        "-o",
-        str(out_vcf),
     ]
+    if preset:
+        cmd.extend(["--preset", str(preset)])
+    if sex:
+        cmd.extend(["--sex", sex])
+    if par:
+        cmd.extend(["--par", str(par)])
+    if blocks:
+        cmd.extend(["--blocks", str(blocks)])
+    cmd.extend(["-o", str(out_vcf)])
     return Pipeline(Command(*cmd))
 
 
@@ -563,6 +647,27 @@ def bcftools_subset(
     return Pipeline(Command("sh", "-c", shell_cmd))
 
 
+def bcftools_remove_annotations(
+    out_vcf: pathlib.Path,
+    in_vcf: pathlib.Path,
+    annotations: List[str],
+) -> Pipeline:
+    """Remove annotations, such as `FORMAT/LAD`, with bcftools annotate"""
+    return Pipeline(
+        Command(
+            "bcftools",
+            "annotate",
+            "-x",
+            ",".join(annotations),
+            "-Oz",
+            "-W=tbi",
+            "-o",
+            str(out_vcf),
+            str(in_vcf),
+        )
+    )
+
+
 def bcftools_concat(
     out_vcf: pathlib.Path,
     in_vcfs: List[pathlib.Path],
@@ -585,14 +690,9 @@ def filter_norm(
     out_vcf: pathlib.Path,
     in_vcf: pathlib.Path,
     reference: pathlib.Path,
-    exclude_homref: bool = True,
 ) -> Pipeline:
     """Trim and normalize"""
-    view_args = ["-a"]
-    if exclude_homref:
-        view_args.extend(["-e", 'GT="0/0"'])
-    view_args.append(str(in_vcf))
-    view_cmd = Command("bcftools", "view", *view_args)
+    view_cmd = Command("bcftools", "view", "-a", "-e", 'GT="0/0"', str(in_vcf))
     norm_cmd = Command("bcftools", "norm", "-f", str(reference))
     convert_cmd = Command("sentieon", "util", "vcfconvert", "-", str(out_vcf))
     return Pipeline(view_cmd, norm_cmd, convert_cmd)
@@ -987,6 +1087,10 @@ def cmd_mosdepth(
     return Pipeline(Command(*cmd))
 
 
+# KMC fails when run with more than 128 threads
+KMC_MAX_THREADS = 128
+
+
 def cmd_kmc(
     output_prefix: pathlib.Path,
     file_list: pathlib.Path,
@@ -1000,7 +1104,7 @@ def cmd_kmc(
         f"-k{k}",
         f"-m{memory}",
         "-okff",
-        f"-t{threads}",
+        f"-t{min(threads, KMC_MAX_THREADS)}",
         "-hp",
         f"@{file_list}",
         str(output_prefix),
@@ -1274,8 +1378,15 @@ def cmd_bwa_extract(
     threads=1,
     unzip: str = "gzip",
     bwa_k: str = "2000000",
+    numa: Optional[str] = None,
+    split: Optional[str] = None,
 ) -> Pipeline:
-    """BWA alignment with pgutil extract"""
+    """BWA alignment with pgutil extract
+
+    With ``split`` ("j/n") the job aligns one share of the read pairs, read
+    interleaved through `fqidx extract` with the same -K, so the batches and
+    the alignments match an unsplit run; ``numa`` pins it with `taskset`.
+    """
     fq1_cmd = Pipeline(
         Command(
             unzip,
@@ -1291,7 +1402,30 @@ def cmd_bwa_extract(
         )
     )
 
+    pin = ["taskset", "-c", numa] if numa else []
+    if split:
+        reads = [
+            InputProcSub(
+                Pipeline(
+                    Command(
+                        "sentieon",
+                        "fqidx",
+                        "extract",
+                        "-F",
+                        split,
+                        "-K",
+                        bwa_k,
+                        InputProcSub(fq1_cmd),
+                        InputProcSub(fq2_cmd),
+                    )
+                )
+            )
+        ]
+    else:
+        reads = [InputProcSub(fq1_cmd), InputProcSub(fq2_cmd)]
+
     bwa_cmd = Command(
+        *pin,
         "sentieon",
         "bwa",
         "mem",
@@ -1303,12 +1437,13 @@ def cmd_bwa_extract(
         str(bwa_model),
         "-K",
         bwa_k,
+        *(["-p"] if split else []),
         str(reference),
-        InputProcSub(fq1_cmd),
-        InputProcSub(fq2_cmd),
+        *reads,
     )
 
     extract_cmd = Command(
+        *pin,
         "sentieon",
         "pgutil",
         "extract",
@@ -1390,9 +1525,12 @@ def cmd_minimap2_lift(
     threads=1,
     mm2_xargs: List[str] = [],
     lift_prefix: str = "GRCh38#0#",
+    numa: Optional[str] = None,
 ) -> Pipeline:
-    """Minimap2 alignment with pgutil lift"""
+    """Minimap2 alignment with pgutil lift; ``numa`` pins it with `taskset`"""
+    pin = ["taskset", "-c", numa] if numa else []
     mm2_cmd = Command(
+        *pin,
         "sentieon",
         "minimap2",
         "-t",
@@ -1411,6 +1549,7 @@ def cmd_minimap2_lift(
     )
 
     lift_cmd = Command(
+        *pin,
         "sentieon",
         "pgutil",
         "lift",
@@ -1425,6 +1564,7 @@ def cmd_minimap2_lift(
     )
 
     sort_cmd = Command(
+        *pin,
         "sentieon",
         "util",
         "sort",
@@ -1480,7 +1620,7 @@ def _kmc_stdin_cmd(
         f"-k{k}",
         f"-m{memory}",
         "-okff",
-        f"-t{threads}",
+        f"-t{min(threads, KMC_MAX_THREADS)}",
         "-fa",
         "/dev/stdin",
         str(output_prefix),
@@ -1618,27 +1758,70 @@ def cmd_samtools_faidx(
     return Pipeline(Command("samtools", "faidx", str(fasta)))
 
 
+# An awk program that drops every `##contig` header line except the one
+# for the `contig` variable, whether its ID comes first or not
+KEEP_CONTIG_AWK = (
+    "/^##contig=/ { "
+    'if (index($0, "<ID=" contig ",") || index($0, "<ID=" contig ">") '
+    '|| index($0, ",ID=" contig ",") || index($0, ",ID=" contig ">")) '
+    "print; next } 1"
+)
+
+
 def cmd_bcftools_merge_trim(
     shard_vcf: pathlib.Path,
     raw_vcf: pathlib.Path,
     pop_vcf: pathlib.Path,
     trim_script: pathlib.Path,
     subset_bed: pathlib.Path,
+    contig: str,
     merge_rules: str,
     merge_xargs: List[str] = [],
     view_xargs: List[str] = [],
 ):
-    """Merge and trim variants"""
+    """Merge and trim the variants of one shard, on `contig`
+
+    `bcftools merge` sets QUAL to the highest QUAL of the merged records
+    and, under its default `--filter-logic +`, combines their FILTERs. The
+    population VCF's QUAL is cleared before the merge (the merge ignores
+    a missing QUAL), so the output keeps the input VCF's, and FILTER is
+    cleared from both inputs. Each input is restricted to `subset_bed` as
+    it is read, since `-R` cannot be combined with `--no-index`.
+
+    `--no-index` refuses inputs whose headers list different contigs, or
+    the same contigs in a different order, as the input VCF (the
+    reference's contigs) and a population VCF generally do. Both inputs
+    keep only the `##contig` line of the shard's contig, so the shard VCF
+    lists that contig alone; concatenating the shards in reference order
+    lists the contigs in that order again.
+    """
+
+    def subset(vcf: pathlib.Path, remove: str) -> Pipeline:
+        return Pipeline(
+            Command(
+                "bcftools",
+                "annotate",
+                "--no-version",
+                "--regions-file",
+                str(subset_bed),
+                "--regions-overlap",
+                "pos",
+                "-x",
+                remove,
+                str(vcf),
+            ),
+            Command("awk", "-v", f"contig={contig}", KEEP_CONTIG_AWK),
+        )
+
     merge_cmd = Command(
         "bcftools",
         "merge",
-        "--regions-file",
-        str(subset_bed),
+        "--no-index",
         *merge_xargs,
         "-i",
         merge_rules,
-        str(raw_vcf),
-        str(pop_vcf),
+        InputProcSub(subset(raw_vcf, "FILTER")),
+        InputProcSub(subset(pop_vcf, "QUAL,FILTER")),
     )
 
     trim_cmd = Command(
@@ -1658,28 +1841,28 @@ def cmd_bcftools_merge_trim(
     return Pipeline(merge_cmd, trim_cmd, view_cmd)
 
 
-def cmd_bcftools_view_regions(
+def cmd_bcftools_subset_remove(
     out_vcf: pathlib.Path,
     in_vcf: pathlib.Path,
-    regions: Optional[str] = None,
-    regions_file: Optional[pathlib.Path] = None,
-):
-    xargs = []
-    if regions:
-        xargs.extend(["--regions", regions])
-    if regions_file:
-        xargs.extend(["--regions-file", str(regions_file)])
+    regions_file: pathlib.Path,
+    remove: str,
+) -> Pipeline:
+    """Restrict a VCF to `regions_file` and remove the `remove`
+    annotations, such as `FILTER`"""
     return Pipeline(
         Command(
             "bcftools",
-            "view",
+            "annotate",
             "--no-version",
+            "--regions-file",
+            str(regions_file),
+            "-x",
+            remove,
             "-W=tbi",
             "-O",
             "z",
             "-o",
             str(out_vcf),
-            *xargs,
             str(in_vcf),
         )
     )

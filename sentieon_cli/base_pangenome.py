@@ -244,6 +244,8 @@ class BasePangenome(BasePipeline):
         self.t1k_kir_coord: Optional[pathlib.Path] = None
         self.t1k_kir_locus: str = DEFAULT_T1K_KIR_LOCUS
         self.has_cnv_model = False
+        # The bundle has a `combine_cnv.json` preset for `combine_cnv.py`
+        self.has_combine_preset = False
         # The pangenome reference, resolved from the graph's metadata by
         # `resolve_pangenome_reference`. The two arguments are hidden
         # overrides, so they stay `None` unless the user supplies them.
@@ -789,9 +791,21 @@ class BasePangenome(BasePipeline):
             sv_vcf=sv_vcf,
             sample_sex=self.sample_sex,
             par_bed=self.cnv_par_bed,
+            combine_preset=self.cnv_combine_preset(),
             interval=interval,
             replace_rg=replace_rg,
         ).add_to(dag)
+
+    def cnv_combine_preset(self) -> Optional[pathlib.Path]:
+        """The `combine_cnv.py` preset for the bundle's CNVscope model.
+
+        The bundle's `combine_cnv.json` when it has one. Without it,
+        `combine_cnv.py` uses its defaults, the paired-end values.
+        """
+        if not self.has_combine_preset:
+            return None
+        bundle = self.required(self.model_bundle, "model_bundle")
+        return bundle.joinpath("combine_cnv.json")
 
     def build_kmc_job(
         self, kmer_prefix: pathlib.Path, job_threads: int

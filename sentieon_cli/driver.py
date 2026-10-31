@@ -239,9 +239,11 @@ class GVCFtyper(BaseAlgo):
         self,
         output: pathlib.Path,
         vcf: pathlib.Path,
+        dbsnp: Optional[pathlib.Path] = None,
     ):
         self.output = output
         self.vcf = vcf
+        self.dbsnp = dbsnp
 
 
 class SVSolver(BaseAlgo):
@@ -500,12 +502,14 @@ class CNVscope(BaseAlgo):
         *,
         sex: Optional[str] = None,
         par: Optional[pathlib.Path] = None,
+        blocks: Optional[pathlib.Path] = None,
         dump_probes: Optional[pathlib.Path] = None,
     ):
         self.output = output
         self.model = model
         self.sex = sex
         self.par = par
+        self.blocks = blocks
         self.dump_probes = dump_probes
 
 
@@ -519,10 +523,13 @@ class CNVModelApply(BaseAlgo):
         output: Union[pathlib.Path, str],
         model: pathlib.Path,
         vcf: pathlib.Path,
+        *,
+        emit_conf: Optional[float] = None,
     ):
         self.output = output
         self.model = model
         self.vcf = vcf
+        self.emit_conf = emit_conf
 
 
 class PangenomeSV(BaseAlgo):

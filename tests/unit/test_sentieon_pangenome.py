@@ -18,6 +18,7 @@ sys.path.insert(
 from sentieon_cli.sentieon_pangenome import SentieonPangenome
 from sentieon_cli.util import SampleSex
 from sentieon_cli.dag import DAG
+from tests.utils.test_helpers import write_bundle
 
 
 class TestSentieonPangenome:
@@ -138,6 +139,17 @@ class TestSentieonPangenome:
         # The mm2 dedup does not emit a duplicate-metrics file
         mm2_dedup = next(j for j in all_jobs if j.name == "dedup-mm2")
         assert "--metrics" not in str(mm2_dedup.shell)
+
+    @pytest.mark.parametrize("cores,kmc_threads", [(2, 2), (256, 128)])
+    def test_kmc_threads(self, cores, kmc_threads):
+        """KMC runs with the pipeline's cores, capped at 128 threads"""
+        pipeline = self.create_fastq_pipeline()
+        pipeline.cores = cores
+        dag = pipeline.build_dag()
+
+        _, all_jobs = self._get_all_job_names(dag)
+        kmc_job = next(j for j in all_jobs if j.name == "kmc")
+        assert f" -t{kmc_threads} " in str(kmc_job.shell)
 
     def test_metrics_input_bwa_only(self):
         """The metrics job reads only the bwa alignment; including the mm2
@@ -267,6 +279,18 @@ class TestSentieonPangenome:
         assert apply_gvcf not in cmd_str
         assert str(pipeline.output_vcf) in cmd_str
         assert dag.waiting_jobs[gvcftyper_job] == {ad_update_job}
+        assert "--dbsnp" not in cmd_str
+
+    def test_gvcftyper_annotates_dbsnp(self):
+        pipeline = self.create_pipeline()
+        pipeline.gvcf = True
+        pipeline.dbsnp = pathlib.Path(self.temp_dir) / "dbsnp.vcf.gz"
+        dag = pipeline.build_dag()
+
+        gvcftyper_job = next(
+            j for j in dag.waiting_jobs if j.name == "gvcftyper"
+        )
+        assert f"--dbsnp {pipeline.dbsnp}" in str(gvcftyper_job.shell)
 
     def snv_apply_vcf(self, pipeline):
         """The small-variant model-apply intermediate for a pipeline"""
@@ -933,6 +957,8 @@ class TestSentieonPangenome:
         cmd_str = str(job.shell)
         assert "--algo CNVModelApply" in cmd_str
         assert "cnv.model" in cmd_str
+        # The rejected segments are written too
+        assert "--emit_conf 0 " in cmd_str
 
     def test_indel2cnv_command(self):
         """Test indel2cnv script command"""
@@ -968,9 +994,79 @@ class TestSentieonPangenome:
         assert "combine_cnv.py" in cmd_str
         assert "--cnv" in cmd_str
         assert "--converted" in cmd_str
+        # CNVModelApply keeps the rejected segments, so there is no raw VCF
+        assert "--raw" not in cmd_str
+        # A bundle without `combine_cnv.json` leaves the script its defaults
+        assert "--preset" not in cmd_str
+        # The same ploidy as CNVscope, a female sample
+        assert "--sex F" in cmd_str
+        assert "--par" not in cmd_str
         # Output should use _cnv.vcf.gz suffix
         cnv_vcf = str(pipeline.output_vcf).replace(".vcf.gz", "_cnv.vcf.gz")
         assert cnv_vcf in cmd_str
+
+    BUNDLE_MEMBERS = [
+        "dnascope.model",
+        "extract.model",
+        "minimap2.model",
+        "cnv.model",
+    ]
+
+    def write_bundle(self, members, platform):
+        """Write the model bundle with `members` and a bundle_info.json"""
+        bundle_info = {
+            "minScriptVersion": "1.0.0",
+            "pipeline": "Sentieon pangenome",
+            "platform": platform,
+            "SentieonVcfID": "population",
+        }
+        write_bundle(
+            self.mock_bundle,
+            {
+                "bundle_info.json": json.dumps(bundle_info).encode(),
+                **{name: b"" for name in members},
+            },
+        )
+
+    def bundle_combine_cnv_shell(self):
+        """The combine-cnv command for the bundle on disk"""
+        pipeline = self.create_pipeline()
+        pipeline.call_svs = True
+        pipeline.validate_bundle()
+        dag = self._build_cnv_dag(pipeline)
+
+        _, all_jobs = self._get_all_job_names(dag)
+        job = next(j for j in all_jobs if j.name == "combine-cnv")
+        return str(job.shell)
+
+    @pytest.mark.parametrize("platform", ["Illumina", "Ultima"])
+    def test_combine_cnv_bundle_preset(self, platform):
+        """The bundle's `combine_cnv.json` is the preset"""
+        self.write_bundle(self.BUNDLE_MEMBERS + ["combine_cnv.json"], platform)
+
+        shell = self.bundle_combine_cnv_shell()
+        assert f"--preset {self.mock_bundle}/combine_cnv.json " in shell
+
+    @pytest.mark.parametrize("platform", ["Illumina", "Ultima"])
+    def test_combine_cnv_without_a_bundle_preset(self, platform):
+        """Without one the script uses its defaults, whatever the platform"""
+        self.write_bundle(self.BUNDLE_MEMBERS, platform)
+
+        assert "--preset" not in self.bundle_combine_cnv_shell()
+
+    def test_combine_cnv_male_sample(self):
+        """A male sample is combined with the PAR BED file"""
+        par_bed = self.mock_dir / "par.bed"
+        par_bed.touch()
+
+        pipeline = self.create_pipeline()
+        pipeline.call_svs = True
+        pipeline.cnv_par_bed = par_bed
+        dag = self._build_cnv_dag(pipeline, sample_sex=SampleSex.MALE)
+
+        _, all_jobs = self._get_all_job_names(dag)
+        job = next(j for j in all_jobs if j.name == "combine-cnv")
+        assert f"--sex M --par {par_bed}" in str(job.shell)
 
     def test_cnv_with_skip_model_apply(self):
         """Test CNV jobs are added even with skip_model_apply"""
@@ -988,3 +1084,29 @@ class TestSentieonPangenome:
         assert "cnv-model-apply" in job_names
         assert "indel2cnv" in job_names
         assert "combine-cnv" in job_names
+
+    def test_validate_bundle_dnascope_model_with_skip_small_variants(self):
+        """`dnascope.model` is only needed for small-variant calling"""
+        bundle_info = {
+            "minScriptVersion": "1.0.0",
+            "pipeline": "Sentieon pangenome",
+            "platform": "Illumina",
+            "SentieonVcfID": "population",
+        }
+
+        def fake_ar_load(path):
+            if str(path).endswith("bundle_info.json"):
+                return json.dumps(bundle_info).encode()
+            return ["extract.model", "minimap2.model", "cnv.model"]
+
+        with patch(
+            "sentieon_cli.sentieon_pangenome.ar_load", fake_ar_load
+        ):
+            pipeline = self.create_pipeline()
+            with pytest.raises(SystemExit) as excinfo:
+                pipeline.validate_bundle()
+            assert excinfo.value.code == 2
+
+            pipeline = self.create_pipeline()
+            pipeline.skip_small_variants = True
+            pipeline.validate_bundle()  # no SystemExit

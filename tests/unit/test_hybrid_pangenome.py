@@ -3,6 +3,7 @@ Unit tests for the HybridPangenome pipeline logic
 """
 
 from importlib.resources import files
+import json
 import logging
 import os
 import pathlib
@@ -25,6 +26,7 @@ from sentieon_cli.hybrid_pangenome import HybridPangenome
 from sentieon_cli.command_strings import LONGREAD_SV_BED_AWK
 from sentieon_cli.dag import DAG
 from sentieon_cli.util import SampleSex
+from tests.utils.test_helpers import write_bundle
 
 PACKAGE_LOGGER = "sentieon_cli"
 
@@ -213,6 +215,25 @@ class TestHybridPangenome:
         assert str(self.mock_lr_bam) in cmd_str
         assert str(self.mock_r1) in cmd_str
         assert str(self.mock_r2) in cmd_str
+
+    @pytest.mark.parametrize("aligned", [False, True])
+    def test_kmc_threads_capped(self, aligned):
+        """KMC is capped at 128 threads; the rest of the job is not"""
+        if aligned:
+            pipeline = self.create_aligned_pipeline()
+            name = "extract-kmc"
+        else:
+            pipeline = self.create_pipeline()
+            name = "kmc"
+        pipeline.cores = 256
+        dag = pipeline.build_dag()
+        _, all_jobs = self._get_all_job_names(dag)
+
+        cmd_str = str(self._get_job(all_jobs, name).shell)
+        assert " -t128 " in cmd_str
+        assert "-t256" not in cmd_str
+        assert "samtools fasta" in cmd_str
+        assert "-@ 256" in cmd_str
 
     def test_bwa_readgroup_lr0(self):
         """The bwa alignment carries the LR:0 readgroup attribute"""
@@ -1455,7 +1476,8 @@ class TestHybridPangenome:
         assert "--interval" not in str(job.shell)
 
     def test_cnv_model_apply_command(self):
-        """CNVModelApply filters the CNVscope output"""
+        """CNVModelApply filters the CNVscope output, keeping the rejected
+        segments"""
         pipeline = self.enable_cnv(self.create_pipeline())
         job = self._second_dag_job(pipeline, "cnv-model-apply")
 
@@ -1464,6 +1486,7 @@ class TestHybridPangenome:
             f"--thread_count {pipeline.cores} "
             f"--algo CNVModelApply --model {self.mock_bundle}/cnv.model "
             f"--vcf {self.mock_dir}/sample-cnvscope.vcf.gz "
+            "--emit_conf 0 "
             f"{self.mock_dir}/sample-cnv_model_apply.vcf.gz"
         )
         # The BED restricts CNVscope, not the model apply
@@ -1490,7 +1513,8 @@ class TestHybridPangenome:
         assert "--par" not in str(job.shell)
 
     def test_cnvscope_unknown_sex(self, messages):
-        """An unknown sex calls a diploid genome, with a warning"""
+        """An unknown sex calls assumed sex chromosome ploidies, with a
+        warning"""
         pipeline = self.enable_cnv(self.create_pipeline())
         job = self._second_dag_job(
             pipeline, "cnvscope", sample_sex=SampleSex.UNKNOWN
@@ -1498,7 +1522,8 @@ class TestHybridPangenome:
 
         assert "--sex" not in str(job.shell)
         assert "--par" not in str(job.shell)
-        assert any("diploid" in msg for msg in messages)
+        assert "--blocks" in str(job.shell)
+        assert any("Sex estimation failed" in msg for msg in messages)
 
     def test_indel2cnv_command(self):
         """The PangenomeSV output is converted to CNVs"""
@@ -1522,8 +1547,41 @@ class TestHybridPangenome:
             f"{sys.executable} {self.script_path('combine_cnv.py')} "
             f"--cnv {self.mock_dir}/sample-cnv_model_apply.vcf.gz "
             f"--converted {self.mock_dir}/sample-sv_cnv.vcf.gz "
+            "--sex F "
             f"-o {cnv_vcf}"
         )
+
+    def test_combine_cnv_male_sample(self):
+        """combine_cnv.py gets the same sex and PAR BED file as CNVscope"""
+        pipeline = self.enable_cnv(self.create_pipeline())
+        job = self._second_dag_job(
+            pipeline, "combine-cnv", sample_sex=SampleSex.MALE
+        )
+
+        assert f"--sex M --par {pipeline.cnv_par_bed}" in str(job.shell)
+
+    def bundle_combine_cnv_shell(self, members):
+        """The combine-cnv command for a bundle of Ultima short reads"""
+        self.write_bundle(
+            members + ["cnv.model"], {"shortReadPlatform": "Ultima"}
+        )
+        pipeline = self.enable_cnv(self.create_pipeline())
+        pipeline.validate_bundle()
+        return str(self._second_dag_job(pipeline, "combine-cnv").shell)
+
+    def test_combine_cnv_bundle_preset(self):
+        """The bundle's `combine_cnv.json` is the preset"""
+        shell = self.bundle_combine_cnv_shell(
+            self.BUNDLE_MEMBERS + ["combine_cnv.json"]
+        )
+
+        assert f"--preset {self.mock_bundle}/combine_cnv.json " in shell
+
+    def test_combine_cnv_without_a_bundle_preset(self):
+        """Without one the script uses its defaults, whatever the platform"""
+        shell = self.bundle_combine_cnv_shell(self.BUNDLE_MEMBERS)
+
+        assert "--preset" not in shell
 
     def test_expansion_hunter_command(self):
         """ExpansionHunter genotypes the short reads"""
@@ -1794,18 +1852,30 @@ class TestHybridPangenome:
 
     # Model bundle validation
 
-    def bundle_pipeline(self, monkeypatch, members):
-        """A pipeline whose bundle holds `members`"""
+    def bundle_pipeline(self, monkeypatch, members, bundle_info=None):
+        """A pipeline whose bundle holds `members` and `bundle_info`"""
         pipeline = self.create_pipeline()
         pipeline.skip_pop_vcf_id_check = True
+        info = {"pipeline": "Hybrid pangenome", **(bundle_info or {})}
 
         def fake_ar_load(path):
             if str(path).endswith("bundle_info.json"):
-                return b'{"pipeline": "Hybrid pangenome"}'
+                return json.dumps(info).encode()
             return list(members)
 
         monkeypatch.setattr(hybrid_pangenome, "ar_load", fake_ar_load)
         return pipeline
+
+    def write_bundle(self, members, bundle_info=None):
+        """Write the model bundle with `members` and a bundle_info.json"""
+        info = {"pipeline": "Hybrid pangenome", **(bundle_info or {})}
+        write_bundle(
+            self.mock_bundle,
+            {
+                "bundle_info.json": json.dumps(info).encode(),
+                **{name: b"" for name in members},
+            },
+        )
 
     BUNDLE_MEMBERS = [
         "dnascope.model",
@@ -1846,3 +1916,59 @@ class TestHybridPangenome:
     ):
         pipeline = self.bundle_pipeline(monkeypatch, self.BUNDLE_MEMBERS)
         pipeline.validate_bundle()  # no SystemExit
+
+    def test_validate_bundle_dnascope_model_with_skip_small_variants(
+        self, monkeypatch
+    ):
+        """`dnascope.model` is only needed for small-variant calling"""
+        members = [m for m in self.BUNDLE_MEMBERS if m != "dnascope.model"]
+
+        pipeline = self.bundle_pipeline(monkeypatch, members)
+        with pytest.raises(SystemExit) as excinfo:
+            pipeline.validate_bundle()
+        assert excinfo.value.code == 2
+
+        pipeline = self.bundle_pipeline(monkeypatch, members)
+        pipeline.skip_small_variants = True
+        pipeline.validate_bundle()  # no SystemExit
+
+    def test_validate_bundle_bwa_model_with_aligned_input(self, monkeypatch):
+        """`bwa.model` is only needed with FASTQ input"""
+        members = [m for m in self.BUNDLE_MEMBERS if m != "bwa.model"]
+
+        pipeline = self.bundle_pipeline(monkeypatch, members)
+        with pytest.raises(SystemExit) as excinfo:
+            pipeline.validate_bundle()
+        assert excinfo.value.code == 2
+
+        pipeline = self.bundle_pipeline(monkeypatch, members)
+        pipeline.r1_fastq = []
+        pipeline.validate_bundle()  # no SystemExit
+
+    @pytest.mark.parametrize(
+        "bundle_info",
+        [
+            {},
+            {"shortReadPlatform": "Illumina"},
+            {"shortReadPlatform": "Ultima"},
+        ],
+    )
+    def test_validate_bundle_combine_preset(self, bundle_info):
+        """The CNV combine preset is the bundle's `combine_cnv.json`"""
+        self.write_bundle(
+            self.BUNDLE_MEMBERS + ["combine_cnv.json"], bundle_info
+        )
+        pipeline = self.create_pipeline()
+        pipeline.validate_bundle()
+        assert pipeline.has_combine_preset is True
+        assert (
+            pipeline.cnv_combine_preset()
+            == self.mock_bundle / "combine_cnv.json"
+        )
+
+        # Without one, whatever the platform, the script's defaults apply
+        self.write_bundle(self.BUNDLE_MEMBERS, bundle_info)
+        pipeline = self.create_pipeline()
+        pipeline.validate_bundle()
+        assert pipeline.has_combine_preset is False
+        assert pipeline.cnv_combine_preset() is None

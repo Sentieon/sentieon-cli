@@ -120,6 +120,7 @@ class GVCFtyperStage(Stage):
     gvcf: pathlib.Path
     output: pathlib.Path
     interval: Optional[pathlib.Path] = None
+    dbsnp: Optional[pathlib.Path] = None
     name: str = "gvcftyper"
     task_name: str = "gvcftyper"
 
@@ -128,7 +129,7 @@ class GVCFtyperStage(Stage):
     ) -> GVCFtyperResult:
         job = driver_job(
             self.ctx,
-            [GVCFtyper(output=self.output, vcf=self.gvcf)],
+            [GVCFtyper(output=self.output, vcf=self.gvcf, dbsnp=self.dbsnp)],
             interval=self.interval,
             name=self.name,
             task_name=self.task_name,

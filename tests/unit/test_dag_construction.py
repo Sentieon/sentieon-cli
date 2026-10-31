@@ -47,8 +47,11 @@ class TestDAGConstruction:
         self.mock_bundle = pathlib.Path(self.temp_dir) / "model.bundle"
 
         # Create empty files
-        for file_path in [self.mock_ref, self.mock_bam, self.mock_bundle]:
+        for file_path in [self.mock_ref, self.mock_bam]:
             file_path.touch()
+
+        # An empty ar archive: a bundle without a bundle_info.json
+        self.mock_bundle.write_bytes(b"!<arch>\n")
 
         # Create reference index
         (pathlib.Path(str(self.mock_ref) + ".fai")).touch()

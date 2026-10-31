@@ -1,4 +1,4 @@
-FROM debian:13.4-slim AS downloader
+FROM debian:13.7-slim AS downloader
 
 # Tool versions and pinned SHA-256 checksums. Bumping a version is a
 # two-line edit (version + hash) in this block.
@@ -17,8 +17,8 @@ ARG VG_VERSION=1.73.0
 ARG VG_SHA256=d5752977237e801d971f0d044f43fde4f3005da35f0451b4f452d1c1c9b8414b
 # Sentieon's KMC fork adds the `-fa /dev/stdin` patch used by the pangenome pipeline.
 ARG KMC_VERSION=3.2.4
-ARG KMC_RELEASE_TAG=v3.2.4-pipe2
-ARG KMC_SHA256=d8bdf8edcd0577dba32e86e8f194b2eb04eb168c75a3e6d46721d5bef515ac96
+ARG KMC_RELEASE_TAG=v3.2.4-pipe3
+ARG KMC_SHA256=6ae37ac28c215919a67bd77edf004f9e323013bba5700bc44ad23c0b59da9a91
 ARG EXPANSIONHUNTER_VERSION=5.0.0
 ARG EXPANSIONHUNTER_SHA256=ebf3ec0ace6e6e3bbce12c26463da5d9f8e16374eff1ad10f0f1a9123050fa86
 # T1K and segdup-caller are built from git; pin the tag and verify the
@@ -155,7 +155,7 @@ RUN /opt/poetry-venv/bin/pip install --no-cache-dir \
 
 # Build the Python environment in an isolated stage. The venv is
 # later COPY'd over as-is.
-FROM debian:13.4-slim AS python-builder
+FROM debian:13.7-slim AS python-builder
 ARG SENTIEON_VERSION
 
 COPY --from=downloader /opt/sentieon-cli/dist /opt/sentieon-cli/dist
@@ -185,7 +185,7 @@ RUN apt-get update && \
       -depth -type d -name __pycache__ -exec rm -rf {} +
 
 # Build the container
-FROM debian:13.4-slim
+FROM debian:13.7-slim
 ARG SENTIEON_VERSION
 ARG BEDTOOLS_VERSION=2.30.0
 ARG MOSDEPTH_VERSION=0.3.9
@@ -205,7 +205,7 @@ LABEL org.opencontainers.image.title="sentieon-cli" \
       org.opencontainers.image.url="https://www.sentieon.com/" \
       org.opencontainers.image.source="https://github.com/Sentieon/sentieon-cli" \
       org.opencontainers.image.licenses="BSD-2-Clause" \
-      org.opencontainers.image.base.name="debian:13.4-slim" \
+      org.opencontainers.image.base.name="debian:13.7-slim" \
       org.opencontainers.image.version="${SENTIEON_VERSION}" \
       org.opencontainers.image.revision="${VCS_REF}" \
       org.opencontainers.image.created="${BUILD_DATE}"

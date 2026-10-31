@@ -18,6 +18,7 @@ from .archive import ar_load
 from . import command_strings as cmds
 from .dag import DAG
 from .driver import (
+    BaseAlgo,
     Driver,
     DNAscope,
     HybridStage1,
@@ -46,6 +47,7 @@ from .stages.preprocessing import (
 from .stages.small_variants import (
     ApplySpec,
     DNAscopeStage,
+    GVCFtyperStage,
     TransferApplyStage,
     TransferSpec,
 )
@@ -138,6 +140,17 @@ class RgInfo:
                     self.ultima_read_filter.append(
                         f"UltimaReadFilter,rgid={id}"
                     )
+
+
+# Per-allele FORMAT fields of the hybrid model that GVCFtyper copies
+# unchanged from the gVCF, still sized for <NON_REF> and any allele it
+# drops. They are removed from the VCF until GVCFtyper subsets them.
+GVCFTYPER_UNSUBSET_FIELDS = [
+    "FORMAT/LAD",
+    "FORMAT/LPL",
+    "FORMAT/SAD",
+    "FORMAT/SPL",
+]
 
 
 class DNAscopeHybridPipeline(BasePipeline):
@@ -872,21 +885,42 @@ class DNAscopeHybridPipeline(BasePipeline):
 
         hybrid_model = bundle.joinpath("hybrid.model")
 
-        # First pass - combined variant calling
+        # With --gvcf, both calling passes emit gVCFs, which are merged,
+        # annotated and filtered as gVCFs into the output gVCF. GVCFtyper
+        # then genotypes the output gVCF to produce the VCF.
         vcf_suffix = ".g.vcf.gz" if self.gvcf else ".vcf.gz"
-        combined_vcf = self.tmp_dir.joinpath("initial" + vcf_suffix)
         emit_mode = "gvcf" if self.gvcf else None
-        call = DNAscopeStage(
-            ctx=ctx,
-            algos=[
+        out_gvcf = pathlib.Path(
+            str(ctx.output_vcf).replace(".vcf.gz", ".g.vcf.gz")
+        )
+        small_variants_out = out_gvcf if self.gvcf else ctx.output_vcf
+
+        # First pass - combined variant calling. Region selection reads a
+        # VCF-mode call set, so with --gvcf the same driver run also writes
+        # one with a second DNAscope algo.
+        combined_vcf = self.tmp_dir.joinpath("initial" + vcf_suffix)
+        select_vcf = self.tmp_dir.joinpath("initial.vcf.gz")
+        pass1_algos: List[BaseAlgo] = [
+            DNAscope(
+                combined_vcf,
+                dbsnp=self.dbsnp,
+                model=hybrid_model,
+                pcr_indel_model="none",
+                emit_mode=emit_mode,
+            )
+        ]
+        if self.gvcf:
+            pass1_algos.append(
                 DNAscope(
-                    combined_vcf,
+                    select_vcf,
                     dbsnp=self.dbsnp,
                     model=hybrid_model,
                     pcr_indel_model="none",
-                    emit_mode=emit_mode,
                 )
-            ],
+            )
+        call = DNAscopeStage(
+            ctx=ctx,
+            algos=pass1_algos,
             inputs=lr_aln + sr_aln,
             interval=self.bed,
             read_filter=rg_info.ultima_read_filter
@@ -904,7 +938,7 @@ class DNAscopeHybridPipeline(BasePipeline):
         select_job = Job(
             cmds.cmd_pyexec_hybrid_select(
                 out_bed=selected_bed,
-                vcf=combined_vcf,
+                vcf=select_vcf,
                 ref_fai=ref_fai,
                 hybrid_select=hybrid_select,
                 threads=self.cores,
@@ -1119,8 +1153,28 @@ class DNAscopeHybridPipeline(BasePipeline):
             {third_stage_job},
         )
 
+        # The stage-2 BED covers the whole genome, so with --bed the second
+        # pass and the merge use its intersection with --bed. Stage 3 and
+        # the realigned short-read alignment keep the whole stage-2 BED.
+        recall_bed = stage2_bed
+        call2_upstream: Set[Job] = {third_stage_job}
+        merge_upstream: Set[Job] = {second_stage_job}
+        if self.bed:
+            recall_bed = self.tmp_dir.joinpath("hybrid_recall.bed")
+            intersect_job = Job(
+                cmds.cmd_bedtools_intersect(
+                    recall_bed, stage2_bed, self.bed, ref_fai
+                ),
+                "intersect-stage2-bed",
+                0,
+                task_name="region-selection",
+            )
+            dag.add_job(intersect_job, {second_stage_job})
+            call2_upstream.add(intersect_job)
+            merge_upstream = {intersect_job}
+
         # pass 2 of variant calling
-        pass2_vcf = self.tmp_dir.joinpath("hybrid_pass2.vcf.gz")
+        pass2_vcf = self.tmp_dir.joinpath("hybrid_pass2" + vcf_suffix)
         call2 = DNAscopeStage(
             ctx=ctx,
             algos=[
@@ -1133,39 +1187,94 @@ class DNAscopeHybridPipeline(BasePipeline):
                 )
             ],
             inputs=lr_aln + [stage3_aln],
-            interval=stage2_bed,
+            interval=recall_bed,
             read_filter=rg_info.ultima_read_filter + rg_info.lr_rg_read_filter,
             replace_rg=rg_info.replace_rg_args[0],
             name="dnascope-2",
-        ).add_to(dag, {third_stage_job})
+        ).add_to(dag, call2_upstream)
 
-        # Merge and normalize the VCFs
-        subset_vcf = self.tmp_dir.joinpath("mix_subset.vcf.gz")
-        combined_tmp_vcf = self.tmp_dir.joinpath("combined_tmp.vcf.gz")
-        subset_job = Job(
-            cmds.bcftools_subset(
-                subset_vcf,
+        # Merge the calls, taking the second pass within the realigned
+        # regions and the first pass elsewhere
+        subset_vcf = self.tmp_dir.joinpath("mix_subset" + vcf_suffix)
+        combined_tmp_vcf = self.tmp_dir.joinpath("combined_tmp" + vcf_suffix)
+        if self.gvcf:
+            # Reference blocks from either pass can cross the region
+            # boundaries, so both gVCFs are clipped at the boundaries
+            gvcf_clip = pathlib.Path(
+                str(files("sentieon_cli.scripts").joinpath("gvcf_clip.py"))
+            ).resolve()
+            subset_job = Job(
+                cmds.cmd_pyexec_gvcf_clip(
+                    subset_vcf,
+                    combined_vcf,
+                    recall_bed,
+                    ctx.reference,
+                    gvcf_clip,
+                    self.cores,
+                    exclude=True,
+                ),
+                "subset-calls",
+                0,
+                task_name="vcf-merge",
+            )
+            dag.add_job(subset_job, merge_upstream)
+            pass2_subset_vcf = self.tmp_dir.joinpath(
+                "hybrid_pass2_subset.g.vcf.gz"
+            )
+            pass2_subset_job = Job(
+                cmds.cmd_pyexec_gvcf_clip(
+                    pass2_subset_vcf,
+                    pass2_vcf,
+                    recall_bed,
+                    ctx.reference,
+                    gvcf_clip,
+                    self.cores,
+                ),
+                "subset-pass2-calls",
+                0,
+                task_name="vcf-merge",
+            )
+            dag.add_job(pass2_subset_job, call2.terminal)
+            concat_inputs = [subset_vcf, pass2_subset_vcf]
+            concat_upstream = {subset_job, pass2_subset_job}
+            merge_tmp = [
                 combined_vcf,
-                stage2_bed,
-            ),
-            "subset-calls",
-            0,
-            task_name="vcf-merge",
-        )
-        dag.add_job(subset_job, {second_stage_job})
+                select_vcf,
+                subset_vcf,
+                pass2_vcf,
+                pass2_subset_vcf,
+            ]
+        else:
+            subset_job = Job(
+                cmds.bcftools_subset(
+                    subset_vcf,
+                    combined_vcf,
+                    recall_bed,
+                ),
+                "subset-calls",
+                0,
+                task_name="vcf-merge",
+            )
+            dag.add_job(subset_job, merge_upstream)
+            concat_inputs = [subset_vcf, pass2_vcf]
+            concat_upstream = {subset_job} | call2.terminal
+            merge_tmp = [combined_vcf, subset_vcf, pass2_vcf]
+        # The gVCFs are large enough for bcftools to use threads
+        concat_args = ["-aD"]
+        if self.gvcf:
+            concat_args += ["--threads", str(self.cores)]
         concat_job = Job(
             cmds.bcftools_concat(
-                combined_tmp_vcf,
-                [subset_vcf, pass2_vcf],
+                combined_tmp_vcf, concat_inputs, xargs=concat_args
             ),
             "concat-calls",
             0,
             task_name="vcf-merge",
         )
-        dag.add_job(concat_job, {subset_job} | call2.terminal)
+        dag.add_job(concat_job, concat_upstream)
         self.add_cleanup(
             dag,
-            [combined_vcf, subset_vcf, pass2_vcf],
+            merge_tmp,
             "rm-tmp5",
             {concat_job},
         )
@@ -1174,9 +1283,9 @@ class DNAscopeHybridPipeline(BasePipeline):
         hybrid_anno = pathlib.Path(
             str(files("sentieon_cli.scripts").joinpath("hybrid_anno.py"))
         )
-        anno_target = self.tmp_dir.joinpath("combined_tmp_anno.vcf.gz")
+        anno_target = self.tmp_dir.joinpath("combined_tmp_anno" + vcf_suffix)
         if self.skip_model_apply and not self.pop_vcf:
-            anno_target = ctx.output_vcf
+            anno_target = small_variants_out
 
         anno_job = Job(
             cmds.cmd_pyexec_hybrid_anno(
@@ -1185,54 +1294,95 @@ class DNAscopeHybridPipeline(BasePipeline):
                 stage1_hap_bed,
                 hybrid_anno,
                 self.cores,
+                stream=self.gvcf,
             ),
             "anno-calls",
             0,
             task_name="annotation",
         )
         dag.add_job(anno_job, {concat_job})
-
-        if not self.pop_vcf and self.skip_model_apply:
-            # `anno_target` is already the output VCF
-            return
+        last_jobs: Set[Job] = {anno_job}
 
         # Transfer annotations and apply the model
-        transfer_spec: Optional[TransferSpec] = None
-        if self.pop_vcf:
-            transfer_target = self.tmp_dir.joinpath(
-                "combined_tmp_transfer.vcf.gz"
-            )
-            if self.skip_model_apply:
-                transfer_target = ctx.output_vcf
-            transfer_spec = TransferSpec(
-                TransferConfig.from_pipeline(self), transfer_target
+        apply_vcf = (
+            out_gvcf
+            if self.gvcf
+            else self.tmp_dir.joinpath("combined_apply.vcf.gz")
+        )
+        if self.pop_vcf or not self.skip_model_apply:
+            transfer_spec: Optional[TransferSpec] = None
+            if self.pop_vcf:
+                transfer_target = self.tmp_dir.joinpath(
+                    "combined_tmp_transfer" + vcf_suffix
+                )
+                if self.skip_model_apply:
+                    transfer_target = small_variants_out
+                transfer_spec = TransferSpec(
+                    TransferConfig.from_pipeline(self), transfer_target
+                )
+
+            apply_spec: Optional[ApplySpec] = None
+            if not self.skip_model_apply:
+                apply_spec = ApplySpec(hybrid_model, apply_vcf)
+
+            last_jobs = (
+                TransferApplyStage(
+                    ctx=ctx,
+                    raw_vcf=anno_target,
+                    transfer=transfer_spec,
+                    apply=apply_spec,
+                )
+                .add_to(dag, last_jobs)
+                .terminal
             )
 
-        apply_spec: Optional[ApplySpec] = None
-        apply_vcf = self.tmp_dir.joinpath("combined_apply.vcf.gz")
-        if not self.skip_model_apply:
-            apply_spec = ApplySpec(hybrid_model, apply_vcf)
+        # Genotype the output gVCF to produce the VCF. GVCFtyper copies the
+        # hybrid per-allele fields unchanged from the gVCF, so they are
+        # removed from its output. That job writes the input of the final
+        # normalization, or under --skip_model_apply, which skips that
+        # step, the output VCF itself.
+        norm_input = apply_vcf
+        if self.gvcf:
+            gvcftyper_vcf = self.tmp_dir.joinpath("combined_gvcftyper.vcf.gz")
+            typer = GVCFtyperStage(
+                ctx=ctx,
+                gvcf=out_gvcf,
+                output=gvcftyper_vcf,
+                interval=self.bed,
+                dbsnp=self.dbsnp,
+            ).add_to(dag, last_jobs)
 
-        transfer_apply = TransferApplyStage(
-            ctx=ctx,
-            raw_vcf=anno_target,
-            transfer=transfer_spec,
-            apply=apply_spec,
-        ).add_to(dag, {anno_job})
+            norm_input = (
+                ctx.output_vcf
+                if self.skip_model_apply
+                else self.tmp_dir.joinpath("combined_typed.vcf.gz")
+            )
+            drop_job = Job(
+                cmds.bcftools_remove_annotations(
+                    norm_input,
+                    gvcftyper_vcf,
+                    GVCFTYPER_UNSUBSET_FIELDS,
+                ),
+                "drop-allele-fields",
+                0,
+                task_name="gvcftyper",
+            )
+            dag.add_job(drop_job, typer.terminal)
+            last_jobs = {drop_job}
 
         if self.skip_model_apply:
+            # The output VCF is written without the final normalization
             return
 
         # Final normalize
         norm_job = Job(
             cmds.filter_norm(
                 ctx.output_vcf,
-                apply_vcf,
+                norm_input,
                 ctx.reference,
-                exclude_homref=not self.gvcf,
             ),
             "final-norm",
             0,
             task_name="vcf-norm",
         )
-        dag.add_job(norm_job, transfer_apply.terminal)
+        dag.add_job(norm_job, last_jobs)

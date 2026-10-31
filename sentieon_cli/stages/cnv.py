@@ -13,11 +13,12 @@ from .. import command_strings as cmds
 from ..dag import DAG
 from ..driver import CNVModelApply, CNVscope
 from ..job import Job
-from ..util import SampleSex, cnvscope_sex_args
+from ..shard import parse_fai
+from ..util import SampleSex, cnvscope_sex_args, unknown_sex_blocks
 from .base import Stage, StageResult, driver_job
 
 CNV_MIN_VERSIONS = {
-    # 202503.04 adds the CNVscope `--sex` and `--par` arguments
+    # 202503.04 adds the CNVscope `--sex`, `--par` and `--blocks` arguments
     "sentieon driver": packaging.version.Version("202503.04"),
 }
 
@@ -29,6 +30,11 @@ class CNVResult(StageResult):
     cnvscope_job: Job
     apply_job: Job
     cnv_vcf: pathlib.Path
+    # The CNVscope `--sex` and `--par` arguments, None when omitted
+    sex: Optional[str] = None
+    par: Optional[pathlib.Path] = None
+    # The CNVscope `--blocks` BED file, used when the sex is not known
+    blocks: Optional[pathlib.Path] = None
 
 
 @dataclass(kw_only=True)
@@ -38,7 +44,11 @@ class CNVscopeStage(Stage):
     The sample sex has to be known before the jobs are built, so callers
     run this stage after ploidy estimation. Version checks stay with the
     pipelines, which run them during validation. ``dump_probes`` is the
-    path CNVscope writes its per-probe debugging output to.
+    path CNVscope writes its per-probe debugging output to. When the sex
+    is not known, CNVscope is given a `--blocks` BED file of assumed sex
+    chromosome ploidies (`unknown_sex_blocks`) in place of `--sex/--par`.
+    CNVModelApply runs with `--emit_conf 0`, so `cnv_vcf` keeps the
+    segments the model rejects too, with FILTER `MLrejected`.
     """
 
     inputs: List[pathlib.Path]
@@ -57,6 +67,15 @@ class CNVscopeStage(Stage):
     def add_to(self, dag: DAG, upstream: Iterable[Job] = ()) -> CNVResult:
         deps = set(upstream)
         sex, par = cnvscope_sex_args(self.sample_sex, self.par_bed)
+        blocks: Optional[pathlib.Path] = None
+        if sex is None:
+            blocks = self.ctx.tmp_dir.joinpath(f"{self.name}-blocks.bed")
+            if not self.ctx.dry_run:
+                fai = parse_fai(pathlib.Path(f"{self.ctx.reference}.fai"))
+                lengths = {ctg: d["length"] for ctg, d in fai.items()}
+                with open(blocks, "w") as fh:
+                    for block in unknown_sex_blocks(lengths, self.par_bed):
+                        print(*block, sep="\t", file=fh)
 
         cnvscope = driver_job(
             self.ctx,
@@ -66,6 +85,7 @@ class CNVscopeStage(Stage):
                     self.model,
                     sex=sex,
                     par=par,
+                    blocks=blocks,
                     dump_probes=self.dump_probes,
                 )
             ],
@@ -82,6 +102,8 @@ class CNVscopeStage(Stage):
                     self.cnv_vcf,
                     self.model,
                     vcf=self.cnvscope_vcf,
+                    # Downstream tools need the rejected segments too
+                    emit_conf=0,
                 )
             ],
             name=self.apply_name,
@@ -97,6 +119,9 @@ class CNVscopeStage(Stage):
             cnvscope_job=cnvscope,
             apply_job=apply_job,
             cnv_vcf=self.cnv_vcf,
+            sex=sex,
+            par=par,
+            blocks=blocks,
         )
 
 
@@ -120,6 +145,10 @@ class PangenomeCNVStage(Stage):
     sets are combined by `combine_cnv.py` into `<output>_cnv.vcf.gz`.
     Both inputs -- the alignments and the SV VCF -- come from an earlier
     DAG, and the sample sex has to be known before the jobs are built.
+    `combine_cnv.py` gets the same sex and PAR BED file (or `--blocks`
+    BED file) as CNVscope. `combine_preset` is the JSON file of its rule
+    overrides, the model bundle's `combine_cnv.json`; without one,
+    `combine_cnv.py` uses its defaults, the paired-end values.
     """
 
     inputs: List[pathlib.Path]
@@ -127,6 +156,7 @@ class PangenomeCNVStage(Stage):
     sv_vcf: pathlib.Path
     sample_sex: Optional[SampleSex] = None
     par_bed: Optional[pathlib.Path] = None
+    combine_preset: Optional[pathlib.Path] = None
     interval: Optional[pathlib.Path] = None
     replace_rg: Optional[List[List[str]]] = None
     task_name: str = "cnv"
@@ -178,7 +208,8 @@ class PangenomeCNVStage(Stage):
         )
         dag.add_job(indel2cnv_job, deps)
 
-        # Combine the CNVModelApply output with the converted SVs
+        # Combine the CNVModelApply output, rejected segments included,
+        # with the converted SVs
         combine_script = pathlib.Path(
             str(files("sentieon_cli.scripts").joinpath("combine_cnv.py"))
         )
@@ -188,6 +219,10 @@ class PangenomeCNVStage(Stage):
                 apply_vcf,
                 converted_vcf,
                 combine_script,
+                preset=self.combine_preset,
+                sex=cnv_result.sex,
+                par=cnv_result.par,
+                blocks=cnv_result.blocks,
             ),
             "combine-cnv",
             0,

@@ -268,6 +268,23 @@ class TestGVCFtyperStage:
         assert f"--interval {bed}" in str(result.job.shell)
         assert result.output == tmp_path / "sample.vcf.gz"
 
+    def test_dbsnp(self, tmp_path):
+        dbsnp = tmp_path / "dbsnp.vcf.gz"
+        result = GVCFtyperStage(
+            ctx=make_ctx(tmp_path),
+            gvcf=tmp_path / "sample.g.vcf.gz",
+            output=tmp_path / "sample.vcf.gz",
+            dbsnp=dbsnp,
+        ).add_to(DAG())
+
+        assert str(result.job.shell) == (
+            f"sentieon driver --reference {tmp_path}/ref.fa "
+            f"--thread_count 4 --algo GVCFtyper "
+            f"--vcf {tmp_path}/sample.g.vcf.gz "
+            f"--dbsnp {dbsnp} "
+            f"{tmp_path}/sample.vcf.gz"
+        )
+
 
 class TestTransferApplyStage:
     """Transfer, apply, or both"""

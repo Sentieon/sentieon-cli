@@ -28,6 +28,7 @@ from sentieon_cli.util import (
     caller_sex_arg,
     cnvscope_sex_args,
     sample_sex_arg,
+    unknown_sex_blocks,
 )
 
 PACKAGE_LOGGER = "sentieon_cli"
@@ -208,7 +209,61 @@ def test_cnvscope_sex_args_for_a_female_sample():
 @pytest.mark.parametrize("sex", [None, SampleSex.UNKNOWN])
 def test_cnvscope_sex_args_without_a_known_sex(sex, messages):
     assert cnvscope_sex_args(sex, None) == (None, None)
-    assert any("diploid" in msg for msg in messages)
+    assert any(
+        "Sex estimation failed" in msg
+        and "assumed sex chromosome ploidies" in msg
+        for msg in messages
+    )
+
+
+# The CNVscope `--blocks` intervals for a sample of unknown sex
+
+HG38_LENGTHS = {"chr20": 64444167, "chrX": 156040895, "chrY": 57227415}
+
+
+def test_unknown_sex_blocks_haploid_chry_outside_the_par(tmp_path):
+    par_bed = tmp_path / "par.bed"
+    par_bed.write_text(
+        "chrX\t10000\t2781479\n"
+        "chrX\t155701382\t156030895\n"
+        "chrY\t56887902\t57217415\n"
+        "chrY\t10000\t2781479\n"
+    )
+
+    assert unknown_sex_blocks(HG38_LENGTHS, par_bed) == [
+        ("chrX", 0, 156040895, 2),
+        ("chrY", 0, 10000, 1),
+        ("chrY", 2781479, 56887902, 1),
+        ("chrY", 57217415, 57227415, 1),
+    ]
+
+
+def test_unknown_sex_blocks_without_a_par_bed():
+    assert unknown_sex_blocks(HG38_LENGTHS, None) == [
+        ("chrX", 0, 156040895, 2),
+        ("chrY", 0, 57227415, 1),
+    ]
+
+
+def test_unknown_sex_blocks_with_b37_names_and_overlapping_par(tmp_path):
+    par_bed = tmp_path / "par.bed"
+    par_bed.write_text(
+        "X\t60000\t2699520\tPAR1\n"
+        "Y\t10000\t2649520\tPAR1\n"
+        "Y\t2000000\t2700000\tPAR1b\n"
+        "Y\t59034049\t59373566\tPAR2\n"
+    )
+    lengths = {"20": 63025520, "X": 155270560, "Y": 59373566}
+
+    assert unknown_sex_blocks(lengths, par_bed) == [
+        ("X", 0, 155270560, 2),
+        ("Y", 0, 10000, 1),
+        ("Y", 2700000, 59034049, 1),
+    ]
+
+
+def test_unknown_sex_blocks_without_sex_chromosomes():
+    assert unknown_sex_blocks({"chr20": 64444167}, None) == []
 
 
 # The ExpansionHunter and segdup-caller `--sex` argument
@@ -253,6 +308,7 @@ def test_cnvscope_algo_omits_the_sex_arguments_by_default():
 
     assert "--sex" not in cmd
     assert "--par" not in cmd
+    assert "--blocks" not in cmd
     assert "--dump_probes" not in cmd
     assert cmd[-1] == "out.vcf.gz"
 
@@ -412,3 +468,4 @@ def test_call_cnvs_without_a_sample_sex():
     cmd = _cnvscope_cmd()
     assert "--sex" not in cmd
     assert "--par" not in cmd
+    assert "--blocks /tmp/cnv/cnvscope-blocks.bed" in cmd

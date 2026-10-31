@@ -457,11 +457,12 @@ class HybridPangenome(BasePangenome):
             self.extract_model_name = extract_candidate
 
         required_members = {
-            "dnascope.model",
             "longreadsv.model",
             "minimap2.model",
             self.extract_model_name,
         }
+        if not self.skip_small_variants:
+            required_members.add("dnascope.model")
         if self.r1_fastq:
             required_members.add("bwa.model")
         if self.lr_align_input:
@@ -479,6 +480,7 @@ class HybridPangenome(BasePangenome):
             sys.exit(2)
 
         self.has_cnv_model = "cnv.model" in bundle_members
+        self.has_combine_preset = "combine_cnv.json" in bundle_members
 
         bundle_vcf_id = bundle_info.get("SentieonVcfID")
         if bundle_vcf_id and not self.skip_pop_vcf_id_check:

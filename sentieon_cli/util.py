@@ -73,19 +73,59 @@ def cnvscope_sex_args(
 
     Male samples are called with the pseudo-autosomal regions (PAR) BED
     file. Female samples do not need a PAR BED file. When the sample sex
-    is not known, both arguments are omitted and CNVscope assumes a
-    diploid genome, matching the behavior of previous releases.
+    is not known, both arguments are omitted and the caller supplies
+    assumed sex chromosome ploidies instead (`unknown_sex_blocks`).
     """
     if sample_sex is SampleSex.MALE:
         return ("M", par_bed)
     if sample_sex is SampleSex.FEMALE:
         return ("F", None)
     logger.warning(
-        "The sample sex is not known. CNVscope will assume a diploid "
-        "genome, matching the behavior of previous releases. Supply "
+        "Sex estimation failed: the sample sex could not be determined "
+        "from read coverage. CNV calling is proceeding with assumed sex "
+        "chromosome ploidies: two copies of chrX, and one copy of chrY "
+        "outside the pseudo-autosomal regions (PAR). Supply "
         "`--sample_sex` for sex-aware CNV calling."
     )
     return (None, None)
+
+
+def unknown_sex_blocks(
+    contig_lengths: Mapping[str, int],
+    par_bed: Optional[pathlib.Path],
+) -> List[Tuple[str, int, int, int]]:
+    """CNVscope `--blocks` intervals for a sample of unknown sex.
+
+    Each block is (contig, start, end, neutral copy number), 0-based and
+    half-open. chrX is diploid and chrY is haploid outside the PAR
+    intervals of `par_bed`. Regions without a block, including the chrY
+    PAR, keep CNVscope's diploid default. Contigs are named with or
+    without the `chr` prefix, following the reference.
+    """
+    blocks: List[Tuple[str, int, int, int]] = []
+    x_contig = next((c for c in ("chrX", "X") if c in contig_lengths), None)
+    if x_contig:
+        blocks.append((x_contig, 0, contig_lengths[x_contig], 2))
+    y_contig = next((c for c in ("chrY", "Y") if c in contig_lengths), None)
+    if not y_contig:
+        return blocks
+
+    par: List[Tuple[int, int]] = []
+    if par_bed:
+        with open(par_bed) as fh:
+            for line in fh:
+                flds = line.split()
+                if len(flds) >= 3 and flds[0] == y_contig:
+                    par.append((int(flds[1]), int(flds[2])))
+    pos = 0
+    for start, end in sorted(par):
+        if start > pos:
+            blocks.append((y_contig, pos, start, 1))
+        pos = max(pos, end)
+    y_len = contig_lengths[y_contig]
+    if pos < y_len:
+        blocks.append((y_contig, pos, y_len, 1))
+    return blocks
 
 
 def caller_sex_arg(sample_sex: Optional[SampleSex]) -> str:
