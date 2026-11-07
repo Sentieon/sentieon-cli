@@ -50,7 +50,7 @@ def make_transfer_config(tmp_path: pathlib.Path) -> TransferConfig:
     """One shard the pop VCF has, one it lacks"""
     return TransferConfig(
         pop_vcf=tmp_path / "pop.vcf.gz",
-        shards=[Shard("chr1", 0, 1000), Shard("chrUn_extra", 0, 500)],
+        shards=[Shard("chr1", 1, 1000), Shard("chrUn_extra", 1, 500)],
         pop_vcf_contigs={"chr1": 1000},
         fai_data={
             "chr1": {"length": 1000},

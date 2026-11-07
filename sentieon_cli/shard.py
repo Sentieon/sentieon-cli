@@ -57,6 +57,11 @@ class PloidyContigs(NamedTuple):
 
 
 class Shard(NamedTuple):
+    """A genomic region, 1-based and closed, as `contig:start-stop` reads.
+
+    Writing one to a BED file (0-based, half-open) takes `start - 1`.
+    """
+
     contig: str
     start: int
     stop: int

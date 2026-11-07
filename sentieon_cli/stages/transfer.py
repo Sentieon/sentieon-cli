@@ -110,8 +110,10 @@ def build_transfer_jobs(
         else:
             if not dry_run:
                 with open(subset_bed, "w") as fh:
+                    # A Shard is 1-based and closed, a BED 0-based and
+                    # half-open
                     print(
-                        f"{shard.contig}\t{shard.start}\t{shard.stop}",
+                        f"{shard.contig}\t{shard.start - 1}\t{shard.stop}",
                         file=fh,
                     )
 

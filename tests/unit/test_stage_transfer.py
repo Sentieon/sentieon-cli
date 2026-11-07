@@ -18,9 +18,10 @@ from sentieon_cli.command_strings import (
     cmd_bcftools_subset_remove,
 )
 from sentieon_cli.dag import DAG
-from sentieon_cli.shard import Shard
+from sentieon_cli.shard import Shard, determine_shards_from_fai
 from sentieon_cli.shell_pipeline import Context, InputProcSub
 from sentieon_cli.stages.base import StageContext, rm_job
+from sentieon_cli.stages import transfer
 from sentieon_cli.stages.transfer import TransferConfig, TransferStage
 
 
@@ -42,9 +43,9 @@ def make_config(tmp_path: pathlib.Path) -> TransferConfig:
     return TransferConfig(
         pop_vcf=tmp_path / "pop.vcf.gz",
         shards=[
-            Shard("chr1", 0, 1000),
-            Shard("chr1", 1000, 2000),
-            Shard("chrUn_extra", 0, 500),
+            Shard("chr1", 1, 1000),
+            Shard("chr1", 1001, 2000),
+            Shard("chrUn_extra", 1, 500),
         ],
         pop_vcf_contigs={"chr1": 2000},
         fai_data={
@@ -64,6 +65,59 @@ def make_stage(tmp_path: pathlib.Path, **kwargs) -> TransferStage:
     )
     defaults.update(kwargs)
     return TransferStage(**defaults)  # type: ignore[arg-type]
+
+
+# The pipelines' shard size, over a contig the pop VCF lists and one it
+# lacks
+SHARD_STEP = 10_000_000
+EDGE_FAI = {"chr1": {"length": 25_000_000}, "chrM": {"length": 16_569}}
+# A shard's first and last bases, and their neighbours
+EDGE_POSITIONS = [
+    1,
+    10_000_000,
+    10_000_001,
+    10_000_002,
+    20_000_001,
+    25_000_000,
+]
+
+
+def make_edge_stage(tmp_path: pathlib.Path) -> TransferStage:
+    """A transfer over `EDGE_FAI`'s real shards, outside a dry run"""
+    ctx = StageContext(
+        reference=tmp_path / "ref.fa",
+        output_vcf=tmp_path / "output.vcf.gz",
+        tmp_dir=tmp_path,
+        cores=1,
+        dry_run=False,
+        skip_version_check=True,
+    )
+    config = TransferConfig(
+        pop_vcf=tmp_path / "pop.vcf.gz",
+        shards=determine_shards_from_fai(EDGE_FAI, SHARD_STEP),
+        pop_vcf_contigs={"chr1": EDGE_FAI["chr1"]["length"]},
+        fai_data=EDGE_FAI,
+    )
+    return TransferStage(
+        ctx=ctx,
+        config=config,
+        raw_vcf=tmp_path / "raw.vcf.gz",
+        out_vcf=tmp_path / "transfer.vcf.gz",
+    )
+
+
+def shard_beds(tmp_path: pathlib.Path):
+    """The (contig, start, end) line of each shard BED, in shard order"""
+    beds = sorted(
+        tmp_path.rglob("sample-dnascope_transfer-subset*.bed"),
+        key=lambda bed: int(bed.stem.rsplit("subset", 1)[1]),
+    )
+    rows = []
+    for bed in beds:
+        (line,) = bed.read_text().splitlines()
+        contig, start, end = line.split("\t")
+        rows.append((contig, int(start), int(end)))
+    return rows
 
 
 class TestJobs:
@@ -171,6 +225,50 @@ class TestMergeCommand:
         assert annotate.args[i + 1].endswith(
             "sample-dnascope_transfer-subset2.bed"
         )
+
+
+class TestShardBeds:
+    """The shard BEDs cover each contig once, outside a dry run"""
+
+    @pytest.fixture(autouse=True)
+    def no_pop_header(self, monkeypatch):
+        # The merge rules come from `bcftools view -h` on the pop VCF;
+        # these tests need only the BEDs
+        monkeypatch.setattr(
+            transfer.sp,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(stdout=""),
+        )
+
+    def test_the_beds_tile_the_contig(self, tmp_path):
+        make_edge_stage(tmp_path).add_to(DAG())
+
+        rows = shard_beds(tmp_path)
+        assert rows == [
+            ("chr1", 0, 10_000_000),
+            ("chr1", 10_000_000, 20_000_000),
+            ("chr1", 20_000_000, 25_000_000),
+            # The contig the pop VCF lacks keeps its whole-contig BED
+            ("chrM", 0, 16_569),
+        ]
+        chr1 = [row for row in rows if row[0] == "chr1"]
+        assert chr1[0][1] == 0
+        assert chr1[-1][2] == EDGE_FAI["chr1"]["length"]
+        for (_, _, end), (_, start, _) in zip(chr1, chr1[1:]):
+            assert end == start
+
+    def test_a_record_on_a_shard_edge_is_in_one_shard(self, tmp_path):
+        make_edge_stage(tmp_path).add_to(DAG())
+
+        rows = shard_beds(tmp_path)
+        for pos in EDGE_POSITIONS:
+            # A BED line holds the 1-based positions start+1 to end
+            hits = [
+                row
+                for row in rows
+                if row[0] == "chr1" and row[1] < pos <= row[2]
+            ]
+            assert len(hits) == 1, (pos, hits)
 
 
 HEADER = (
@@ -358,7 +456,8 @@ class TestMergeTrimRun:
     def test_concat_lists_the_contigs_in_reference_order(self, tmp_path):
         # chrM, which the pop VCF lacks, sits between the merged contigs
         contigs = "".join(
-            f"##contig=<ID={c},length=1000>\n" for c in ("chr1", "chrM", "chr2")
+            f"##contig=<ID={c},length=1000>\n"
+            for c in ("chr1", "chrM", "chr2")
         )
         raw_vcf = self.bgzip(
             tmp_path,
@@ -384,7 +483,10 @@ class TestMergeTrimRun:
             asyncio.run(
                 self.run(
                     cmd_bcftools_subset_remove(
-                        shard1, raw_vcf, regions_file=extra_bed, remove="FILTER"
+                        shard1,
+                        raw_vcf,
+                        regions_file=extra_bed,
+                        remove="FILTER",
                     )
                 )
             )
@@ -409,6 +511,54 @@ class TestMergeTrimRun:
             text=True,
         )
         assert query.stdout.splitlines()[-2:] == ["chrM:10", "chr2:10"]
+
+    def test_records_on_shard_edges_survive_the_transfer(self, tmp_path):
+        length = EDGE_FAI["chr1"]["length"]
+        header = (
+            "##fileformat=VCFv4.2\n" f"##contig=<ID=chr1,length={length}>\n"
+        )
+        self.bgzip(
+            tmp_path,
+            "raw",
+            header
+            + '##INFO=<ID=AF,Number=A,Type=Float,Description="AF">\n'
+            + '##FORMAT=<ID=GT,Number=1,Type=String,Description="GT">\n'
+            + "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS\n"
+            + "".join(
+                f"chr1\t{pos}\t.\tA\tC\t30\tPASS\tAF=0.5\tGT\t0/1\n"
+                for pos in EDGE_POSITIONS
+            ),
+        )
+        self.bgzip(
+            tmp_path,
+            "pop",
+            header
+            + '##INFO=<ID=AF_v20,Number=A,Type=Float,Description="pop AF">\n'
+            + "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+            + "chr1\t10000001\trs1\tA\tC\t60\tPASS\tAF_v20=0.2\n",
+        )
+        result = make_edge_stage(tmp_path).add_to(DAG())
+
+        # The chrM job finds no records and writes an empty subset
+        for job in [*result.shard_jobs, result.concat_job]:
+            assert asyncio.run(self.run(job.shell)) == 0, job.name
+
+        query = subprocess.run(
+            [
+                "bcftools",
+                "query",
+                "-f",
+                "%POS\t%ID\t%INFO/AF_v20\n",
+                str(result.out_vcf),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        rows = [line.split("\t") for line in query.stdout.splitlines()]
+        assert [int(row[0]) for row in rows] == EDGE_POSITIONS
+        # The pop annotation lands on the record at a shard start
+        assert rows[2] == ["10000001", "rs1", "0.2"]
 
     def test_extra_contig_subset_drops_filter(self, tmp_path):
         raw_vcf = self.bgzip(tmp_path, "raw", RAW_VCF)
