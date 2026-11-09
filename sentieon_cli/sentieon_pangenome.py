@@ -306,7 +306,7 @@ class SentieonPangenome(BasePangenome):
 
     def validate_bundle(self) -> None:
         self.required(self.pop_vcf, "pop_vcf")
-        gbz = self.required(self.gbz, "gbz")
+        self.required(self.gbz, "gbz")
         bundle_info_bytes = ar_load(
             str(self.model_bundle) + "/bundle_info.json"
         )
@@ -321,9 +321,6 @@ class SentieonPangenome(BasePangenome):
             bundle_pipeline = bundle_info["pipeline"]
             self.tech: str = bundle_info["platform"].upper()
             bundle_vcf_id = bundle_info["SentieonVcfID"]
-            bundle_pangenome = bundle_info.get(
-                "pangenome", "hprc-v2.0-mc-grch38.gbz"
-            )
         except KeyError:
             self.logger.error(
                 "The model bundle does not have the expected attributes"
@@ -339,13 +336,6 @@ class SentieonPangenome(BasePangenome):
         if bundle_pipeline != "Sentieon pangenome":
             self.logger.error("The model bundle is for a different pipeline.")
             sys.exit(2)
-        if gbz.name != bundle_pangenome:
-            self.logger.warning(
-                "The `--gbz` file name is not '%s'. "
-                "This model is optimized for the %s pangenome.",
-                bundle_pangenome,
-                bundle_pangenome,
-            )
 
         bundle_members = set(ar_load(str(self.model_bundle)))
 
