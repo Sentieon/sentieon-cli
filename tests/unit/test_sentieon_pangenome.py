@@ -367,6 +367,58 @@ class TestSentieonPangenome:
         """Ultima input overrides segdup-caller's default min_map_qual"""
         assert "--set main.min_map_qual=30" in self.build_segdup_cmd("Ultima")
 
+    @pytest.mark.parametrize("platform", ["Illumina", "Ultima", "UltimaPE"])
+    def test_expansion_runs_on_every_short_read_platform(self, platform):
+        """`--expansion_catalog` is accepted whatever the short-read data"""
+        catalog = self.mock_dir / "catalog.json"
+        catalog.touch()
+        pipeline = self.create_pipeline()
+        pipeline.tech = platform
+        pipeline.expansion_catalog = catalog
+
+        pipeline.validate_expansion()
+        job = self._second_dag_job(pipeline, "expansion-hunter")
+
+        assert f"--reads {self.mock_bam} " in str(job.shell)
+
+    def validate_expansion_with(self, platform, read_mode, skip=False):
+        """Run `validate_expansion`; return the mocked read-mode check"""
+        pipeline = self.create_pipeline()
+        pipeline.tech = platform
+        pipeline.expansion_catalog = self.mock_dir / "catalog.json"
+        pipeline.skip_version_check = skip
+        with patch(
+            "sentieon_cli.sentieon_pangenome.require_versions"
+        ), patch(
+            "sentieon_cli.base_pangenome.check_expansion_hunter_read_mode",
+            return_value=read_mode,
+        ) as check:
+            pipeline.validate_expansion()
+        return check
+
+    @pytest.mark.parametrize("platform", ["Ultima", "ULTIMA"])
+    def test_expansion_on_ultima_needs_sentieon_fork(self, platform):
+        """Single-end Ultima data exits 2 with Illumina's ExpansionHunter"""
+        with pytest.raises(SystemExit) as exc:
+            self.validate_expansion_with(platform, read_mode=False)
+        assert exc.value.code == 2
+
+    def test_expansion_on_ultima_with_sentieon_fork(self):
+        check = self.validate_expansion_with("Ultima", read_mode=True)
+        check.assert_called_once_with()
+
+    @pytest.mark.parametrize("platform", ["Illumina", "UltimaPE"])
+    def test_expansion_on_paired_end_allows_any_build(self, platform):
+        """Paired-end data does not need the fork, so nothing is checked"""
+        check = self.validate_expansion_with(platform, read_mode=False)
+        check.assert_not_called()
+
+    def test_expansion_fork_check_honors_skip_version_check(self):
+        check = self.validate_expansion_with(
+            "Ultima", read_mode=False, skip=True
+        )
+        check.assert_not_called()
+
     def test_segdup_no_override_for_short_reads(self):
         """Non-Ultima input leaves the segdup-caller defaults alone"""
         assert "--set" not in self.build_segdup_cmd("Illumina")

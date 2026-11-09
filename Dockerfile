@@ -1,3 +1,28 @@
+# Build Sentieon's ExpansionHunter fork, which adds single-end and long-read
+# support. It has no releases, so pin the commit. The build fetches versions
+# of abseil and googletest that do not compile with Debian 13's GCC 14, so it
+# uses the distribution in the fork's install docs; only the binary is copied
+# to the final image.
+FROM ubuntu:20.04 AS expansionhunter-builder
+ARG EXPANSIONHUNTER_VERSION=5.0.0
+ARG EXPANSIONHUNTER_COMMIT=07cd34fcec9e75df2d981989fba01127ac5e2b17
+
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      ca-certificates curl bzip2 cmake git make gcc g++ perl \
+      zlib1g-dev libbz2-dev liblzma-dev libcurl4-gnutls-dev && \
+    rm -rf /var/lib/apt/lists/* && \
+    git clone https://github.com/Sentieon/ExpansionHunter.git /tmp/eh-src && \
+    cd /tmp/eh-src && \
+    git checkout ${EXPANSIONHUNTER_COMMIT} && \
+    mkdir build && \
+    cd build && \
+    cmake .. && \
+    make -j"$(nproc)" && \
+    install -s install/bin/ExpansionHunter \
+      /usr/local/bin/ExpansionHunter-${EXPANSIONHUNTER_VERSION} && \
+    rm -rf /tmp/eh-src
+
 FROM debian:13.7-slim AS downloader
 
 # Tool versions and pinned SHA-256 checksums. Bumping a version is a
@@ -19,8 +44,6 @@ ARG VG_SHA256=d5752977237e801d971f0d044f43fde4f3005da35f0451b4f452d1c1c9b8414b
 ARG KMC_VERSION=3.2.4
 ARG KMC_RELEASE_TAG=v3.2.4-pipe3
 ARG KMC_SHA256=6ae37ac28c215919a67bd77edf004f9e323013bba5700bc44ad23c0b59da9a91
-ARG EXPANSIONHUNTER_VERSION=5.0.0
-ARG EXPANSIONHUNTER_SHA256=ebf3ec0ace6e6e3bbce12c26463da5d9f8e16374eff1ad10f0f1a9123050fa86
 # T1K and segdup-caller are built from git; pin the tag and verify the
 # resolved commit SHA after checkout.
 ARG T1K_VERSION=1.0.9
@@ -103,15 +126,6 @@ RUN mkdir -p /opt/kmc-${KMC_VERSION} && \
     chmod +x /usr/local/bin/kmc-${KMC_VERSION} \
       /usr/local/bin/kmc_tools-${KMC_VERSION} \
       /usr/local/bin/kmc_dump-${KMC_VERSION}
-
-# Install ExpansionHunter
-RUN mkdir -p /tmp/eh && \
-    curl -fL -o /tmp/eh.tar.gz "https://github.com/Illumina/ExpansionHunter/releases/download/v${EXPANSIONHUNTER_VERSION}/ExpansionHunter-v${EXPANSIONHUNTER_VERSION}-linux_x86_64.tar.gz" && \
-    echo "${EXPANSIONHUNTER_SHA256}  /tmp/eh.tar.gz" | sha256sum -c - && \
-    tar -C /tmp/eh --strip-components=1 -zxf /tmp/eh.tar.gz && \
-    cp /tmp/eh/bin/ExpansionHunter /usr/local/bin/ExpansionHunter-${EXPANSIONHUNTER_VERSION} && \
-    chmod +x /usr/local/bin/ExpansionHunter-${EXPANSIONHUNTER_VERSION} && \
-    rm -rf /tmp/eh /tmp/eh.tar.gz
 
 # Build T1K from source.
 RUN git clone --branch ${T1K_GIT_TAG} https://github.com/mourisl/T1K.git /tmp/t1k-src && \
@@ -221,7 +235,7 @@ COPY --from=downloader /usr/local/bin/vg-${VG_VERSION} /usr/local/bin/vg-${VG_VE
 COPY --from=downloader /usr/local/bin/kmc-${KMC_VERSION} /usr/local/bin/kmc-${KMC_VERSION}
 COPY --from=downloader /usr/local/bin/kmc_tools-${KMC_VERSION} /usr/local/bin/kmc_tools-${KMC_VERSION}
 COPY --from=downloader /usr/local/bin/kmc_dump-${KMC_VERSION} /usr/local/bin/kmc_dump-${KMC_VERSION}
-COPY --from=downloader /usr/local/bin/ExpansionHunter-${EXPANSIONHUNTER_VERSION} /usr/local/bin/ExpansionHunter-${EXPANSIONHUNTER_VERSION}
+COPY --from=expansionhunter-builder /usr/local/bin/ExpansionHunter-${EXPANSIONHUNTER_VERSION} /usr/local/bin/ExpansionHunter-${EXPANSIONHUNTER_VERSION}
 COPY --from=downloader /opt/t1k-${T1K_VERSION} /opt/t1k-${T1K_VERSION}
 COPY --from=downloader /opt/sentieon-cli/dist /opt/sentieon-cli/dist
 
@@ -229,10 +243,10 @@ COPY --from=downloader /opt/sentieon-cli/dist /opt/sentieon-cli/dist
 # /usr/lib) and for the unversioned names of the third-party tools.
 # `run-t1k` resolves its sibling binaries via abs_path($0), so symlinking
 # it from /usr/local/bin keeps the binaries discoverable in /opt/t1k-*/.
-# `ExpansionHunter` goes through a wrapper that strips LD_PRELOAD: the
-# pre-built EH binary crashes with `std::bad_cast` while parsing its JSON
-# variant catalog when the global jemalloc preload (set further down) is
-# active.
+# `ExpansionHunter` goes through a wrapper that strips LD_PRELOAD: Illumina's
+# pre-built binary crashed with `std::bad_cast` while parsing its JSON
+# variant catalog when the global jemalloc preload (set further down) was
+# active, and the source build keeps the same protection.
 RUN cd /usr/lib && \
     ln -s libisal.so.2.0.30 libisal.so.2 && \
     ln -s libisal.so.2 libisal.so && \
@@ -289,7 +303,7 @@ RUN sentieon driver --help && \
     mosdepth -h && \
     vg version && \
     kmc --help && \
-    ExpansionHunter --help && \
+    ExpansionHunter --help 2>&1 | grep -q -- --read-mode && \
     perl -c "$(command -v run-t1k)" && \
     SENTIEON_LICENSE=placeholder segdup-caller --version && \
     SENTIEON_LICENSE=placeholder python -c "import sys; from packaging.version import Version; \

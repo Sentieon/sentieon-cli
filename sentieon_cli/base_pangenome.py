@@ -44,6 +44,7 @@ from .stages.t1k import (
 )
 from .util import (
     VcfHeaderError,
+    check_expansion_hunter_read_mode,
     path_arg,
     read_vcf_header,
     require_versions,
@@ -725,6 +726,21 @@ class BasePangenome(BasePipeline):
                 ).add_to(dag, deps)
             )
         return results
+
+    def validate_expansion_platform(self, platform: str) -> None:
+        """Exit if single-end Ultima data lacks Sentieon's ExpansionHunter"""
+        # `UltimaPE` is paired-end, which Illumina's release also handles
+        if self.skip_version_check or platform.upper() != "ULTIMA":
+            return
+        if not check_expansion_hunter_read_mode():
+            self.logger.error(
+                "`--expansion_catalog` with single-end Ultima data requires "
+                "Sentieon's ExpansionHunter "
+                "(https://github.com/Sentieon/ExpansionHunter). The "
+                "`ExpansionHunter` on the PATH does not have its "
+                "`--read-mode` option."
+            )
+            sys.exit(2)
 
     def add_expansion(
         self,

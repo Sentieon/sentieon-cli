@@ -484,6 +484,24 @@ def vcf_id(in_vcf: pathlib.Path) -> Optional[str]:
     return vcf_id_from_header(header)
 
 
+def check_expansion_hunter_read_mode(cmd: str = "ExpansionHunter") -> bool:
+    """Check for `--read-mode`, which Sentieon's fork adds for single-end data.
+
+    The fork and Illumina's release both report version 5.0.0, so the
+    version cannot tell them apart.
+    """
+    try:
+        result = sp.run(
+            [cmd, "--help"],
+            text=True,
+            stdout=sp.PIPE,
+            stderr=sp.STDOUT,
+        )
+    except OSError:
+        return False
+    return "--read-mode" in result.stdout
+
+
 def check_kmc_patch(kmc_cmd: str = "kmc") -> bool:
     """Check if the KMC version supports the required patch"""
     # Create a temporary directory for the test

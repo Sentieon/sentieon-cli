@@ -200,6 +200,7 @@ class HybridPangenome(BasePangenome):
         self.readgroup: Optional[str] = None
         self.bed: Optional[pathlib.Path] = None
         self.call_cnvs = False
+        self.shortread_platform = ""
         self.lr_align_input = False
         self.lr_input_ref: Optional[pathlib.Path] = None
         self.rgsm: Optional[str] = None
@@ -346,6 +347,7 @@ class HybridPangenome(BasePangenome):
             sys.exit(2)
 
         require_versions(EXPANSION_MIN_VERSIONS, skip=self.skip_version_check)
+        self.validate_expansion_platform(self.shortread_platform)
 
     def validate_cnv(self) -> None:
         """Validate the arguments used for sex-aware CNV calling"""
@@ -427,6 +429,7 @@ class HybridPangenome(BasePangenome):
         if isinstance(bundle_info_bytes, list):
             bundle_info_bytes = b"{}"
         bundle_info = json.loads(bundle_info_bytes.decode())
+        self.shortread_platform = bundle_info.get("shortReadPlatform") or ""
 
         req_version_s = bundle_info.get("minScriptVersion")
         if req_version_s:

@@ -1945,6 +1945,52 @@ class TestHybridPangenome:
         pipeline.r1_fastq = []
         pipeline.validate_bundle()  # no SystemExit
 
+    def validate_expansion_with(self, monkeypatch, bundle_info, read_mode):
+        """`validate_expansion` for a bundle; ExpansionHunter's help mocked"""
+        monkeypatch.setattr(
+            "sentieon_cli.hybrid_pangenome.require_versions",
+            lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr(
+            "sentieon_cli.base_pangenome.check_expansion_hunter_read_mode",
+            lambda: read_mode,
+        )
+        self.write_bundle(self.BUNDLE_MEMBERS, bundle_info)
+        pipeline = self.create_pipeline()
+        pipeline.validate_bundle()
+        pipeline.expansion_catalog = self.mock_bed
+        pipeline.skip_version_check = False
+        pipeline.validate_expansion()
+
+    @pytest.mark.parametrize("platform", ["Ultima", "ULTIMA"])
+    def test_expansion_on_ultima_needs_sentieon_fork(
+        self, monkeypatch, platform
+    ):
+        """Single-end Ultima reads exit 2 with Illumina's ExpansionHunter"""
+        with pytest.raises(SystemExit) as exc:
+            self.validate_expansion_with(
+                monkeypatch, {"shortReadPlatform": platform}, read_mode=False
+            )
+        assert exc.value.code == 2
+
+    def test_expansion_on_ultima_with_sentieon_fork(self, monkeypatch):
+        self.validate_expansion_with(
+            monkeypatch, {"shortReadPlatform": "Ultima"}, read_mode=True
+        )
+
+    @pytest.mark.parametrize(
+        "bundle_info",
+        [
+            {},
+            {"shortReadPlatform": "Illumina"},
+            {"shortReadPlatform": "UltimaPE"},
+        ],
+    )
+    def test_expansion_on_other_data_allows_any_build(
+        self, monkeypatch, bundle_info
+    ):
+        self.validate_expansion_with(monkeypatch, bundle_info, read_mode=False)
+
     @pytest.mark.parametrize(
         "bundle_info",
         [
