@@ -12,7 +12,7 @@ import sys
 import typing
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from .driver import BaseDriver, Driver, ReadWriter
+from .driver import BaseDriver, Driver, LuaScript, ReadWriter
 from .logging import get_logger
 from .shell_pipeline import Command, InputProcSub, Pipeline
 
@@ -1579,6 +1579,91 @@ def cmd_minimap2_lift(
     )
 
     return Pipeline(mm2_cmd, lift_cmd, sort_cmd)
+
+
+def cmd_samtools_faidx_regions(
+    out_fasta: pathlib.Path,
+    reference: pathlib.Path,
+    regions_file: pathlib.Path,
+) -> Pipeline:
+    """Extract the contigs listed in `regions_file`"""
+    return Pipeline(
+        Command(
+            "samtools",
+            "faidx",
+            str(reference),
+            "-r",
+            str(regions_file),
+            "-o",
+            str(out_fasta),
+        )
+    )
+
+
+def cmd_minimap2_index(
+    out_index: pathlib.Path,
+    fasta: pathlib.Path,
+    preset: str,
+    threads: int = 1,
+) -> Pipeline:
+    """Build a minimap2 index"""
+    return Pipeline(
+        Command(
+            "sentieon",
+            "minimap2",
+            "-x",
+            preset,
+            "-t",
+            str(threads),
+            "-d",
+            str(out_index),
+            str(fasta),
+        )
+    )
+
+
+def cmd_hapslice_minimap2(
+    out_bam: pathlib.Path,
+    script: pathlib.Path,
+    haplotypes: pathlib.Path,
+    index: pathlib.Path,
+    sample: str,
+    threads: int = 1,
+) -> Pipeline:
+    """Align the haplotype slices to the reference"""
+    driver = Driver(passthru=True)
+    driver.add_algo(
+        LuaScript(script, [haplotypes, "-"], entry="hapslice"),
+    )
+    mm2_cmd = Command(
+        "sentieon",
+        "minimap2",
+        "-a",
+        "-x",
+        "asm5",
+        "-O17,81",
+        "-E3,1",
+        "--secondary=no",
+        "-t",
+        str(threads),
+        "-R",
+        f"@RG\\tID:{sample}\\tSM:{sample}",
+        str(index),
+        "-",
+    )
+    sort_cmd = Command(
+        "sentieon",
+        "util",
+        "sort",
+        "-t",
+        str(threads),
+        "-i",
+        "-",
+        "--sam2bam",
+        "-o",
+        str(out_bam),
+    )
+    return Pipeline(Command(*driver.build_cmd()), mm2_cmd, sort_cmd)
 
 
 def _aln_fasta_procsubs(

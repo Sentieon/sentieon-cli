@@ -10,7 +10,7 @@ import os
 import pathlib
 import shutil
 import sys
-from typing import Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 import packaging.version
 
@@ -41,10 +41,18 @@ from .stages.small_variants import (
     ApplySpec,
     DNAscopeStage,
     GVCFtyperStage,
+    PostSpec,
     TransferApplyStage,
     TransferSpec,
 )
 from .stages.transfer import TransferConfig
+from .stages.ultima_pe import (
+    ULTIMA_PE_PLATFORM,
+    ULTIMA_PE_READ_FILTER,
+    ultima_pe_env,
+    ultima_pe_repeat_model,
+    validate_ultima_pe,
+)
 from .util import (
     library_preloaded,
     parse_rg_line,
@@ -344,6 +352,8 @@ class DNAscopePipeline(BasePipeline):
             or bundle_info.get("shortReadPlatform")
             or ""
         ).upper()
+        if self.tech == ULTIMA_PE_PLATFORM:
+            self.validate_ultima_pe_bundle(bundle, bundle_info)
         bundle_vcf_id = bundle_info.get("SentieonVcfID")
 
         if not bundle_vcf_id:
@@ -373,6 +383,23 @@ class DNAscopePipeline(BasePipeline):
                 pop_vcf_id,
             )
             sys.exit(2)
+
+    def validate_ultima_pe_bundle(
+        self, bundle: pathlib.Path, bundle_info: Dict[str, Any]
+    ) -> None:
+        """Check an UltimaPE model bundle"""
+        if bundle_info.get("pipeline") != "DNAscope":
+            self.logger.error("The model bundle is for a different pipeline.")
+            sys.exit(2)
+        if self.skip_small_variants:
+            return
+        validate_ultima_pe(
+            self.logger,
+            ar_load(str(bundle)),
+            gvcf=self.gvcf,
+            bed=self.bed,
+            skip_version_check=self.skip_version_check,
+        )
 
     def configure(self) -> None:
         self.configure_alignment()
@@ -574,11 +601,15 @@ class DNAscopePipeline(BasePipeline):
         out_svs = pathlib.Path(
             str(ctx.output_vcf).replace(".vcf.gz", "_svs.vcf.gz")
         )
+        ultima_pe = self.tech == ULTIMA_PE_PLATFORM
         read_filters: List[str] = []
         if self.tech == "ULTIMA":
             read_filters.append("UltimaReadFilter")
+        elif ultima_pe:
+            read_filters.append(ULTIMA_PE_READ_FILTER)
         pcr_indel_model = "NONE" if self.pcr_free else "CONSERVATIVE"
         model = bundle.joinpath("dnascope.model")
+        repeat_model = ctx.tmp_dir.joinpath("sample-repeat.model")
 
         # Call variants with DNAscope
         emit_mode = "variant"
@@ -602,6 +633,8 @@ class DNAscopePipeline(BasePipeline):
                 model=model,
             )
         ]
+        if ultima_pe:
+            algos.append(ultima_pe_repeat_model(repeat_model))
         if not self.skip_svs:
             algos.append(
                 DNAscope(
@@ -617,6 +650,7 @@ class DNAscopePipeline(BasePipeline):
             interval=self.bed,
             interval_padding=self.interval_padding,
             read_filter=read_filters,
+            env=ultima_pe_env(bundle) if ultima_pe else None,
         ).add_to(dag, upstream)
 
         # Transfer annotations from the pop_vcf, then genotype and filter
@@ -632,10 +666,21 @@ class DNAscopePipeline(BasePipeline):
                 config=TransferConfig.from_pipeline(self),
                 out_vcf=transfer_vcf,
             )
+        # UltimaPE: post.lua before DNAModelApply
+        post: Optional[PostSpec] = None
+        if ultima_pe:
+            post = PostSpec(
+                script=bundle.joinpath("ultima.model"),
+                repeat_model=repeat_model,
+                out_vcf=ctx.tmp_dir.joinpath("sample-dnascope_nofilt.vcf.gz"),
+                interval=self.bed,
+                interval_padding=self.interval_padding,
+            )
         transfer_apply = TransferApplyStage(
             ctx=ctx,
             raw_vcf=tmp_vcf,
             transfer=transfer,
+            post=post,
             apply=ApplySpec(model=model, output=ds_out),
         ).add_to(dag, call.terminal)
 

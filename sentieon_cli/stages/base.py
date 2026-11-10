@@ -10,7 +10,7 @@ plain dataclass fields plus a :class:`StageContext` of run-wide settings.
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 import pathlib
-from typing import Iterable, List, Optional, Sequence, Set, Union
+from typing import Dict, Iterable, List, Optional, Sequence, Set, Union
 
 from ..dag import DAG
 from ..driver import BaseAlgo, Driver
@@ -91,12 +91,13 @@ def driver_job(
     interval_padding: Optional[int] = None,
     read_filter: Optional[List[str]] = None,
     replace_rg: Optional[List[List[str]]] = None,
+    env: Optional[Dict[str, str]] = None,
 ) -> Job:
     """A job running `sentieon driver` with ``algos``.
 
     ``threads`` defaults to the run's core count; the driver arguments are
     passed through untouched so the command matches what the pipelines
-    build by hand.
+    build by hand. ``env`` adds environment variables to the job.
     """
     driver = Driver(
         reference=ctx.reference,
@@ -109,8 +110,11 @@ def driver_job(
     )
     for algo in algos:
         driver.add_algo(algo)
+    cmd = driver.build_cmd()
+    if env:
+        cmd = ["env", *[f"{k}={v}" for k, v in env.items()], *cmd]
     return Job(
-        Pipeline(Command(*driver.build_cmd())),
+        Pipeline(Command(*cmd)),
         name,
         ctx.cores if threads is None else threads,
         task_name=task_name,

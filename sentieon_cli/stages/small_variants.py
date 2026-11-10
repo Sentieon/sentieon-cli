@@ -4,10 +4,10 @@ Small-variant calling, annotation transfer, and genotyping
 
 from dataclasses import dataclass
 import pathlib
-from typing import Iterable, List, Optional, Set, Union
+from typing import Dict, FrozenSet, Iterable, List, Optional, Set, Union
 
 from ..dag import DAG
-from ..driver import BaseAlgo, DNAModelApply, GVCFtyper
+from ..driver import BaseAlgo, DNAModelApply, GVCFtyper, LuaScript
 from ..job import Job
 from .base import Stage, StageResult, driver_job
 from .transfer import TransferConfig, TransferResult, TransferStage
@@ -38,6 +38,7 @@ class DriverStage(Stage):
     interval_padding: Optional[int] = None
     read_filter: Optional[List[str]] = None
     replace_rg: Optional[List[List[str]]] = None
+    env: Optional[Dict[str, str]] = None
 
     def add_to(self, dag: DAG, upstream: Iterable[Job] = ()) -> DriverResult:
         job = driver_job(
@@ -51,6 +52,7 @@ class DriverStage(Stage):
             interval_padding=self.interval_padding,
             read_filter=self.read_filter,
             replace_rg=self.replace_rg,
+            env=self.env,
         )
         dag.add_job(job, set(upstream))
         return DriverResult(jobs=[job], terminal={job}, job=job)
@@ -161,6 +163,19 @@ class ApplySpec:
     name: str = "model-apply"
 
 
+@dataclass(frozen=True)
+class PostSpec:
+    """A post-processing script run before DNAModelApply"""
+
+    script: pathlib.Path
+    repeat_model: pathlib.Path
+    out_vcf: pathlib.Path
+    hap_table: Optional[pathlib.Path] = None
+    interval: Optional[Union[pathlib.Path, str]] = None
+    interval_padding: Optional[int] = None
+    after: FrozenSet[Job] = frozenset()
+
+
 @dataclass(kw_only=True)
 class TransferApplyResult(StageResult):
     """The jobs and output of `TransferApplyStage`"""
@@ -168,6 +183,7 @@ class TransferApplyResult(StageResult):
     transfer: Optional[TransferResult]
     apply_job: Optional[Job]
     output: pathlib.Path
+    post_job: Optional[Job] = None
 
 
 @dataclass(kw_only=True)
@@ -177,20 +193,22 @@ class TransferApplyStage(Stage):
     Either half may be omitted. When both run, DNAModelApply reads the
     transfer output and waits on the transfer alone -- the transfer's
     concat job already depends on the raw-VCF producer. Without a
-    transfer, DNAModelApply waits on ``upstream``.
+    transfer, DNAModelApply waits on ``upstream``. ``post`` runs before
+    DNAModelApply.
     """
 
     raw_vcf: pathlib.Path
     transfer: Optional[TransferSpec] = None
+    post: Optional[PostSpec] = None
     apply: Optional[ApplySpec] = None
 
     def add_to(
         self, dag: DAG, upstream: Iterable[Job] = ()
     ) -> TransferApplyResult:
         deps = set(upstream)
-        if self.transfer is None and self.apply is None:
+        if self.transfer is None and self.apply is None and self.post is None:
             raise ValueError(
-                "TransferApplyStage needs a transfer, an apply, or both"
+                "TransferApplyStage needs a transfer, a post pass or an apply"
             )
 
         jobs: List[Job] = []
@@ -209,6 +227,14 @@ class TransferApplyStage(Stage):
             apply_in = self.transfer.out_vcf
             apply_deps = transfer_result.terminal
 
+        post_job: Optional[Job] = None
+        if self.post is not None:
+            post_job = self.build_post_job(apply_in)
+            dag.add_job(post_job, set(apply_deps) | self.post.after)
+            jobs.append(post_job)
+            apply_in = self.post.out_vcf
+            apply_deps = {post_job}
+
         apply_job: Optional[Job] = None
         if self.apply is not None:
             apply_result = ModelApplyStage(
@@ -222,6 +248,9 @@ class TransferApplyStage(Stage):
             jobs.append(apply_job)
             terminal: Set[Job] = {apply_job}
             output = self.apply.output
+        elif post_job is not None:
+            terminal = {post_job}
+            output = apply_in
         else:
             assert transfer_result is not None
             terminal = transfer_result.terminal
@@ -233,4 +262,24 @@ class TransferApplyStage(Stage):
             transfer=transfer_result,
             apply_job=apply_job,
             output=output,
+            post_job=post_job,
+        )
+
+    def build_post_job(self, in_vcf: pathlib.Path) -> Job:
+        """Run the post-processing script on ``in_vcf``"""
+        assert self.post is not None
+        args: List[Union[pathlib.Path, str]] = [
+            "--repeat-model",
+            self.post.repeat_model,
+        ]
+        if self.post.hap_table is not None:
+            args.extend(["--hap-table", self.post.hap_table])
+        args.extend(["--lambda", "2", "--nofilt", in_vcf, self.post.out_vcf])
+        return driver_job(
+            self.ctx,
+            [LuaScript(self.post.script, args)],
+            name="post-lua",
+            task_name="post-lua",
+            interval=self.post.interval,
+            interval_padding=self.post.interval_padding,
         )

@@ -42,10 +42,21 @@ from .stages.small_variants import (
     ApplySpec,
     DNAscopeStage,
     GVCFtyperStage,
+    PostSpec,
     TransferApplyStage,
     TransferSpec,
 )
 from .stages.transfer import TransferConfig
+from .stages.ultima_pe import (
+    ULTIMA_PE_PLATFORM,
+    ULTIMA_PE_READ_FILTER,
+    HapTableResult,
+    HapTableStage,
+    PrimaryIndexStage,
+    ultima_pe_env,
+    ultima_pe_repeat_model,
+    validate_ultima_pe,
+)
 from .util import (
     __version__,
     check_kmc_patch,
@@ -362,6 +373,14 @@ class SentieonPangenome(BasePangenome):
                 "Expected model files not found in the model bundle file"
             )
             sys.exit(2)
+        if self.tech == ULTIMA_PE_PLATFORM and not self.skip_small_variants:
+            validate_ultima_pe(
+                self.logger,
+                bundle_members,
+                gvcf=self.gvcf,
+                bed=self.bed,
+                skip_version_check=self.skip_version_check,
+            )
 
         self.has_cnv_model = "cnv.model" in bundle_members
         self.has_combine_preset = "combine_cnv.json" in bundle_members
@@ -472,6 +491,8 @@ class SentieonPangenome(BasePangenome):
             )
         raw_vcf = self.tmp_dir.joinpath("sample-dnascope.vcf.gz")
         transfer_vcf = self.tmp_dir.joinpath("sample-dnascope_transfer.vcf.gz")
+        repeat_model = self.tmp_dir.joinpath("sample-repeat.model")
+        nofilt_vcf = self.tmp_dir.joinpath("sample-dnascope_nofilt.vcf.gz")
 
         bwa_lc_dependencies: Set[Job] = set()
         haplotype_dependencies: Set[Job] = set()
@@ -665,9 +686,16 @@ class SentieonPangenome(BasePangenome):
         if self.skip_small_variants and not self.call_svs:
             return dag
 
+        # UltimaPE: small variants only
+        ultima_pe = (
+            self.tech.upper() == ULTIMA_PE_PLATFORM
+            and not self.skip_small_variants
+        )
         read_filters: List[str] = []
         if self.tech.upper() == "ULTIMA":
             read_filters.append("UltimaReadFilter")
+        elif ultima_pe:
+            read_filters.append(ULTIMA_PE_READ_FILTER)
         pcr_indel_model = "NONE" if self.pcr_free else "CONSERVATIVE"
         model = bundle.joinpath("dnascope.model")
         gfa_file = sample_gfa if self.call_svs else None
@@ -683,6 +711,8 @@ class SentieonPangenome(BasePangenome):
                     emit_mode="gvcf" if self.gvcf else "variant",
                 )
             )
+            if ultima_pe:
+                algos.append(ultima_pe_repeat_model(repeat_model))
         if sv_vcf and gfa_file:
             algos.append(
                 PangenomeSV(
@@ -697,6 +727,7 @@ class SentieonPangenome(BasePangenome):
             inputs=dnascope_bams,
             interval=self.bed,
             read_filter=read_filters,
+            env=ultima_pe_env(bundle) if ultima_pe else None,
         ).add_to(dag, dnascope_dependencies)
 
         if self.skip_small_variants:
@@ -717,6 +748,21 @@ class SentieonPangenome(BasePangenome):
             else "sample-snv_apply.vcf.gz"
         )
 
+        # UltimaPE: post.lua with the hap-length table before DNAModelApply
+        post: Optional[PostSpec] = None
+        if ultima_pe:
+            hap_table = self.add_hap_table(dag, ctx, sample_fasta, fasta_job)
+            post = PostSpec(
+                script=bundle.joinpath("ultima.model"),
+                repeat_model=repeat_model,
+                out_vcf=(
+                    nofilt_vcf if not self.skip_model_apply else snv_apply_vcf
+                ),
+                hap_table=hap_table.table,
+                interval=self.bed,
+                after=frozenset(hap_table.terminal),
+            )
+
         # Transfer annotations from the pop_vcf, then apply the model
         transfer: Optional[TransferSpec] = None
         if self.pop_vcf:
@@ -724,7 +770,7 @@ class SentieonPangenome(BasePangenome):
                 config=TransferConfig.from_pipeline(self),
                 out_vcf=(
                     transfer_vcf
-                    if not self.skip_model_apply
+                    if not self.skip_model_apply or post is not None
                     else snv_apply_vcf
                 ),
             )
@@ -735,6 +781,7 @@ class SentieonPangenome(BasePangenome):
             ctx=ctx,
             raw_vcf=raw_vcf,
             transfer=transfer,
+            post=post,
             apply=apply_spec,
         ).add_to(dag, call.terminal)
 
@@ -757,6 +804,32 @@ class SentieonPangenome(BasePangenome):
         # CNV calling is sex-aware and runs in the second DAG
 
         return dag
+
+    def add_hap_table(
+        self,
+        dag: DAG,
+        ctx: StageContext,
+        sample_fasta: pathlib.Path,
+        fasta_job: Job,
+    ) -> HapTableResult:
+        """Add the hap-length table jobs"""
+        bundle = self.required(self.model_bundle, "model_bundle")
+        index = PrimaryIndexStage(
+            ctx=ctx,
+            fai_data=self.fai_data,
+            prefix=self.tmp_dir.joinpath("primary"),
+        ).add_to(dag)
+        rg = self.fastq_readgroup or self.bam_readgroups[0]
+        return HapTableStage(
+            ctx=ctx,
+            script=bundle.joinpath("ultima.model"),
+            haplotypes=sample_fasta,
+            index=index.index,
+            sample=rg.get("SM", "sample"),
+            fai_data=self.fai_data,
+            haps_bam=self.tmp_dir.joinpath("haps.bam"),
+            table=self.tmp_dir.joinpath("haplen.tsv.gz"),
+        ).add_to(dag, {fasta_job} | index.terminal)
 
     def bwa_extract_stage(
         self,

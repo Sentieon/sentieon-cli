@@ -4,7 +4,7 @@ Classes for interacting with the Sentieon driver
 
 import itertools
 import pathlib
-from typing import Optional, List, Union
+from typing import Optional, List, Sequence, Union
 
 from .logging import get_logger
 
@@ -576,6 +576,30 @@ class PGHapUpdateAlgo(BaseAlgo):
         self.prefix = prefix
 
 
+class LuaScript(BaseAlgo):
+    """algo Lua"""
+
+    name = "Lua"
+
+    def __init__(
+        self,
+        script: pathlib.Path,
+        args: Sequence[Union[pathlib.Path, str]] = (),
+        entry: Optional[str] = None,
+    ):
+        self.script = script
+        self.args = list(args)
+        self.entry = entry
+
+    def build_cmd(self) -> List[str]:
+        cmd: List[str] = ["--algo", self.name]
+        if self.entry:
+            cmd.extend(["-e", self.entry])
+        cmd.append(str(self.script))
+        cmd.extend(str(arg) for arg in self.args)
+        return cmd
+
+
 class BaseDriver:
     """A base class for the Sentieon driver"""
 
@@ -589,6 +613,7 @@ class BaseDriver:
         replace_rg: Optional[List[List[str]]] = None,
         input: Optional[List[pathlib.Path]] = None,
         algo: Optional[List[BaseAlgo]] = None,
+        passthru: bool = False,
     ):
         if (
             isinstance(replace_rg, list)
@@ -610,6 +635,7 @@ class BaseDriver:
         self.interval = interval
         self.interval_padding = interval_padding
         self.read_filter = read_filter
+        self.passthru = passthru
         self.algo = algo if algo else []
 
     def add_algo(self, algo: BaseAlgo):
