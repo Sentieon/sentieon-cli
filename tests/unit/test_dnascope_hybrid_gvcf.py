@@ -77,7 +77,14 @@ class TestHybridGvcf:
         tmp = pipeline.tmp_dir
         call2, _ = jobs["dnascope-2"]
         assert "--emit_mode gvcf" in call2
+        assert "--gq_bands 10-60/10" in call2
         assert call2.endswith(str(tmp / "hybrid_pass2.g.vcf.gz"))
+
+    def test_gq_bands_override(self, pipeline):
+        pipeline.gq_bands = "1-60/5,99"
+        jobs = _jobs(pipeline)
+        assert "--gq_bands 1-60/5,99" in jobs["dnascope-1"][0]
+        assert "--gq_bands 1-60/5,99" in jobs["dnascope-2"][0]
 
     def test_pass1_also_writes_a_vcf_for_region_selection(self, pipeline):
         jobs = _jobs(pipeline)
@@ -90,12 +97,14 @@ class TestHybridGvcf:
         assert "--emit_mode gvcf" in algos[0]
         assert algos[0].endswith(str(tmp / "initial.g.vcf.gz"))
         assert algos[1].startswith("DNAscope ")
+        assert "--gq_bands 10-60/10" in algos[0]
         assert "--emit_mode" not in algos[1]
+        assert "--gq_bands" not in algos[1]
         assert algos[1].endswith(str(tmp / "initial.vcf.gz"))
         # Both algos otherwise take the same arguments
-        assert algos[0].replace(" --emit_mode gvcf", "").rsplit(" ", 1)[0] == (
-            algos[1].rsplit(" ", 1)[0]
-        )
+        gvcf_algo = algos[0].replace(" --emit_mode gvcf", "")
+        gvcf_algo = gvcf_algo.replace(" --gq_bands 10-60/10", "")
+        assert gvcf_algo.rsplit(" ", 1)[0] == algos[1].rsplit(" ", 1)[0]
 
         select, select_deps = jobs["hybrid-select"]
         assert f"-v {tmp / 'initial.vcf.gz'}" in select
@@ -295,6 +304,8 @@ class TestHybridWithoutGvcf:
         assert "--emit_mode" not in call1
         assert call1.endswith(str(tmp / "initial.vcf.gz"))
         assert "--emit_mode" not in jobs["dnascope-2"][0]
+        assert "--gq_bands" not in call1
+        assert "--gq_bands" not in jobs["dnascope-2"][0]
         assert f"-v {tmp / 'initial.vcf.gz'}" in jobs["hybrid-select"][0]
         subset, _ = jobs["subset-calls"]
         assert "bcftools view -T" in subset

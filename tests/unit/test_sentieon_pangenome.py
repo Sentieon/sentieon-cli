@@ -233,6 +233,24 @@ class TestSentieonPangenome:
         assert f"--output_vcf {pipeline.output_vcf}" in update_cmd
         assert dag.waiting_jobs[ad_update_job] == {concat_job}
 
+    def test_gq_bands_override(self):
+        """--gq_bands reaches DNAscope"""
+        pipeline = self.create_pipeline()
+        pipeline.gvcf = True
+        pipeline.gq_bands = "1-60/5,99"
+        dag = pipeline.build_dag()
+        all_jobs = list(dag.waiting_jobs.keys()) + list(dag.ready_jobs.keys())
+        job = next(j for j in all_jobs if j.name == "dnascope")
+        assert "--gq_bands 1-60/5,99" in str(job.shell)
+
+    def test_gq_bands_only_with_gvcf(self):
+        """Without --gvcf, DNAscope gets no --gq_bands"""
+        pipeline = self.create_pipeline()
+        dag = pipeline.build_dag()
+        all_jobs = list(dag.waiting_jobs.keys()) + list(dag.ready_jobs.keys())
+        job = next(j for j in all_jobs if j.name == "dnascope")
+        assert "--gq_bands" not in str(job.shell)
+
     def test_gvcf_adds_gvcftyper_and_routes_outputs(self):
         """--gvcf produces a .g.vcf.gz from model-apply,
         updates it into the final .g.vcf.gz, then runs GVCFtyper on the
@@ -259,6 +277,7 @@ class TestSentieonPangenome:
             cmd_str = str(job.shell)
             if name == "dnascope":
                 assert "--emit_mode gvcf" in cmd_str
+                assert "--gq_bands 10-60/10" in cmd_str
             else:
                 assert apply_gvcf in cmd_str
                 assert expected_gvcf not in cmd_str

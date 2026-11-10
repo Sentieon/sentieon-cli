@@ -40,7 +40,9 @@ from .stages.ploidy import PloidyStage
 from .stages.segdup import SEGDUP_MIN_VERSIONS
 from .stages.small_variants import (
     ApplySpec,
+    DEFAULT_GQ_BANDS,
     DNAscopeStage,
+    GQ_BANDS_PARAM,
     GVCFtyperStage,
     PostSpec,
     TransferApplyStage,
@@ -131,6 +133,7 @@ class SentieonPangenome(BasePangenome):
                 "help": "Generate a gVCF output file.",
                 "action": "store_true",
             },
+            "gq_bands": GQ_BANDS_PARAM,
             "skip_metrics": {
                 "help": "Skip metrics collection and multiQC",
                 "action": "store_true",
@@ -169,6 +172,7 @@ class SentieonPangenome(BasePangenome):
         self.bed: Optional[pathlib.Path] = None
         self.call_svs = False
         self.gvcf = False
+        self.gq_bands = DEFAULT_GQ_BANDS
         self.extract_model_name = "extract.model"
         self.skip_metrics = False
         self.skip_multiqc = False
@@ -693,6 +697,7 @@ class SentieonPangenome(BasePangenome):
                     pcr_indel_model=pcr_indel_model,
                     dbsnp=self.dbsnp,
                     emit_mode="gvcf" if self.gvcf else "variant",
+                    gq_bands=self.gq_bands if self.gvcf else None,
                 )
             )
             if ultima_pe:

@@ -4,13 +4,25 @@ Small-variant calling, annotation transfer, and genotyping
 
 from dataclasses import dataclass
 import pathlib
-from typing import Dict, FrozenSet, Iterable, List, Optional, Set, Union
+from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Set, Union
 
 from ..dag import DAG
 from ..driver import BaseAlgo, DNAModelApply, GVCFtyper, LuaScript
 from ..job import Job
 from .base import Stage, StageResult, driver_job
 from .transfer import TransferConfig, TransferResult, TransferStage
+
+DEFAULT_GQ_BANDS = "10-60/10"
+
+# The `--gq_bands` argument of every pipeline that can emit a gVCF
+GQ_BANDS_PARAM: Dict[str, Any] = {
+    "help": (
+        "The GQ bands of the reference blocks in the gVCF output, passed to "
+        "DNAscope's --gq_bands. Only used with --gvcf. "
+        "(default: %(default)s)"
+    ),
+    "default": DEFAULT_GQ_BANDS,
+}
 
 
 @dataclass(kw_only=True)

@@ -39,7 +39,9 @@ from .stages.preprocessing import (
 )
 from .stages.small_variants import (
     ApplySpec,
+    DEFAULT_GQ_BANDS,
     DNAscopeStage,
+    GQ_BANDS_PARAM,
     GVCFtyperStage,
     PostSpec,
     TransferApplyStage,
@@ -166,6 +168,7 @@ class DNAscopePipeline(BasePipeline):
                 ),
                 "action": "store_true",
             },
+            "gq_bands": GQ_BANDS_PARAM,
             "input_ref": {
                 "help": (
                     "Used to decode the input alignment file. Required if the "
@@ -252,6 +255,7 @@ class DNAscopePipeline(BasePipeline):
         self.pcr_free = False
         self.pop_vcf: Optional[pathlib.Path] = None
         self.gvcf = False
+        self.gq_bands = DEFAULT_GQ_BANDS
         self.duplicate_marking = "markdup"
         self.assay = "WGS"
         self.consensus = False
@@ -613,12 +617,14 @@ class DNAscopePipeline(BasePipeline):
 
         # Call variants with DNAscope
         emit_mode = "variant"
+        gq_bands: Optional[str] = None
         ds_out = ctx.output_vcf
         tmp_vcf = pathlib.Path(
             str(ctx.output_vcf).replace(".vcf.gz", "_tmp.vcf.gz")
         )
         if self.gvcf:
             emit_mode = "gvcf"
+            gq_bands = self.gq_bands
             ds_out = out_gvcf
             tmp_vcf = pathlib.Path(
                 str(ctx.output_vcf).replace(".vcf.gz", "_tmp.g.vcf.gz")
@@ -631,6 +637,7 @@ class DNAscopePipeline(BasePipeline):
                 emit_mode=emit_mode,
                 pcr_indel_model=pcr_indel_model,
                 model=model,
+                gq_bands=gq_bands,
             )
         ]
         if ultima_pe:

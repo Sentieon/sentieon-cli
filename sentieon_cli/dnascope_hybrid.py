@@ -46,7 +46,9 @@ from .stages.preprocessing import (
 )
 from .stages.small_variants import (
     ApplySpec,
+    DEFAULT_GQ_BANDS,
     DNAscopeStage,
+    GQ_BANDS_PARAM,
     GVCFtyperStage,
     TransferApplyStage,
     TransferSpec,
@@ -223,6 +225,7 @@ class DNAscopeHybridPipeline(BasePipeline):
                 ),
                 "action": "store_true",
             },
+            "gq_bands": GQ_BANDS_PARAM,
             "lr_align_input": {
                 "help": (
                     "Align the input long-read BAM/CRAM/uBAM file to the "
@@ -358,6 +361,7 @@ class DNAscopeHybridPipeline(BasePipeline):
         self.bed: Optional[pathlib.Path] = None
         self.dbsnp: Optional[pathlib.Path] = None
         self.gvcf = False
+        self.gq_bands = DEFAULT_GQ_BANDS
         self.lr_align_input = False
         self.lr_input_ref: Optional[pathlib.Path] = None
         self.par_bed: Optional[pathlib.Path] = None
@@ -890,6 +894,7 @@ class DNAscopeHybridPipeline(BasePipeline):
         # then genotypes the output gVCF to produce the VCF.
         vcf_suffix = ".g.vcf.gz" if self.gvcf else ".vcf.gz"
         emit_mode = "gvcf" if self.gvcf else None
+        gq_bands = self.gq_bands if self.gvcf else None
         out_gvcf = pathlib.Path(
             str(ctx.output_vcf).replace(".vcf.gz", ".g.vcf.gz")
         )
@@ -907,6 +912,7 @@ class DNAscopeHybridPipeline(BasePipeline):
                 model=hybrid_model,
                 pcr_indel_model="none",
                 emit_mode=emit_mode,
+                gq_bands=gq_bands,
             )
         ]
         if self.gvcf:
@@ -1184,6 +1190,7 @@ class DNAscopeHybridPipeline(BasePipeline):
                     model=hybrid_model,
                     pcr_indel_model="none",
                     emit_mode=emit_mode,
+                    gq_bands=gq_bands,
                 )
             ],
             inputs=lr_aln + [stage3_aln],

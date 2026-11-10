@@ -43,7 +43,9 @@ from .stages.base import StageContext, driver_job
 from .stages.metrics import MOSDEPTH_MIN_VERSIONS, MosdepthStage
 from .stages.small_variants import (
     ApplySpec,
+    DEFAULT_GQ_BANDS,
     DNAscopeStage,
+    GQ_BANDS_PARAM,
     TransferApplyStage,
     TransferSpec,
 )
@@ -148,6 +150,7 @@ class DNAscopeLRPipeline(BasePipeline):
                 ),
                 "action": "store_true",
             },
+            "gq_bands": GQ_BANDS_PARAM,
             "haploid_bed": {
                 "help": (
                     "A BED file of haploid regions. Supplying this file will "
@@ -234,6 +237,7 @@ class DNAscopeLRPipeline(BasePipeline):
         self.haploid_bed: Optional[pathlib.Path] = None
         self.cnv_excluded_regions: Optional[pathlib.Path] = None
         self.gvcf = False
+        self.gq_bands = DEFAULT_GQ_BANDS
         self.tech = "HiFi"
         self.skip_small_variants = False
         self.skip_svs = False
@@ -671,6 +675,7 @@ class DNAscopeLRPipeline(BasePipeline):
                     dbsnp=self.dbsnp,
                     emit_mode="gvcf",
                     model=bundle.joinpath("gvcf_model"),
+                    gq_bands=self.gq_bands,
                 )
             )
         diploid_algos.append(
@@ -1058,6 +1063,7 @@ class DNAscopeLRPipeline(BasePipeline):
                     emit_mode="gvcf",
                     ploidy=1,
                     model=bundle.joinpath("gvcf_model"),
+                    gq_bands=self.gq_bands,
                 )
             )
         haploid_call = DNAscopeStage(

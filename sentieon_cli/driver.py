@@ -118,6 +118,7 @@ class DNAscope(BaseAlgo):
         pcr_indel_model: Optional[str] = None,
         var_type: Optional[str] = None,
         ploidy: Optional[int] = None,
+        gq_bands: Optional[str] = None,
     ):
         self.output = output
         self.dbsnp = dbsnp
@@ -126,6 +127,7 @@ class DNAscope(BaseAlgo):
         self.pcr_indel_model = pcr_indel_model
         self.var_type = var_type
         self.ploidy = ploidy
+        self.gq_bands = gq_bands
 
 
 class DNAscopeHP(BaseAlgo):

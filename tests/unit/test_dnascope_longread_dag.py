@@ -207,6 +207,39 @@ class TestSmallVariantEdges:
         assert "dnascope-haploid" in roots(dag)
 
 
+class TestGqBands:
+    """--gq_bands reaches only the DNAscope algos that write a gVCF"""
+
+    @staticmethod
+    def dnascope_algos(dag: DAG, name: str) -> List[str]:
+        algos = str(job_named(dag, name).shell).split(" --algo ")[1:]
+        return [a for a in algos if a.startswith("DNAscope ")]
+
+    def test_default(self, tmp_path):
+        dag = build_dag(tmp_path, gvcf=True, haploid_bed=tmp_path / "h.bed")
+        for name in ("dnascope-diploid", "dnascope-haploid"):
+            algos = self.dnascope_algos(dag, name)
+            with_bands = [a for a in algos if "--gq_bands 10-60/10" in a]
+            assert len(algos) == 2
+            assert len(with_bands) == 1
+            assert "--emit_mode gvcf" in with_bands[0]
+
+    def test_override(self, tmp_path):
+        dag = build_dag(
+            tmp_path,
+            gvcf=True,
+            gq_bands="1-60/5,99",
+            haploid_bed=tmp_path / "h.bed",
+        )
+        for name in ("dnascope-diploid", "dnascope-haploid"):
+            assert "--gq_bands 1-60/5,99" in str(job_named(dag, name).shell)
+
+    def test_only_with_gvcf(self, tmp_path):
+        dag = build_dag(tmp_path, haploid_bed=tmp_path / "h.bed")
+        for name in ("dnascope-diploid", "dnascope-haploid"):
+            assert "--gq_bands" not in str(job_named(dag, name).shell)
+
+
 class TestJobIdentity:
     """Job names and task names of the migrated stages"""
 

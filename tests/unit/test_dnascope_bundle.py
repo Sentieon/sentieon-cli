@@ -233,6 +233,18 @@ class TestPopVcfDag:
         assert out_gvcf in str(apply_job.shell)
         assert dep_names(dag, job_named(dag, "gvcftyper")) == ["model-apply"]
 
+    def test_gq_bands_default(self, files):
+        dag = build(make_pipeline(files, gvcf=True))
+        assert "--gq_bands 10-60/10" in str(job_named(dag, "dnascope").shell)
+
+    def test_gq_bands_override(self, files):
+        dag = build(make_pipeline(files, gvcf=True, gq_bands="1-60/5,99"))
+        assert "--gq_bands 1-60/5,99" in str(job_named(dag, "dnascope").shell)
+
+    def test_gq_bands_only_with_gvcf(self, files):
+        dag = build(make_pipeline(files))
+        assert "--gq_bands" not in str(job_named(dag, "dnascope").shell)
+
     def test_gvcftyper_annotates_dbsnp(self, files):
         dbsnp = files["tmp_dir"] / "dbsnp.vcf.gz"
         dag = build(make_pipeline(files, gvcf=True, dbsnp=dbsnp))
