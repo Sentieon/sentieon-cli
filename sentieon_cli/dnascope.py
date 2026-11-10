@@ -156,9 +156,12 @@ class DNAscopePipeline(BasePipeline):
                 "type": path_arg(exists=True, is_file=True),
             },
             "duplicate_marking": {
-                "help": "Options for duplicate marking.",
+                "help": (
+                    "Options for duplicate marking. (default 'none' when "
+                    "calling directly from BAM/CRAM input without "
+                    "--consensus, otherwise 'markdup')"
+                ),
                 "choices": ["markdup", "rmdup", "none"],
-                "default": "markdup",
             },
             "gvcf": {
                 "flags": ["-g", "--gvcf"],
@@ -256,7 +259,7 @@ class DNAscopePipeline(BasePipeline):
         self.pop_vcf: Optional[pathlib.Path] = None
         self.gvcf = False
         self.gq_bands = DEFAULT_GQ_BANDS
-        self.duplicate_marking = "markdup"
+        self.duplicate_marking: Optional[str] = None
         self.assay = "WGS"
         self.consensus = False
         self.skip_small_variants = False
@@ -293,6 +296,7 @@ class DNAscopePipeline(BasePipeline):
                 "and `--readgroups` arguments"
             )
             sys.exit(2)
+        self.resolve_duplicate_marking()
         self.validate_output_vcf()
         self.skip_multiqc = True if self.skip_metrics else self.skip_multiqc
 
@@ -341,6 +345,19 @@ class DNAscopePipeline(BasePipeline):
                 self.fai_data, 10 * 1000 * 1000
             )
         self.validate_bundle()
+
+    def resolve_duplicate_marking(self) -> None:
+        """Choose the duplicate marking default for the run's inputs"""
+        if self.duplicate_marking is not None:
+            return
+        if self.r1_fastq or self.align or self.collate_align or self.consensus:
+            self.duplicate_marking = "markdup"
+            return
+        self.duplicate_marking = "none"
+        self.logger.info(
+            "Skipping duplicate marking of the input BAM/CRAM files. Use "
+            "`--duplicate_marking markdup` to mark duplicates."
+        )
 
     def validate_bundle(self) -> None:
         """Read the bundle's platform and check the `--pop_vcf` against it"""
@@ -525,7 +542,9 @@ class DNAscopePipeline(BasePipeline):
             inputs=self.sample_input,
             model_bundle=bundle,
             bam_format=self.bam_format,
-            duplicate_marking=self.duplicate_marking,
+            duplicate_marking=self.required(
+                self.duplicate_marking, "duplicate_marking"
+            ),
             input_ref=self.input_ref,
             collate=self.collate_align,
             bwa_args=self.bwa_args,
@@ -554,7 +573,9 @@ class DNAscopePipeline(BasePipeline):
             model_bundle=bundle,
             numa_nodes=self.numa_nodes,
             bam_format=self.bam_format,
-            duplicate_marking=self.duplicate_marking,
+            duplicate_marking=self.required(
+                self.duplicate_marking, "duplicate_marking"
+            ),
             unzip=find_unzip(self.logger),
             bwa_args=self.bwa_args,
             bwa_k=str(self.bwa_k),
@@ -572,7 +593,9 @@ class DNAscopePipeline(BasePipeline):
         return ShortReadPreprocessingStage(
             ctx=ctx,
             inputs=sample_input,
-            duplicate_marking=self.duplicate_marking,
+            duplicate_marking=self.required(
+                self.duplicate_marking, "duplicate_marking"
+            ),
             consensus=self.consensus,
             skip_metrics=self.skip_metrics,
             assay=self.assay,

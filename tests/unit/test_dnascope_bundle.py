@@ -233,6 +233,64 @@ class TestPopVcfDag:
         assert out_gvcf in str(apply_job.shell)
         assert dep_names(dag, job_named(dag, "gvcftyper")) == ["model-apply"]
 
+    def test_bam_input_skips_duplicate_marking_by_default(self, files):
+        dag = build(make_pipeline(files))
+
+        names = [job.name for job in all_jobs(dag)]
+        assert "locuscollector" not in names
+        assert "dedup" not in names
+        assert "metrics" in names
+        dnascope = job_named(dag, "dnascope")
+        assert f"--input {files['bam']}" in str(dnascope.shell)
+        assert not dag.waiting_jobs.get(dnascope)
+
+    def test_bam_input_marks_duplicates_on_request(self, files):
+        dag = build(make_pipeline(files, duplicate_marking="markdup"))
+
+        dedup = job_named(dag, "dedup")
+        assert dep_names(dag, dedup) == ["locuscollector"]
+        assert dep_names(dag, job_named(dag, "dnascope")) == ["dedup"]
+
+    def test_consensus_marks_duplicates_of_bam_input(self, files):
+        dag = build(make_pipeline(files, consensus=True))
+
+        shell = str(job_named(dag, "locuscollector").shell)
+        assert "--algo LocusCollector --consensus" in shell
+
+    @pytest.mark.parametrize(
+        "overrides, expected",
+        [
+            ({"sample_input": ["x.bam"]}, "none"),
+            ({"sample_input": ["x.bam"], "consensus": True}, "markdup"),
+            ({"sample_input": ["x.bam"], "align": True}, "markdup"),
+            ({"sample_input": ["x.bam"], "collate_align": True}, "markdup"),
+            ({"r1_fastq": ["r1.fq"]}, "markdup"),
+            ({"sample_input": ["x.bam"], "r1_fastq": ["r1.fq"]}, "markdup"),
+        ],
+    )
+    def test_default_duplicate_marking(self, overrides, expected):
+        pipeline = DNAscopePipeline()
+        pipeline.logger = MagicMock()
+        for key, value in overrides.items():
+            setattr(pipeline, key, value)
+
+        pipeline.resolve_duplicate_marking()
+
+        assert pipeline.duplicate_marking == expected
+
+    @pytest.mark.parametrize("value", ["markdup", "rmdup", "none"])
+    def test_explicit_duplicate_marking_wins(self, value):
+        pipeline = DNAscopePipeline()
+        pipeline.logger = MagicMock()
+        pipeline.sample_input = [pathlib.Path("x.bam")]
+        pipeline.r1_fastq = [pathlib.Path("r1.fq")]
+        pipeline.consensus = True
+        pipeline.duplicate_marking = value
+
+        pipeline.resolve_duplicate_marking()
+
+        assert pipeline.duplicate_marking == value
+
     def test_gq_bands_default(self, files):
         dag = build(make_pipeline(files, gvcf=True))
         assert "--gq_bands 10-60/10" in str(job_named(dag, "dnascope").shell)
