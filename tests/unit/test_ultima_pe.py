@@ -30,6 +30,7 @@ from sentieon_cli.stages.ultima_pe import (
     PrimaryIndexStage,
     haplen_intervals,
     primary_contigs,
+    ultima_pe_env,
 )
 from tests.utils.test_helpers import write_bundle
 
@@ -90,6 +91,13 @@ def write_pop_vcf(path: pathlib.Path) -> None:
         f"##contig=<ID=chr1,length={FAI['chr1']}>\n"
         "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
     )
+
+
+@pytest.fixture(autouse=True)
+def no_tables_env(monkeypatch):
+    """The caller's table variables stay out of the tests"""
+    monkeypatch.delenv("ULTIMA_READ_TABLES", raising=False)
+    monkeypatch.delenv("HMGL_TABLES", raising=False)
 
 
 @pytest.fixture
@@ -332,6 +340,70 @@ class TestLinearValidation:
         assert checked == [
             ("sentieon driver", packaging.version.Version("202503.05rc4"))
         ]
+
+
+class TestReadTablesEnv:
+    """ULTIMA_READ_TABLES replaces the bundle's read-model tables"""
+
+    @staticmethod
+    def user_tables(files, monkeypatch) -> pathlib.Path:
+        tables = files["tmp"].parent / "my_tables.tsv"
+        tables.touch()
+        monkeypatch.setenv("ULTIMA_READ_TABLES", str(tables))
+        return tables
+
+    def test_linear(self, files, monkeypatch):
+        tables = self.user_tables(files, monkeypatch)
+        pipeline = linear_pipeline(files)
+        dag = build(pipeline)
+        assert str(job_named(dag, "dnascope").shell).startswith(
+            f"env HMGL_TABLES={tables} sentieon driver "
+        )
+        assert any(
+            str(tables) in line for line in logged(pipeline.logger.info)
+        )
+
+    def test_pangenome(self, files, monkeypatch):
+        tables = self.user_tables(files, monkeypatch)
+        pipeline = pangenome_pipeline(files)
+        pipeline.validate_bundle()
+        dag = pipeline.build_dag()
+        assert str(job_named(dag, "dnascope").shell).startswith(
+            f"env HMGL_TABLES={tables} sentieon driver "
+        )
+
+    def test_the_bundle_by_default(self, files):
+        assert ultima_pe_env(files["bundle"]) == {
+            "HMGL_TABLES": str(files["bundle"])
+        }
+
+    def test_a_relative_path_is_made_absolute(self, files, monkeypatch):
+        tables = self.user_tables(files, monkeypatch)
+        monkeypatch.chdir(tables.parent)
+        monkeypatch.setenv("ULTIMA_READ_TABLES", tables.name)
+        path = pathlib.Path(ultima_pe_env(files["bundle"])["HMGL_TABLES"])
+        assert path.is_absolute() and path.samefile(tables)
+
+    def test_a_missing_file_is_refused(self, files, monkeypatch):
+        monkeypatch.setenv("ULTIMA_READ_TABLES", str(files["tmp"] / "no.tsv"))
+        pipeline = linear_pipeline(files)
+        exits_with(
+            pipeline.validate,
+            pipeline.logger,
+            "ULTIMA_READ_TABLES is not a file",
+        )
+
+    def test_hmgl_tables_is_ignored(self, files, monkeypatch):
+        monkeypatch.setenv("HMGL_TABLES", "/elsewhere/tables.tsv")
+        pipeline = linear_pipeline(files)
+        dag = build(pipeline)
+        assert str(job_named(dag, "dnascope").shell).startswith(
+            f"env HMGL_TABLES={files['bundle']} sentieon driver "
+        )
+        assert any(
+            "HMGL_TABLES is ignored" in line
+            for line in logged(pipeline.logger.warning)
+        )
 
 
 class TestMinimumVersion:

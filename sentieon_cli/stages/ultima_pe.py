@@ -4,6 +4,7 @@ UltimaPE model bundle support
 
 from dataclasses import dataclass
 import logging
+import os
 import pathlib
 import re
 import sys
@@ -31,6 +32,9 @@ ULTIMA_PE_BUNDLE_MEMBERS = (
     "read_tables.tsv",
     "ultima.model",
 )
+
+# User read-model tables, in place of the bundle's
+READ_TABLES_ENV = "ULTIMA_READ_TABLES"
 
 # Contigs excluded from the primary-contig index
 NON_PRIMARY_CONTIG = re.compile(r"_alt$|^HLA-|_decoy$|^chrEBV$")
@@ -68,6 +72,17 @@ def validate_ultima_pe(
             "Without one, the repeat model also counts the alt and decoy "
             "contigs."
         )
+    tables = os.environ.get(READ_TABLES_ENV)
+    if tables:
+        if not os.path.isfile(tables):
+            logger.error("%s is not a file: %s", READ_TABLES_ENV, tables)
+            sys.exit(2)
+        logger.info("Using the read-model tables in %s", tables)
+    if os.environ.get("HMGL_TABLES"):
+        logger.warning(
+            "HMGL_TABLES is ignored; set %s to use other read-model tables.",
+            READ_TABLES_ENV,
+        )
     require_versions(ULTIMA_PE_MIN_VERSIONS, skip=skip_version_check)
 
 
@@ -86,7 +101,8 @@ def ultima_pe_repeat_model(output: pathlib.Path) -> RepeatModel:
 
 def ultima_pe_env(bundle: pathlib.Path) -> Dict[str, str]:
     """Environment for the UltimaPE DNAscope pass"""
-    return {"HMGL_TABLES": str(bundle)}
+    tables = os.environ.get(READ_TABLES_ENV)
+    return {"HMGL_TABLES": os.path.abspath(tables) if tables else str(bundle)}
 
 
 def primary_contigs(fai_data: Dict[str, Dict[str, int]]) -> List[str]:
