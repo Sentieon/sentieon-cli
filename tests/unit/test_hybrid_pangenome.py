@@ -1973,6 +1973,61 @@ class TestHybridPangenome:
             )
         assert exc.value.code == 2
 
+    def bundled_pipeline(self, bundle_info, **overrides):
+        """A pipeline that has read the given bundle_info"""
+        self.write_bundle(self.BUNDLE_MEMBERS, bundle_info)
+        pipeline = self.create_pipeline()
+        pipeline.logger = MagicMock()
+        for key, value in overrides.items():
+            setattr(pipeline, key, value)
+        pipeline.validate_bundle()
+        return pipeline
+
+    @staticmethod
+    def warned(pipeline) -> bool:
+        return any(
+            c.args == ("`--pcr_free` is set automatically with Ultima input.",)
+            for c in pipeline.logger.warning.call_args_list
+        )
+
+    @pytest.mark.parametrize(
+        "overrides, model, warns",
+        [
+            ({}, "NONE", True),
+            ({"pcr_free": True}, "NONE", False),
+            ({"pcr_indel_model": "hostile"}, "hostile", False),
+            (
+                {"pcr_free": True, "pcr_indel_model": "hostile"},
+                "hostile",
+                False,
+            ),
+        ],
+    )
+    def test_ultima_pcr_free(self, overrides, model, warns):
+        """An Ultima bundle sets --pcr_free unless overridden"""
+        pipeline = self.bundled_pipeline(
+            {"shortReadPlatform": "Ultima"}, **overrides
+        )
+        _, all_jobs = self._get_all_job_names(pipeline.build_dag())
+
+        cmd_str = str(self._get_job(all_jobs, "dnascope").shell)
+        assert f"--pcr_indel_model {model}" in cmd_str
+        assert self.warned(pipeline) is warns
+
+    def test_ultima_skip_small_variants_does_not_warn(self):
+        pipeline = self.bundled_pipeline(
+            {"shortReadPlatform": "Ultima"}, skip_small_variants=True
+        )
+        assert not self.warned(pipeline)
+
+    def test_other_platforms_keep_the_pcr_indel_model(self):
+        pipeline = self.bundled_pipeline({"shortReadPlatform": "Illumina"})
+        _, all_jobs = self._get_all_job_names(pipeline.build_dag())
+
+        cmd_str = str(self._get_job(all_jobs, "dnascope").shell)
+        assert "--pcr_indel_model CONSERVATIVE" in cmd_str
+        assert not self.warned(pipeline)
+
     def test_expansion_on_ultima_with_sentieon_fork(self, monkeypatch):
         self.validate_expansion_with(
             monkeypatch, {"shortReadPlatform": "Ultima"}, read_mode=True

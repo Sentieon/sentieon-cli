@@ -19,6 +19,7 @@ from ..job import Job
 from ..util import require_versions
 from .base import Stage, StageResult, driver_job
 
+ULTIMA_PLATFORM = "ULTIMA"
 ULTIMA_PE_PLATFORM = "ULTIMAPE"
 
 ULTIMA_PE_MIN_VERSIONS = {
@@ -41,6 +42,27 @@ NON_PRIMARY_CONTIG = re.compile(r"_alt$|^HLA-|_decoy$|^chrEBV$")
 
 # Contigs of the hap-length table
 HAPLEN_CONTIG = re.compile(r"^(chr)?([1-9]|1[0-9]|2[0-2]|X|Y)$")
+
+
+def is_ultima(platform: str) -> bool:
+    """Is this model bundle platform an Ultima platform?"""
+    return platform.upper() in (ULTIMA_PLATFORM, ULTIMA_PE_PLATFORM)
+
+
+def ultima_pcr_free(
+    logger: logging.Logger,
+    platform: str,
+    *,
+    pcr_free: bool,
+    pcr_indel_model: Optional[str],
+    skip_small_variants: bool,
+) -> bool:
+    """The run's `--pcr_free` value, which is always set with Ultima input"""
+    if not is_ultima(platform):
+        return pcr_free
+    if not (pcr_free or pcr_indel_model is not None or skip_small_variants):
+        logger.warning("`--pcr_free` is set automatically with Ultima input.")
+    return True
 
 
 def validate_ultima_pe(

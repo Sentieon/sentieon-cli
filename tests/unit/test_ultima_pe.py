@@ -2,6 +2,7 @@
 Unit tests for the UltimaPE flow
 """
 
+import argparse
 import json
 import pathlib
 from typing import Dict, List, Optional
@@ -30,6 +31,7 @@ from sentieon_cli.stages.ultima_pe import (
     PrimaryIndexStage,
     haplen_intervals,
     primary_contigs,
+    ultima_pcr_free,
     ultima_pe_env,
 )
 from tests.utils.test_helpers import write_bundle
@@ -467,9 +469,66 @@ def pangenome_pipeline(files, **overrides) -> SentieonPangenome:
     pipeline.bam_readgroups = [{"ID": "rg1", "SM": "sample1"}]
     pipeline.fastq_readgroup = {}
     pipeline.tech = "ULTIMAPE"
+    pipeline.pcr_free = True
     for key, value in overrides.items():
         setattr(pipeline, key, value)
     return pipeline
+
+
+class TestUltimaPcrFree:
+    """`ultima_pcr_free` over the Ultima and other platform names"""
+
+    WARNING = "`--pcr_free` is set automatically with Ultima input."
+
+    @staticmethod
+    def run(platform, **overrides):
+        logger = MagicMock()
+        kwargs = {
+            "pcr_free": False,
+            "pcr_indel_model": None,
+            "skip_small_variants": False,
+            **overrides,
+        }
+        return ultima_pcr_free(logger, platform, **kwargs), logger
+
+    @pytest.mark.parametrize(
+        "platform", ["Ultima", "ULTIMA", "UltimaPE", "ULTIMAPE", "ultimape"]
+    )
+    def test_ultima_platforms_are_pcr_free(self, platform):
+        pcr_free, logger = self.run(platform)
+
+        assert pcr_free is True
+        logger.warning.assert_called_once_with(self.WARNING)
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"pcr_free": True},
+            {"pcr_indel_model": "hostile"},
+            {"skip_small_variants": True},
+        ],
+    )
+    def test_no_warning(self, overrides):
+        pcr_free, logger = self.run("Ultima", **overrides)
+
+        assert pcr_free is True
+        logger.warning.assert_not_called()
+
+    @pytest.mark.parametrize("platform", ["Illumina", "", "element"])
+    @pytest.mark.parametrize("value", [True, False])
+    def test_other_platforms_keep_the_argument(self, platform, value):
+        pcr_free, logger = self.run(platform, pcr_free=value)
+
+        assert pcr_free is value
+        logger.warning.assert_not_called()
+
+    @pytest.mark.parametrize("cls", [DNAscopePipeline, SentieonPangenome])
+    def test_pcr_indel_model_is_hidden(self, cls):
+        parser = argparse.ArgumentParser()
+        cls.add_arguments(parser)
+
+        action = parser._option_string_actions["--pcr_indel_model"]
+        assert action.help == argparse.SUPPRESS
 
 
 class TestPangenomeDag:
@@ -485,7 +544,7 @@ class TestPangenomeDag:
             f"--input {lift} --reference {files['ref']} --thread_count 2 "
             f"--interval {files['bed']} --read_filter {READ_FILTER} "
             f"--algo DNAscope --emit_mode variant --model {b}/dnascope.model "
-            f"--pcr_indel_model CONSERVATIVE {t}/sample-dnascope.vcf.gz "
+            f"--pcr_indel_model NONE {t}/sample-dnascope.vcf.gz "
             f"{REPEAT_MODEL_ARGS} {t}/sample-repeat.model"
         )
 

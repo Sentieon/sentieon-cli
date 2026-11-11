@@ -49,9 +49,11 @@ from .stages.small_variants import (
     DNAscopeStage,
     TransferApplyStage,
     TransferSpec,
+    dnascope_pcr_indel_model,
 )
 from .stages.sv import LongReadSVStage
 from .stages.transfer import TransferConfig
+from .stages.ultima_pe import ultima_pcr_free
 from .util import (
     __version__,
     check_kmc_patch,
@@ -446,6 +448,13 @@ class HybridPangenome(BasePangenome):
         if bundle_pipeline and bundle_pipeline != "Hybrid pangenome":
             self.logger.error("The model bundle is for a different pipeline.")
             sys.exit(2)
+        self.pcr_free = ultima_pcr_free(
+            self.logger,
+            self.shortread_platform,
+            pcr_free=self.pcr_free,
+            pcr_indel_model=self.pcr_indel_model,
+            skip_small_variants=self.skip_small_variants,
+        )
 
         bundle_members = set(ar_load(str(self.model_bundle)))
 
@@ -952,7 +961,9 @@ class HybridPangenome(BasePangenome):
             return dag
 
         model = bundle.joinpath("dnascope.model")
-        pcr_indel_model = "NONE" if self.pcr_free else "CONSERVATIVE"
+        pcr_indel_model = dnascope_pcr_indel_model(
+            self.pcr_free, self.pcr_indel_model
+        )
         call = DNAscopeStage(
             ctx=ctx,
             algos=[

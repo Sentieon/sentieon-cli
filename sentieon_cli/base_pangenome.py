@@ -35,6 +35,7 @@ from .stages.cnv import PangenomeCNVResult, PangenomeCNVStage
 from .stages.expansion import ExpansionHunterResult, ExpansionHunterStage
 from .stages.metrics import MetricsPaths
 from .stages.segdup import SegdupResult, SegdupStage
+from .stages.small_variants import PCR_INDEL_MODEL_PARAM
 from .stages.t1k import (
     DEFAULT_T1K_HLA_LOCUS,
     DEFAULT_T1K_KIR_LOCUS,
@@ -121,7 +122,10 @@ class BasePangenome(BasePipeline):
                 "type": int,
             },
             "pcr_free": {
-                "help": "Use arguments for PCR-free data processing",
+                "help": (
+                    "Use arguments for PCR-free data processing. Set "
+                    "automatically with Ultima model bundles."
+                ),
                 "action": "store_true",
             },
             "par_bed": {
@@ -211,6 +215,7 @@ class BasePangenome(BasePipeline):
             "pangenome_contig_prefix": {
                 "help": argparse.SUPPRESS,
             },
+            "pcr_indel_model": PCR_INDEL_MODEL_PARAM,
             "skip_contig_checks": {
                 "help": argparse.SUPPRESS,
                 "action": "store_true",
@@ -235,6 +240,7 @@ class BasePangenome(BasePipeline):
         self.dbsnp: Optional[pathlib.Path] = None
         self.kmer_memory = 30
         self.pcr_free = False
+        self.pcr_indel_model: Optional[str] = None
         self.par_bed: Optional[pathlib.Path] = None
         self.segdup_caller: Optional[List[str]] = None
         self.expansion_catalog: Optional[pathlib.Path] = None

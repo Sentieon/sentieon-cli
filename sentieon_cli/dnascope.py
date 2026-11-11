@@ -43,14 +43,17 @@ from .stages.small_variants import (
     DNAscopeStage,
     GQ_BANDS_PARAM,
     GVCFtyperStage,
+    PCR_INDEL_MODEL_PARAM,
     PostSpec,
     TransferApplyStage,
     TransferSpec,
+    dnascope_pcr_indel_model,
 )
 from .stages.transfer import TransferConfig
 from .stages.ultima_pe import (
     ULTIMA_PE_PLATFORM,
     ULTIMA_PE_READ_FILTER,
+    ultima_pcr_free,
     ultima_pe_env,
     ultima_pe_repeat_model,
     validate_ultima_pe,
@@ -184,7 +187,10 @@ class DNAscopePipeline(BasePipeline):
                 "type": int,
             },
             "pcr_free": {
-                "help": "Use arguments for PCR-free data processing",
+                "help": (
+                    "Use arguments for PCR-free data processing. Set "
+                    "automatically with Ultima model bundles."
+                ),
                 "action": "store_true",
             },
             "pop_vcf": {
@@ -233,6 +239,7 @@ class DNAscopePipeline(BasePipeline):
                 "help": argparse.SUPPRESS,
                 "action": "store_true",
             },
+            "pcr_indel_model": PCR_INDEL_MODEL_PARAM,
             "skip_pop_vcf_id_check": {
                 "help": argparse.SUPPRESS,
                 "action": "store_true",
@@ -256,6 +263,7 @@ class DNAscopePipeline(BasePipeline):
         self.bed: Optional[pathlib.Path] = None
         self.interval_padding: Optional[int] = None
         self.pcr_free = False
+        self.pcr_indel_model: Optional[str] = None
         self.pop_vcf: Optional[pathlib.Path] = None
         self.gvcf = False
         self.gq_bands = DEFAULT_GQ_BANDS
@@ -375,6 +383,13 @@ class DNAscopePipeline(BasePipeline):
         ).upper()
         if self.tech == ULTIMA_PE_PLATFORM:
             self.validate_ultima_pe_bundle(bundle, bundle_info)
+        self.pcr_free = ultima_pcr_free(
+            self.logger,
+            self.tech,
+            pcr_free=self.pcr_free,
+            pcr_indel_model=self.pcr_indel_model,
+            skip_small_variants=self.skip_small_variants,
+        )
         bundle_vcf_id = bundle_info.get("SentieonVcfID")
 
         if not bundle_vcf_id:
@@ -634,7 +649,9 @@ class DNAscopePipeline(BasePipeline):
             read_filters.append("UltimaReadFilter")
         elif ultima_pe:
             read_filters.append(ULTIMA_PE_READ_FILTER)
-        pcr_indel_model = "NONE" if self.pcr_free else "CONSERVATIVE"
+        pcr_indel_model = dnascope_pcr_indel_model(
+            self.pcr_free, self.pcr_indel_model
+        )
         model = bundle.joinpath("dnascope.model")
         repeat_model = ctx.tmp_dir.joinpath("sample-repeat.model")
 

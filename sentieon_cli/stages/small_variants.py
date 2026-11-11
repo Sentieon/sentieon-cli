@@ -2,6 +2,7 @@
 Small-variant calling, annotation transfer, and genotyping
 """
 
+import argparse
 from dataclasses import dataclass
 import pathlib
 from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Set, Union
@@ -23,6 +24,20 @@ GQ_BANDS_PARAM: Dict[str, Any] = {
     ),
     "default": DEFAULT_GQ_BANDS,
 }
+
+# The hidden `--pcr_indel_model` argument, which overrides `--pcr_free`
+PCR_INDEL_MODEL_PARAM: Dict[str, Any] = {
+    "help": argparse.SUPPRESS,
+}
+
+
+def dnascope_pcr_indel_model(
+    pcr_free: bool, override: Optional[str] = None
+) -> str:
+    """The DNAscope `--pcr_indel_model` value for a run"""
+    if override is not None:
+        return override
+    return "NONE" if pcr_free else "CONSERVATIVE"
 
 
 @dataclass(kw_only=True)

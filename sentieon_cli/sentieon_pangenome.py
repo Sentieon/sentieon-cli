@@ -47,6 +47,7 @@ from .stages.small_variants import (
     PostSpec,
     TransferApplyStage,
     TransferSpec,
+    dnascope_pcr_indel_model,
 )
 from .stages.transfer import TransferConfig
 from .stages.ultima_pe import (
@@ -55,6 +56,7 @@ from .stages.ultima_pe import (
     HapTableResult,
     HapTableStage,
     PrimaryIndexStage,
+    ultima_pcr_free,
     ultima_pe_env,
     ultima_pe_repeat_model,
     validate_ultima_pe,
@@ -334,6 +336,13 @@ class SentieonPangenome(BasePangenome):
         if bundle_pipeline != "Sentieon pangenome":
             self.logger.error("The model bundle is for a different pipeline.")
             sys.exit(2)
+        self.pcr_free = ultima_pcr_free(
+            self.logger,
+            self.tech,
+            pcr_free=self.pcr_free,
+            pcr_indel_model=self.pcr_indel_model,
+            skip_small_variants=self.skip_small_variants,
+        )
 
         bundle_members = set(ar_load(str(self.model_bundle)))
 
@@ -684,7 +693,9 @@ class SentieonPangenome(BasePangenome):
             read_filters.append("UltimaReadFilter")
         elif ultima_pe:
             read_filters.append(ULTIMA_PE_READ_FILTER)
-        pcr_indel_model = "NONE" if self.pcr_free else "CONSERVATIVE"
+        pcr_indel_model = dnascope_pcr_indel_model(
+            self.pcr_free, self.pcr_indel_model
+        )
         model = bundle.joinpath("dnascope.model")
         gfa_file = sample_gfa if self.call_svs else None
 

@@ -382,6 +382,77 @@ class TestSentieonPangenome:
         job = self._second_dag_job(pipeline, "segdup-caller")
         return str(job.shell)
 
+    @pytest.mark.parametrize(
+        "overrides, model, warns",
+        [
+            ({}, "NONE", True),
+            ({"pcr_free": True}, "NONE", False),
+            ({"pcr_indel_model": "hostile"}, "hostile", False),
+            (
+                {"pcr_free": True, "pcr_indel_model": "hostile"},
+                "hostile",
+                False,
+            ),
+        ],
+    )
+    def test_ultima_pcr_free(self, overrides, model, warns):
+        """An Ultima bundle sets --pcr_free unless overridden"""
+        pipeline = self.validated_pipeline("Ultima", **overrides)
+        job = self._dnascope_job(pipeline)
+
+        assert f"--pcr_indel_model {model}" in str(job.shell)
+        assert self.warned(pipeline) is warns
+
+    def test_ultima_skip_small_variants_does_not_warn(self):
+        pipeline = self.validated_pipeline("Ultima", skip_small_variants=True)
+        assert not self.warned(pipeline)
+
+    def test_other_platforms_keep_the_pcr_indel_model(self):
+        pipeline = self.validated_pipeline("Illumina")
+        job = self._dnascope_job(pipeline)
+
+        assert "--pcr_indel_model CONSERVATIVE" in str(job.shell)
+        assert not self.warned(pipeline)
+
+    def validated_pipeline(self, platform, **overrides):
+        """A pipeline that has read a bundle of the given platform"""
+        bundle_info = {
+            "minScriptVersion": "1.0.0",
+            "pipeline": "Sentieon pangenome",
+            "platform": platform,
+            "SentieonVcfID": "population",
+        }
+
+        def fake_ar_load(path):
+            if str(path).endswith("bundle_info.json"):
+                return json.dumps(bundle_info).encode()
+            return [
+                "dnascope.model",
+                "extract.model",
+                "minimap2.model",
+                "cnv.model",
+            ]
+
+        pipeline = self.create_pipeline()
+        for key, value in overrides.items():
+            setattr(pipeline, key, value)
+        with patch("sentieon_cli.sentieon_pangenome.ar_load", fake_ar_load):
+            pipeline.validate_bundle()
+        return pipeline
+
+    @staticmethod
+    def _dnascope_job(pipeline):
+        dag = pipeline.build_dag()
+        all_jobs = list(dag.waiting_jobs.keys()) + list(dag.ready_jobs.keys())
+        return next(j for j in all_jobs if j.name == "dnascope")
+
+    @staticmethod
+    def warned(pipeline) -> bool:
+        return any(
+            c.args == ("`--pcr_free` is set automatically with Ultima input.",)
+            for c in pipeline.logger.warning.call_args_list
+        )
+
     def test_segdup_ultima_lowers_min_map_qual(self):
         """Ultima input overrides segdup-caller's default min_map_qual"""
         assert "--set main.min_map_qual=30" in self.build_segdup_cmd("Ultima")

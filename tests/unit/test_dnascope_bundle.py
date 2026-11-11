@@ -317,6 +317,64 @@ class TestPopVcfDag:
         assert not any(n.startswith("merge-trim") for n in names)
 
 
+class TestUltimaPcrFree:
+    """An Ultima bundle sets --pcr_free unless --pcr_indel_model is given"""
+
+    @staticmethod
+    def run(files, bundle_info, **overrides):
+        write_bundle(files["bundle"], bundle_info)
+        pipeline = make_pipeline(files, pop_vcf=None, **overrides)
+        return pipeline, build(pipeline)
+
+    @staticmethod
+    def warned(pipeline) -> bool:
+        return any(
+            c.args == ("`--pcr_free` is set automatically with Ultima input.",)
+            for c in pipeline.logger.warning.call_args_list
+        )
+
+    @pytest.mark.parametrize("key", ["platform", "shortReadPlatform"])
+    @pytest.mark.parametrize(
+        "overrides, model, warns",
+        [
+            ({}, "NONE", True),
+            ({"pcr_free": True}, "NONE", False),
+            ({"pcr_indel_model": "hostile"}, "hostile", False),
+            (
+                {"pcr_free": True, "pcr_indel_model": "hostile"},
+                "hostile",
+                False,
+            ),
+        ],
+    )
+    def test_ultima(self, files, key, overrides, model, warns):
+        pipeline, dag = self.run(files, {key: "Ultima"}, **overrides)
+
+        cmd = str(job_named(dag, "dnascope").shell)
+        assert f"--pcr_indel_model {model}" in cmd
+        assert self.warned(pipeline) is warns
+
+    def test_skip_small_variants_does_not_warn(self, files):
+        pipeline, _ = self.run(
+            files, {"platform": "Ultima"}, skip_small_variants=True
+        )
+        assert not self.warned(pipeline)
+
+    def test_other_platforms_are_unchanged(self, files):
+        pipeline, dag = self.run(files, {"platform": "Illumina"})
+
+        cmd = str(job_named(dag, "dnascope").shell)
+        assert "--pcr_indel_model CONSERVATIVE" in cmd
+        assert not self.warned(pipeline)
+
+    def test_override_applies_to_other_platforms(self, files):
+        _, dag = self.run(
+            files, {"platform": "Illumina"}, pcr_indel_model="hostile"
+        )
+        cmd = str(job_named(dag, "dnascope").shell)
+        assert "--pcr_indel_model hostile" in cmd
+
+
 class TestUltimaReadFilter:
     """An Ultima bundle adds `UltimaReadFilter` to the DNAscope call"""
 
